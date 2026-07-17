@@ -1,29 +1,11 @@
-# meeting-scribe configuration
-# Paths support ~ expansion. Relative paths resolve against the project directory.
-
-# Folder watched for new recordings (OBS default: ~/Videos/obs on Linux, ~/Movies on macOS)
-inbox: ~/Videos/obs
-
-# Knowledge library root (relative to the project directory)
-library: ./knowledge
-
-# Video extensions that trigger processing
-video_extensions: [.mkv, .mp4, .mov, .webm]
-
-# File stability: OBS writes progressively; a file is ready when its size is
-# identical across this many checks separated by stability_interval_seconds.
+inbox: /home/fernando/Videos/obs
+library: /home/fernando/Documents
+video_extensions:
+- .mkv
+- .mp4
+- .mov
+- .webm
 stability_checks: 2
 stability_interval_seconds: 5
-
-# Analyzer backend: "kimi" (local Kimi Code CLI), "claude" (local Claude Code
-# CLI), or "lemur" (AssemblyAI's hosted LLM, same API key as transcription).
 analyzer_backend: kimi
-
-# Path to the Kimi Code CLI binary. Use an absolute path when running scribe as
-# a service, because systemd's PATH may not include the CLI location
-# (e.g. /home/you/.kimi-code/bin/kimi).
 kimi_path: /home/fernando/.kimi-code/bin/kimi
-
-# Path to the Claude Code CLI binary. Use an absolute path when running scribe
-# as a service, because systemd's PATH may not include the CLI location.
-# claude_path: /home/you/.local/bin/claude

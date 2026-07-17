@@ -228,10 +228,18 @@ def run() -> int:
     api_key = _prompt_api_key()
     _print()
 
-    inbox = _prompt_path("Enter the absolute path to your recordings folder (inbox): ")
+    inbox = _prompt_path(
+        "Enter the absolute path to your recordings folder (inbox).\n"
+        "  Example: /home/fernando/Videos/obs\n"
+        "  Path: "
+    )
     _print()
 
-    library = _prompt_path("Enter the absolute path to your knowledge library folder: ")
+    library = _prompt_path(
+        "Enter the absolute path to your knowledge library folder.\n"
+        "  Example: /home/fernando/projects/meeting-scribe/knowledge\n"
+        "  Path: "
+    )
     _print()
 
     backend = ""

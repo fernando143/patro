@@ -34,8 +34,3 @@ case "$(uname -s)" in
     exit 1
     ;;
 esac
-
-echo
-echo "IMPORTANT: set ASSEMBLYAI_API_KEY for the service before real use:"
-echo "  - Linux: systemctl --user edit scribe  -> add [Service] Environment=ASSEMBLYAI_API_KEY=..."
-echo "  - macOS: add an EnvironmentVariables dict to ~/Library/LaunchAgents/com.scribe.plist"
