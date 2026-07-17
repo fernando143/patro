@@ -15,65 +15,42 @@ import sys
 from pathlib import Path
 
 import yaml
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.status import Status
 
 from .config import DEFAULT_CONFIG_PATH, PROJECT_DIR
 
 
-WELCOME = """
-Welcome to meeting-scribe installer.
-
-This wizard will:
-  1. Check your Python environment.
-  2. Ask for your AssemblyAI API key (transcription).
-  3. Ask where scribe should listen for recordings (inbox).
-  4. Ask where to write the knowledge library.
-  5. Ask which local AI you want to write the notes (Kimi or Claude).
-  6. Install and start a user-level background service.
-""".strip()
+console = Console()
 
 
-def _print(message: str = "") -> None:
-    print(message)
-
-
-def _prompt(text: str) -> str:
-    return input(text).strip()
-
-
-def _prompt_required(text: str) -> str:
+def _prompt_required(text: str, **kwargs) -> str:
     while True:
-        value = _prompt(text)
+        value = Prompt.ask(text, console=console, **kwargs).strip()
         if value:
             return value
-        _print("This field is required.")
+        console.print("[red]This field is required.[/red]")
 
 
-def _prompt_yes_no(text: str, default: bool = False) -> bool:
-    suffix = " [Y/n]" if default else " [y/N]"
+def _prompt_path(text: str, example: str) -> Path:
+    """Ask for an absolute path. Never create it unless the user confirms."""
     while True:
-        answer = _prompt(text + suffix).lower()
-        if not answer:
-            return default
-        if answer in ("y", "yes"):
-            return True
-        if answer in ("n", "no"):
-            return False
-        _print("Please answer yes or no.")
-
-
-def _prompt_path(text: str, must_exist: bool = True) -> Path:
-    """Ask for a path. Never create it unless the user confirms."""
-    while True:
-        raw = _prompt_required(text)
+        raw = _prompt_required(text, default=example)
         path = Path(raw).expanduser().resolve()
         if not path.is_absolute():
-            _print("Please provide an absolute path.")
+            console.print("[red]Please provide an absolute path (e.g. /home/fernando/Videos/obs).[/red]")
             continue
         if not path.exists():
-            if _prompt_yes_no(f"Folder does not exist: {path}. Create it?", default=False):
+            if Confirm.ask(
+                f"Folder does not exist: [cyan]{path}[/cyan]. Create it?",
+                console=console,
+                default=False,
+            ):
                 path.mkdir(parents=True, exist_ok=True)
                 return path
-            _print("Please provide a different path.")
+            console.print("[yellow]Please provide a different path.[/yellow]")
             continue
         return path
 
@@ -81,9 +58,9 @@ def _prompt_path(text: str, must_exist: bool = True) -> Path:
 def _check_python() -> None:
     version = sys.version_info
     if version < (3, 11):
-        _print(f"Python {version.major}.{version.minor} is too old. Python 3.11+ is required.")
+        console.print(f"[red]Python {version.major}.{version.minor} is too old. Python 3.11+ is required.[/red]")
         sys.exit(1)
-    _print(f"Python {version.major}.{version.minor}.{version.micro} OK.")
+    console.print(f"[green]Python {version.major}.{version.minor}.{version.micro} OK[/green]")
 
 
 def _venv_python() -> Path:
@@ -97,11 +74,11 @@ def _venv_pip() -> Path:
 def _ensure_venv() -> None:
     venv_python = _venv_python()
     if venv_python.exists():
-        _print("Virtual environment found.")
+        console.print("[green]Virtual environment found[/green]")
         return
-    _print("Creating virtual environment ...")
-    subprocess.run([sys.executable, "-m", "venv", str(PROJECT_DIR / ".venv")], check=True)
-    _print("Virtual environment created.")
+    with Status("[bold green]Creating virtual environment...[/bold green]", console=console):
+        subprocess.run([sys.executable, "-m", "venv", str(PROJECT_DIR / ".venv")], check=True)
+    console.print("[green]Virtual environment created[/green]")
 
 
 def _ensure_package_installed() -> None:
@@ -112,36 +89,37 @@ def _ensure_package_installed() -> None:
         text=True,
     )
     if result.returncode == 0:
-        _print("Package already installed in editable mode.")
+        console.print("[green]Package already installed in editable mode[/green]")
         return
-    _print("Installing meeting-scribe in editable mode ...")
-    subprocess.run([str(venv_pip), "install", "-e", str(PROJECT_DIR)], check=True)
-    _print("Package installed.")
+    with Status("[bold green]Installing meeting-scribe...[/bold green]", console=console):
+        subprocess.run([str(venv_pip), "install", "-e", str(PROJECT_DIR)], check=True)
+    console.print("[green]Package installed[/green]")
 
 
 def _find_binary(name: str) -> str | None:
-    path = shutil.which(name)
-    return path
+    return shutil.which(name)
 
 
 def _prompt_binary(name: str) -> str:
     found = _find_binary(name)
     if found:
-        if _prompt_yes_no(f"Found '{name}' at {found}. Use it?", default=True):
+        use = Confirm.ask(
+            f"Found '[bold]{name}[/bold]' at [cyan]{found}[/cyan]. Use it?",
+            console=console,
+            default=True,
+        )
+        if use:
             return found
     while True:
-        raw = _prompt_required(f"Enter the absolute path to the '{name}' executable: ")
+        raw = _prompt_required(f"Enter the absolute path to the '[bold]{name}[/bold]' executable")
         path = Path(raw).expanduser().resolve()
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
-        _print(f"'{path}' is not an executable file. Please try again.")
+        console.print(f"[red]'{path}' is not an executable file. Please try again.[/red]")
 
 
 def _prompt_api_key() -> str:
-    while True:
-        key = _prompt_required("Enter your AssemblyAI API key: ")
-        if key:
-            return key
+    return _prompt_required("Enter your AssemblyAI API key")
 
 
 def _load_existing_config() -> dict:
@@ -157,7 +135,7 @@ def _load_existing_config() -> dict:
 def _write_config(config: dict) -> None:
     with open(DEFAULT_CONFIG_PATH, "w", encoding="utf-8") as fh:
         yaml.safe_dump(config, fh, sort_keys=False, default_flow_style=False, allow_unicode=True)
-    _print(f"Updated {DEFAULT_CONFIG_PATH}")
+    console.print(f"[green]Updated {DEFAULT_CONFIG_PATH}[/green]")
 
 
 def _install_service(api_key: str) -> None:
@@ -167,14 +145,14 @@ def _install_service(api_key: str) -> None:
     elif system == "Darwin":
         _install_macos_service(api_key)
     else:
-        _print(f"Unsupported OS: {system}. Service installation skipped.")
+        console.print(f"[red]Unsupported OS: {system}. Service installation skipped.[/red]")
         sys.exit(1)
 
 
 def _install_linux_service(api_key: str) -> None:
     install_script = PROJECT_DIR / "install" / "install.sh"
-    _print("Installing systemd user service ...")
-    subprocess.run(["bash", str(install_script)], check=True)
+    with Status("[bold green]Installing systemd user service...[/bold green]", console=console):
+        subprocess.run(["bash", str(install_script)], check=True)
 
     override_dir = Path.home() / ".config" / "systemd" / "user" / "scribe.service.d"
     override_dir.mkdir(parents=True, exist_ok=True)
@@ -182,22 +160,21 @@ def _install_linux_service(api_key: str) -> None:
     with open(override_file, "w", encoding="utf-8") as fh:
         fh.write("[Service]\n")
         fh.write(f"Environment=ASSEMBLYAI_API_KEY={api_key}\n")
-    _print(f"Wrote API key to {override_file}")
+    console.print(f"[green]Wrote API key to {override_file}[/green]")
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "restart", "scribe"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "scribe"], check=True)
-    _print("Service started and enabled.")
+    with Status("[bold green]Starting service...[/bold green]", console=console):
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        subprocess.run(["systemctl", "--user", "restart", "scribe"], check=True)
+        subprocess.run(["systemctl", "--user", "enable", "scribe"], check=True)
+    console.print("[green]Service started and enabled[/green]")
 
 
 def _install_macos_service(api_key: str) -> None:
     install_script = PROJECT_DIR / "install" / "install.sh"
-    _print("Installing LaunchAgent ...")
-    subprocess.run(["bash", str(install_script)], check=True)
+    with Status("[bold green]Installing LaunchAgent...[/bold green]", console=console):
+        subprocess.run(["bash", str(install_script)], check=True)
 
     plist = Path.home() / "Library" / "LaunchAgents" / "com.scribe.plist"
-    # Inject the API key into the plist. A simple XML insertion is enough
-    # because the installer produced a well-known plist structure.
     text = plist.read_text(encoding="utf-8")
     env_block = (
         "\n    <key>EnvironmentVariables</key>\n"
@@ -206,50 +183,63 @@ def _install_macos_service(api_key: str) -> None:
         f"        <string>{api_key}</string>\n"
         "    </dict>"
     )
-    # Insert before the closing </dict>
     text = text.replace("</dict>", env_block + "\n</dict>", 1)
     plist.write_text(text, encoding="utf-8")
-    _print(f"Wrote API key to {plist}")
+    console.print(f"[green]Wrote API key to {plist}[/green]")
 
-    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.scribe"], check=False)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
-    _print("LaunchAgent started.")
+    with Status("[bold green]Starting LaunchAgent...[/bold green]", console=console):
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.scribe"], check=False)
+        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
+    console.print("[green]LaunchAgent started[/green]")
 
 
 def run() -> int:
-    _print(WELCOME)
-    _print()
+    console.print(
+        Panel.fit(
+            "[bold blue]meeting-scribe installer[/bold blue]\n\n"
+            "This wizard will:\n"
+            "  1. Check your Python environment.\n"
+            "  2. Ask for your AssemblyAI API key (transcription).\n"
+            "  3. Ask where scribe should listen for recordings.\n"
+            "  4. Ask where to write the knowledge library.\n"
+            "  5. Ask which local AI you want to write the notes.\n"
+            "  6. Install and start a user-level background service.",
+            title="Welcome",
+            border_style="blue",
+        )
+    )
 
     _check_python()
     _ensure_venv()
     _ensure_package_installed()
-    _print()
+    console.print()
 
     api_key = _prompt_api_key()
-    _print()
+    console.print()
 
     inbox = _prompt_path(
-        "Enter the absolute path to your recordings folder (inbox).\n"
-        "  Example: /home/fernando/Videos/obs\n"
-        "  Path: "
+        "Enter the absolute path to your recordings folder",
+        example="/home/fernando/Videos/obs",
     )
-    _print()
+    console.print()
 
     library = _prompt_path(
-        "Enter the absolute path to your knowledge library folder.\n"
-        "  Example: /home/fernando/projects/meeting-scribe/knowledge\n"
-        "  Path: "
+        "Enter the absolute path to your knowledge library folder",
+        example="/home/fernando/projects/meeting-scribe/knowledge",
     )
-    _print()
+    console.print()
 
     backend = ""
     while backend not in ("kimi", "claude"):
-        backend = _prompt("Which local AI should write the knowledge library? [kimi/claude]: ").lower()
-        if backend not in ("kimi", "claude"):
-            _print("Please answer 'kimi' or 'claude'.")
+        backend = Prompt.ask(
+            "Which local AI should write the knowledge library?",
+            console=console,
+            choices=["kimi", "claude"],
+            default="kimi",
+        ).lower()
 
     binary_path = _prompt_binary(backend)
-    _print()
+    console.print()
 
     config = _load_existing_config()
     config["inbox"] = str(inbox)
@@ -263,17 +253,17 @@ def run() -> int:
         config.pop("kimi_path", None)
 
     _write_config(config)
-    _print()
+    console.print()
 
     _install_service(api_key)
-    _print()
+    console.print()
 
-    _print("Installation complete.")
+    console.print(Panel.fit("[bold green]Installation complete[/bold green]", border_style="green"))
     if platform.system() == "Linux":
-        _print("View logs: journalctl --user -u scribe -f")
-        _print("Check status: systemctl --user status scribe")
+        console.print("View logs: [cyan]journalctl --user -u scribe -f[/cyan]")
+        console.print("Check status: [cyan]systemctl --user status scribe[/cyan]")
     elif platform.system() == "Darwin":
-        _print("View logs: tail -f /tmp/scribe.out.log /tmp/scribe.err.log")
+        console.print("View logs: [cyan]tail -f /tmp/scribe.out.log /tmp/scribe.err.log[/cyan]")
     return 0
 
 
