@@ -1,0 +1,25 @@
+# meeting-scribe user service (Linux, systemd --user)
+#
+# Install: copy to ~/.config/systemd/user/scribe.service (or run install/install.sh),
+# then: systemctl --user daemon-reload && systemctl --user enable --now scribe
+#
+# The API key goes in a drop-in, NOT here:
+#   systemctl --user edit scribe
+# and add:
+#   [Service]
+#   Environment=ASSEMBLYAI_API_KEY=your-key-here
+
+[Unit]
+Description=meeting-scribe: transcribe OBS recordings into a Markdown knowledge library
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/meeting-scribe
+ExecStart=%h/projects/meeting-scribe/.venv/bin/python -m scribe serve
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

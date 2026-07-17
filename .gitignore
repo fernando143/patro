@@ -1,0 +1,22 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Application runtime state and logs
+.state/
+scribe.log
+
+# Generated knowledge library (user content)
+knowledge/
+
+# Environment files
+.env
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  meeting-scribe LaunchAgent (macOS)
+
+  Install: copy to ~/Library/LaunchAgents/com.scribe.plist (or run install/install.sh),
+  then: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribe.plist
+
+  To provide the API key, add an EnvironmentVariables dict inside the plist:
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>ASSEMBLYAI_API_KEY</key>
+      <string>your-key-here</string>
+    </dict>
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scribe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/projects/meeting-scribe/.venv/bin/python</string>
+        <string>-m</string>
+        <string>scribe</string>
+        <string>serve</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME/projects/meeting-scribe</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/scribe.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/scribe.err.log</string>
+</dict>
+</plist>
