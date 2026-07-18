@@ -33,6 +33,7 @@ import (
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/pipeline"
 	"github.com/fernando143/patro/internal/state"
+	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/watcher"
 	"github.com/fernando143/patro/internal/web"
 )
@@ -212,7 +213,7 @@ func runPipeline(opts *cliOptions) int {
 			logging.Errorf("File not found: %s", video)
 			return 1
 		}
-		if _, err := pipeline.ProcessVideo(ctx, video, cfg, st, transcribeFn, analyzeFn); err != nil {
+		if _, err := pipeline.ProcessVideo(ctx, video, cfg, st, nil, transcribeFn, analyzeFn); err != nil {
 			logging.Errorf("Failed to process %s: %v", video, err)
 			return 1
 		}
@@ -220,11 +221,17 @@ func runPipeline(opts *cliOptions) int {
 	}
 
 	// serve
+	tracker, err := status.NewTracker(cfg.StateDir())
+	if err != nil {
+		logging.Warnf("Cannot write status file (dashboard will be unavailable): %v", err)
+	}
 	w := watcher.New(cfg, func(path string) {
-		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, transcribeFn, analyzeFn); err != nil {
+		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, tracker, transcribeFn, analyzeFn); err != nil {
 			logging.Errorf("Failed to process %s: %v", path, err)
+			tracker.Fail(path, err.Error())
 		}
 	})
+	w.Tracker = tracker
 	if err := w.Run(ctx); err != nil {
 		logging.Errorf("%v", err)
 		return 1

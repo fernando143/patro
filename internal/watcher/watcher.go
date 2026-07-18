@@ -21,6 +21,7 @@ import (
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/status"
 )
 
 // WaitUntilStable reports whether the file size stayed identical across
@@ -55,6 +56,10 @@ func WaitUntilStable(path string, checks int, interval time.Duration) bool {
 type Watcher struct {
 	cfg       *config.Config
 	processFn func(path string)
+
+	// Tracker publishes queue/processing state for the dashboard. It is
+	// optional and safe to leave nil (all its methods are nil-safe).
+	Tracker *status.Tracker
 
 	// interval overrides the stability-probe interval when > 0; Config only
 	// stores whole seconds, which is too coarse for tests.
@@ -195,6 +200,7 @@ func (w *Watcher) submitAsync(path string) {
 		logging.Infof("New recording detected: %s (waiting for it to finish writing)", name)
 		if WaitUntilStable(path, w.cfg.StabilityChecks, w.stabilityInterval()) {
 			logging.Infof("File stable, enqueueing: %s", name)
+			w.Tracker.Enqueue(path)
 			w.queue <- path
 		} else {
 			logging.Warnf("File vanished before stabilizing: %s", name)
@@ -207,10 +213,12 @@ func (w *Watcher) submitAsync(path string) {
 func (w *Watcher) worker() {
 	defer w.workerWG.Done()
 	for path := range w.queue {
+		w.Tracker.Dequeue(path)
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					logging.Errorf("Failed to process %s: %v", path, r)
+					w.Tracker.Fail(path, fmt.Sprintf("panic: %v", r))
 				}
 			}()
 			w.processFn(path)

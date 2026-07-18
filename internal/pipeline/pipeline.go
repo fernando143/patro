@@ -21,6 +21,7 @@ import (
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/state"
+	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/transcriber"
 	"github.com/fernando143/patro/internal/types"
 )
@@ -124,7 +125,7 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 // ProcessVideo processes one video end to end. It returns the meeting note
 // path, or "" when the file was skipped (already processed). Errors are
 // propagated to the caller, which logs them.
-func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st *state.State, tf TranscribeFunc, af AnalyzeFunc) (string, error) {
+func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st *state.State, tracker *status.Tracker, tf TranscribeFunc, af AnalyzeFunc) (string, error) {
 	if st.IsProcessed(videoPath) {
 		logging.Infof("Skipping %s (already processed)", filepath.Base(videoPath))
 		return "", nil
@@ -136,14 +137,18 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 		return "", err
 	}
 
+	tracker.Start(videoPath)
+	tracker.Stage(status.StageTranscribing)
 	transcript, err := tf(ctx, videoPath, cfg)
 	if err != nil {
 		return "", err
 	}
+	tracker.Stage(status.StageAnalyzing)
 	analysis, err := af(ctx, transcript, lib.ExistingTopics())
 	if err != nil {
 		return "", err
 	}
+	tracker.Stage(status.StageWriting)
 	notePath, err := lib.AddMeeting(transcript, analysis, videoPath)
 	if err != nil {
 		return "", err
@@ -153,5 +158,6 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 		return "", err
 	}
 	logging.Infof("Done: %s -> %s", filepath.Base(videoPath), notePath)
+	tracker.Done(videoPath, analysis.Title)
 	return notePath, nil
 }
