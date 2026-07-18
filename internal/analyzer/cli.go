@@ -44,6 +44,7 @@ const cliTimeoutSeconds = 600
 // and parses its answer.
 func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef, cfg *config.Config) (*types.AnalysisResult, error) {
 	var binaryPath, lowerName, parseName, notFoundMsg string
+	var extraArgs []string
 	switch strings.ToLower(strings.TrimSpace(cfg.AnalyzerBackend)) {
 	case "kimi":
 		binaryPath, lowerName, parseName = cfg.KimiPath, "kimi", "Kimi"
@@ -55,6 +56,9 @@ func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types
 		)
 	case "claude":
 		binaryPath, lowerName, parseName = cfg.ClaudePath, "claude", "Claude"
+		// Claude Code CLI rejects `--print --output-format=stream-json`
+		// unless --verbose is also passed.
+		extraArgs = []string{"--verbose"}
 		notFoundMsg = fmt.Sprintf(
 			"'%s' executable not found. Install Claude Code CLI, "+
 				"adjust claude_path in config.yaml, or switch analyzer_backend to kimi/lemur.",
@@ -73,7 +77,7 @@ func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types
 	prompt := BuildPrompt(existing, t.Language, transcriptFile)
 	logging.Infof("Running %s analysis over transcript %s (%s) ...", parseName, t.ID, transcriptFile)
 
-	stdout, err := runCLI(ctx, binaryPath, prompt, cfg.Dir, lowerName, notFoundMsg)
+	stdout, err := runCLI(ctx, binaryPath, prompt, cfg.Dir, lowerName, notFoundMsg, extraArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -110,15 +114,17 @@ func writeTranscriptFile(t *types.TranscriptResult, stateDir string) (string, er
 	return path, nil
 }
 
-// runCLI executes `<binary> -p <prompt> --output-format stream-json` in
-// workDir and returns its stdout. Mirrors kimi_analyzer._run_kimi and
-// claude_analyzer._run_claude: missing binary, timeout and non-zero exit
-// (with stderr truncated to 1000 characters) each raise a clear error.
-func runCLI(ctx context.Context, binaryPath, prompt, workDir, lowerName, notFoundMsg string) (string, error) {
+// runCLI executes `<binary> -p <prompt> --output-format stream-json
+// [extraArgs...]` in workDir and returns its stdout. Mirrors
+// kimi_analyzer._run_kimi and claude_analyzer._run_claude: missing binary,
+// timeout and non-zero exit (with stderr truncated to 1000 characters) each
+// raise a clear error.
+func runCLI(ctx context.Context, binaryPath, prompt, workDir, lowerName, notFoundMsg string, extraArgs ...string) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, cliTimeoutSeconds*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, binaryPath, "-p", prompt, "--output-format", "stream-json")
+	args := append([]string{"-p", prompt, "--output-format", "stream-json"}, extraArgs...)
+	cmd := exec.CommandContext(runCtx, binaryPath, args...)
 	cmd.Dir = workDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -150,7 +156,9 @@ func runCLI(ctx context.Context, binaryPath, prompt, workDir, lowerName, notFoun
 }
 
 // assistantText concatenates the text of every assistant message in the
-// JSONL stream. Mirrors kimi_analyzer._assistant_text.
+// JSONL stream. Mirrors kimi_analyzer._assistant_text. Handles both flat
+// messages ({"role":"assistant","content":...}) and the Claude Code envelope
+// ({"type":"assistant","message":{"role":"assistant","content":...}}).
 func assistantText(streamJSONStdout string) string {
 	var chunks []string
 	for _, line := range strings.Split(streamJSONStdout, "\n") {
@@ -161,6 +169,9 @@ func assistantText(streamJSONStdout string) string {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
 			continue
+		}
+		if msg, ok := obj["message"].(map[string]any); ok {
+			obj = msg
 		}
 		if role, _ := obj["role"].(string); role != "assistant" {
 			continue

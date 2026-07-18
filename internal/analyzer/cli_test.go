@@ -46,6 +46,17 @@ not valid JSON at all
 	}
 }
 
+func TestAssistantTextClaudeCodeEnvelope(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"nested one"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ignored"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"},{"type":"text","text":"nested two"}]}}
+{"type":"result","subtype":"success","result":"final"}`
+	if got := assistantText(stream); got != "nested one\nnested two" {
+		t.Errorf("assistantText = %q, want %q", got, "nested one\nnested two")
+	}
+}
+
 func TestAssistantTextEmpty(t *testing.T) {
 	if got := assistantText("\n \n\t\n"); got != "" {
 		t.Errorf("assistantText = %q, want empty", got)
@@ -179,6 +190,40 @@ func TestAnalyzeCLISuccess(t *testing.T) {
 	// The temporary transcript file is always removed afterwards.
 	if _, err := os.Stat(transcriptFile); !os.IsNotExist(err) {
 		t.Errorf("transcript file %q should have been removed", transcriptFile)
+	}
+}
+
+func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
+	dir := t.TempDir()
+
+	// Claude Code emits the nested envelope and requires --verbose with
+	// `-p --output-format stream-json`; the fake fails without it.
+	script := "#!/bin/sh\n" +
+		"{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\n" +
+		"case \" $* \" in *' --verbose '*) ;; *) echo 'Error: When using --print, --output-format=stream-json requires --verbose' >&2; exit 1;; esac\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromClaude\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"claude-topic\\\"}]}\"}]}}'\n"
+	claudePath := writeFakeCLI(t, dir, "fake-claude", script)
+
+	cfg := &config.Config{Dir: dir, AnalyzerBackend: "claude", ClaudePath: claudePath}
+	tr := &types.TranscriptResult{ID: "mtg-claude", Language: "en", Text: "transcript"}
+
+	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	if err != nil {
+		t.Fatalf("AnalyzeCLI: %v", err)
+	}
+	if result.Title != "FromClaude" {
+		t.Errorf("Title = %q, want %q", result.Title, "FromClaude")
+	}
+	if len(result.Topics) != 1 || result.Topics[0].Slug != "claude-topic" {
+		t.Errorf("Topics = %v", result.Topics)
+	}
+
+	invocation, err := os.ReadFile(filepath.Join(dir, "invocation.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(invocation); !strings.HasSuffix(text, "--output-format\nstream-json\n--verbose\n") {
+		t.Errorf("invocation should end with --output-format stream-json --verbose, got %q", text[max(0, len(text)-80):])
 	}
 }
 
