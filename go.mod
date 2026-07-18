@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/AssemblyAI/assemblyai-go-sdk v1.10.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/yuin/goldmark v1.8.4
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 )
