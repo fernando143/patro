@@ -42,10 +42,26 @@ func TestServeHTTP(t *testing.T) {
 		wantContains []string
 	}{
 		{
-			name:         "root renders index.md",
-			path:         "/",
+			name:       "root renders index.md",
+			path:       "/",
+			wantStatus: http.StatusOK,
+			wantContains: []string{
+				"<h1>Knowledge library</h1>",
+				`href="topics/roadmap.md"`,
+				// Sidebar sections and links.
+				`<div class="section">Topics</div>`,
+				`<div class="section">Meetings</div>`,
+				`href="/topics/roadmap.md">Roadmap</a>`,
+				`href="/meetings/2026-07-18-x.md">Kickoff</a>`,
+				// Home entry active on the index page.
+				`class="home active"`,
+			},
+		},
+		{
+			name:         "sidebar highlights the active topic",
+			path:         "/topics/roadmap.md",
 			wantStatus:   http.StatusOK,
-			wantContains: []string{"<h1>Knowledge library</h1>", `href="topics/roadmap.md"`},
+			wantContains: []string{`<a class="active" href="/topics/roadmap.md">Roadmap</a>`},
 		},
 		{
 			name:         "markdown file rendered to html",
