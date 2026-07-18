@@ -1,0 +1,55 @@
+version: 2
+
+project_name: patro
+
+builds:
+  - main: ./cmd/patro
+    binary: patro
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "patro_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: fernando143
+    name: patro
+
+brews:
+  - name: patro
+    repository:
+      owner: fernando143
+      name: patro
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/fernando143/patro
+    description: "Watch an OBS recordings folder, transcribe meetings with AssemblyAI and distill them into a Markdown knowledge library"
+    install: |
+      bin.install "patro"
+    service: |
+      run [opt_bin/"patro", "serve"]
+      keep_alive true
+      log_path var/"log/patro.log"
+      error_log_path var/"log/patro.log"
+    caveats: |
+      To get started:
+        1. Run `patro init` to create the config at ~/.config/patro/config.yaml
+        2. Set your AssemblyAI API key: export ASSEMBLYAI_API_KEY=<your-key>
+        3. Optionally run the watcher in the background: brew services start patro

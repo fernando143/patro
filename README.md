@@ -1,6 +1,6 @@
-# patro-scriber
+# patro
 
-`patro-scriber` is a small, local Python service that turns your meeting recordings into a growing Markdown knowledge library.
+`patro` is a small, local service written in Go that turns your meeting recordings into a growing Markdown knowledge library.
 
 It watches a folder for new videos (for example, where OBS Studio saves your recordings), sends the audio to [AssemblyAI](https://www.assemblyai.com/) for transcription, and then asks a local AI — [Kimi Code CLI](https://www.kimi.com/code) or [Claude Code CLI](https://claude.ai/download) — to write structured notes. The results are saved locally and organized by topic.
 
@@ -18,101 +18,106 @@ knowledge/
 
 ## What you need before installing
 
-- **Python 3.11 or newer**
 - **Linux or macOS** (Windows is not supported yet)
 - An **[AssemblyAI](https://www.assemblyai.com/) API key** — transcription runs through their service
 - Either **Kimi Code CLI** or **Claude Code CLI** installed locally, if you want to use a local AI to write the notes
+- **Homebrew**, for the recommended install (or Go 1.26+ to build from source)
 
 ## Quick install (recommended)
 
-The easiest way to install `patro-scriber` is the interactive wizard. It will:
-
-1. Create a Python virtual environment.
-2. Ask for your AssemblyAI API key.
-3. Ask where your recordings folder is.
-4. Ask where to write the knowledge library.
-5. Ask whether you want to use Kimi or Claude as the note writer.
-6. Install and start a user-level background service.
-
 ```bash
-git clone https://github.com/fernando143/patro.git
-cd patro
-python3 install-wizard.py
+brew tap fernando143/patro https://github.com/fernando143/patro.git
+brew install patro
 ```
 
-The wizard uses a simple TUI built with [Rich](https://github.com/Textualize/rich). Just follow the prompts.
+Then run the interactive setup wizard:
+
+```bash
+patro init
+```
+
+The wizard will:
+
+1. Ask for your AssemblyAI API key.
+2. Ask where your recordings folder is.
+3. Ask where to write the knowledge library.
+4. Ask whether you want to use Kimi or Claude as the note writer (and locate the CLI binary).
+5. Write the config file.
+6. Optionally install and start a user-level background service.
 
 After it finishes, the service is already running. Check the logs:
 
-- **Linux**: `journalctl --user -u scribe -f`
-- **macOS**: `tail -f /tmp/scribe.out.log /tmp/scribe.err.log`
+- **Linux**: `journalctl --user -u patro -f`
+- **macOS**: `log stream --predicate 'process == "patro"'` (or watch the log file configured in the plist)
 
 Check the service status:
 
-- **Linux**: `systemctl --user status scribe`
-- **macOS**: `launchctl list | grep com.scribe`
+- **Linux**: `systemctl --user status patro`
+- **macOS**: `launchctl list | grep com.patro`
+
+### Running via `brew services`
+
+The formula ships a service that runs `patro serve` and logs to Homebrew's `var/log/patro.log`:
+
+```bash
+brew services start patro
+```
+
+Note that the `brew services` environment does not include your API key. The key must come from the environment — for example, use the service installed by `patro init` instead (which stores the key in a systemd `override.conf` on Linux or in the LaunchAgent plist on macOS), or otherwise export `ASSEMBLYAI_API_KEY` in the service environment.
 
 ## Manual setup
 
-If you prefer not to use the wizard:
+If you prefer not to use the wizard, create a config file yourself. `patro` looks for configuration in this order:
 
-```bash
-cd patro
-python3 -m venv .venv
-.venv/bin/pip install -e .
+1. `--config PATH` flag
+2. `./config.yaml` (current directory)
+3. `~/.config/patro/config.yaml`
 
-export ASSEMBLYAI_API_KEY=<your-key>
-```
+Everything relative (`inbox`, `library`, `.state/`, `patro.log`) resolves against the directory containing the config file.
 
-Edit `config.yaml`:
+Config keys:
 
 - `inbox`: absolute path to the folder where recordings appear
-- `library`: absolute path where the knowledge library should be written
+- `library`: path where the knowledge library should be written
+- `video_extensions`: list of extensions that trigger processing
+- `stability_checks` / `stability_interval_seconds`: how long to wait for OBS to finish writing a file
 - `analyzer_backend`: `kimi`, `claude`, or `lemur`
 - `kimi_path` / `claude_path`: absolute path to the CLI binary when running as a service
 
-Then install the service manually:
+The AssemblyAI API key is read only from the `ASSEMBLYAI_API_KEY` environment variable — never put it in `config.yaml`:
 
 ```bash
-install/install.sh
-```
-
-And add the API key to the service:
-
-```bash
-# Linux
-systemctl --user edit scribe
-# Add: [Service] Environment=ASSEMBLYAI_API_KEY=<your-key>
-
-# macOS
-# Edit ~/Library/LaunchAgents/com.scribe.plist and add an EnvironmentVariables dict.
+export ASSEMBLYAI_API_KEY=<your-key>
 ```
 
 ## Usage
 
-After installation, drop or save a video into the configured inbox folder. The service will pick it up once the file stops growing and process it automatically.
+After installation, drop or save a video into the configured inbox folder. The service will pick it up once the file stops growing and process it automatically. Stop the watcher with `SIGINT`/`SIGTERM` (Ctrl+C).
 
-You can also run commands manually. The installed command is `patro-scriber` (`scribe` is also available as an alias):
+You can also run commands manually:
 
 ```bash
 # Process a single file
-.venv/bin/patro-scriber process /absolute/path/to/meeting.mkv
+patro process /absolute/path/to/meeting.mkv
 
 # Watch the inbox forever
-.venv/bin/patro-scriber serve
+patro serve
 
 # Run the full pipeline with fake data, no API calls (great for testing)
-.venv/bin/patro-scriber process --mock /absolute/path/to/any-video.mkv
-.venv/bin/patro-scriber serve --mock
+patro process --mock /absolute/path/to/any-video.mkv
+patro serve --mock
+
+# Print the version
+patro --version
 ```
 
-Already-processed files are tracked in `.state/processed.json` by file name and size, so they are not reprocessed unless the file changes.
+Already-processed files are tracked in `.state/processed.json` (next to the config file) by file name and size, so they are not reprocessed unless the file changes.
 
 ## How it works
 
 1. **Watch**: the `serve` command watches the `inbox` folder for new `.mkv`, `.mp4`, `.mov`, or `.webm` files.
-2. **Stabilize**: because OBS writes files progressively, the service waits until the file size stops changing.
-3. **Transcribe**: the audio is sent to AssemblyAI. A raw transcript with speaker labels is saved under `knowledge/transcripts/`.
+2. **Stabilize**: because OBS writes files progressively, the service waits until the file size is unchanged across `stability_checks` probes spaced `stability_interval_seconds` apart.
+3. **Transcribe**: the audio is sent to AssemblyAI (speaker labels, auto chapters, language detection). A raw transcript with speaker labels is saved under `knowledge/transcripts/`.
 4. **Analyze**: the transcript is passed to the chosen AI backend (Kimi, Claude, or LeMUR), which returns a structured JSON note.
 5. **Write**: a meeting note is saved under `knowledge/meetings/`, topic files are updated under `knowledge/topics/`, and `knowledge/index.md` is regenerated.
 
@@ -121,20 +126,20 @@ Already-processed files are tracked in `.state/processed.json` by file name and 
 Use `--mock` mode to verify the whole pipeline without calling AssemblyAI or any AI backend:
 
 ```bash
-.venv/bin/patro-scriber process --mock /path/to/a/video.mkv
+patro process --mock /path/to/a/video.mkv
 ```
 
-This uses deterministic fake transcripts and analysis, and still writes real output files to `knowledge/`. It is the recommended way to check that the installation works.
+This uses deterministic fake transcripts and analysis, and still writes real output files to the knowledge library. It is the recommended way to check that the installation works.
 
 ## Troubleshooting
 
 ### Service fails with "ASSEMBLYAI_API_KEY is not set"
 
-Re-run the wizard, or manually add the key to the service environment.
+Re-run `patro init`, or manually add the key to the service environment (`systemctl --user edit patro` on Linux, the `EnvironmentVariables` dict in `~/Library/LaunchAgents/com.patro.plist` on macOS).
 
 ### "'kimi' executable not found" or "'claude' executable not found"
 
-Make sure the CLI is installed and that `config.yaml` points to the absolute path of the binary. Systemd services do not read your shell profile, so relative names like `kimi` may not resolve.
+Make sure the CLI is installed and that `config.yaml` points to the absolute path of the binary. Systemd services do not read your shell profile, so relative names like `kimi` may not resolve. `patro init` locates the binary for you.
 
 ### Videos are not being processed
 
@@ -144,17 +149,30 @@ Make sure the CLI is installed and that `config.yaml` points to the absolute pat
 
 ## Development
 
-Install in editable mode:
+Requires Go 1.26 or newer.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
+git clone https://github.com/fernando143/patro.git
+cd patro
+
+go build ./...
+go vet ./...
+go test ./...
+
+# Build the binary and run the smoke test (no API key needed)
+go build -o patro ./cmd/patro
+./patro process --mock /path/to/a/video.mkv
 ```
 
-There is no automated test suite yet. Use `--mock` mode as a smoke test.
+Build a local release snapshot with [GoReleaser](https://goreleaser.com/):
+
+```bash
+goreleaser release --snapshot --clean
+```
 
 ## Security notes
 
-- The AssemblyAI API key is stored only in the service environment, never in `config.yaml` or the repository.
-- The Kimi and Claude backends shell out to your local CLI binaries. Make sure you trust the paths configured in `config.yaml`.
+- The AssemblyAI API key is read only from the `ASSEMBLYAI_API_KEY` environment variable, never from `config.yaml` or the repository.
+- The Kimi and Claude backends shell out to your local CLI binaries with `-p`. Make sure you trust the paths configured in `config.yaml`.
+- Writes stay under the knowledge library and `.state/` directories.
 - Everything runs at user level; no `sudo` is required.

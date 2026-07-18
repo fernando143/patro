@@ -20,3 +20,9 @@ knowledge/
 # IDE
 .vscode/
 .idea/
+
+# Built binary
+/patro
+
+# GoReleaser output
+/dist/
