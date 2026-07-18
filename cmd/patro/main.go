@@ -6,29 +6,35 @@
 //	patro init [--config PATH]
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
+//	patro run web [--port N] [--config PATH]
 //	patro --version
 //
 // init runs the interactive setup wizard. serve watches the configured
-// inbox forever; process handles a single file. --mock skips all AssemblyAI
-// calls and uses deterministic fakes so the whole pipeline can be verified
-// without an API key.
+// inbox forever; process handles a single file. run web starts a local,
+// on-demand web viewer for the knowledge library (Ctrl+C to stop). --mock
+// skips all AssemblyAI calls and uses deterministic fakes so the whole
+// pipeline can be verified without an API key.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/pipeline"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/watcher"
+	"github.com/fernando143/patro/internal/web"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -41,12 +47,18 @@ Usage:
   patro serve [--mock] [--config PATH]    Watch the inbox and process new recordings forever
   patro process <file> [--mock] [--config PATH]
                                           Process a single video file
+  patro run web [--port N] [--config PATH]
+                                          Serve the knowledge library locally (Ctrl+C to stop)
   patro --version                         Print the version and exit
 
 Options:
   --config PATH   Path to config.yaml (default: ./config.yaml or ~/.config/patro/config.yaml)
   --mock          Do not call AssemblyAI; use deterministic fake transcripts/analysis
+  --port N        Port for 'run web' (default: 8765)
 `
+
+// defaultWebPort is the localhost port used by 'patro run web'.
+const defaultWebPort = 8765
 
 // cliOptions holds the parsed command line.
 type cliOptions struct {
@@ -55,7 +67,10 @@ type cliOptions struct {
 	showVersion bool
 	showHelp    bool
 	command     string
-	file        string
+	// file holds the second positional argument: the video file for
+	// "process", or the subcommand name for "run".
+	file string
+	port int
 }
 
 func main() {
@@ -90,6 +105,8 @@ func run(args []string) int {
 		return runInit(opts.configPath)
 	case "serve", "process":
 		return runPipeline(opts)
+	case "run":
+		return runSubcommand(opts)
 	default:
 		fmt.Fprintf(os.Stderr, "patro: unknown command %q\n", opts.command)
 		fmt.Fprint(os.Stderr, usage)
@@ -100,7 +117,7 @@ func run(args []string) int {
 // parseArgs scans args by hand so flags are accepted before or after the
 // subcommand (no external CLI library).
 func parseArgs(args []string) (*cliOptions, error) {
-	opts := &cliOptions{}
+	opts := &cliOptions{port: defaultWebPort}
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -113,6 +130,22 @@ func parseArgs(args []string) (*cliOptions, error) {
 			opts.configPath = args[i]
 		case strings.HasPrefix(arg, "--config="):
 			opts.configPath = strings.TrimPrefix(arg, "--config=")
+		case arg == "--port":
+			i++
+			if i >= len(args) {
+				return nil, errors.New("--port requires a value")
+			}
+			port, err := parsePort(args[i])
+			if err != nil {
+				return nil, err
+			}
+			opts.port = port
+		case strings.HasPrefix(arg, "--port="):
+			port, err := parsePort(strings.TrimPrefix(arg, "--port="))
+			if err != nil {
+				return nil, err
+			}
+			opts.port = port
 		case arg == "--mock":
 			opts.mock = true
 		case arg == "--version":
@@ -197,6 +230,79 @@ func runPipeline(opts *cliOptions) int {
 		return 1
 	}
 	return 0
+}
+
+// parsePort validates a --port value.
+func parsePort(value string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid --port %q: must be a number between 1 and 65535", value)
+	}
+	return port, nil
+}
+
+// runSubcommand dispatches the "run <target>" commands.
+func runSubcommand(opts *cliOptions) int {
+	switch opts.file {
+	case "web":
+		return runWeb(opts)
+	case "":
+		fmt.Fprintln(os.Stderr, "patro: run requires a target (e.g. 'patro run web')")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "patro: unknown run target %q (did you mean 'run web'?)\n", opts.file)
+		return 2
+	}
+}
+
+// runWeb starts the local knowledge-library web viewer and blocks until
+// SIGINT/SIGTERM, then shuts the server down gracefully.
+func runWeb(opts *cliOptions) int {
+	cfg, err := config.Load(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+		return 1
+	}
+	if err := logging.Init(cfg.LogFile()); err != nil {
+		fmt.Fprintf(os.Stderr, "patro: cannot open log file %s: %v\n", cfg.LogFile(), err)
+		return 1
+	}
+
+	if info, err := os.Stat(cfg.Library); err != nil || !info.IsDir() {
+		logging.Errorf("Library directory not found: %s (run patro process/serve first)", cfg.Library)
+		return 1
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
+	server := &http.Server{Addr: addr, Handler: web.NewServer(cfg.Library)}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+
+	logging.Infof("Web viewer serving %s at http://%s (Ctrl+C to stop)", cfg.Library, addr)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			logging.Errorf("web server: %v", err)
+			return 1
+		}
+		return 0
+	case <-ctx.Done():
+		logging.Infof("Shutting down web viewer")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logging.Errorf("web shutdown: %v", err)
+			return 1
+		}
+		return 0
+	}
 }
 
 // expandPath expands a leading "~" and returns the absolute path.
