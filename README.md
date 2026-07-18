@@ -27,6 +27,7 @@ knowledge/
 
 ```bash
 brew tap fernando143/patro https://github.com/fernando143/patro.git
+brew trust fernando143/patro  # recent Homebrew requires trusting third-party taps
 brew install patro
 ```
 
