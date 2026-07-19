@@ -7,13 +7,15 @@
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
 //	patro run web [--port N] [--config PATH]
+//	patro run dashboard [--config PATH]
 //	patro --version
 //
 // init runs the interactive setup wizard. serve watches the configured
 // inbox forever; process handles a single file. run web starts a local,
-// on-demand web viewer for the knowledge library (Ctrl+C to stop). --mock
-// skips all AssemblyAI calls and uses deterministic fakes so the whole
-// pipeline can be verified without an API key.
+// on-demand web viewer for the knowledge library; run dashboard opens the
+// live status TUI (Ctrl+C / q to stop). --mock skips all AssemblyAI calls
+// and uses deterministic fakes so the whole pipeline can be verified
+// without an API key.
 package main
 
 import (
@@ -34,8 +36,11 @@ import (
 	"github.com/fernando143/patro/internal/pipeline"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
+	"github.com/fernando143/patro/internal/tui"
 	"github.com/fernando143/patro/internal/watcher"
 	"github.com/fernando143/patro/internal/web"
+
+	"golang.org/x/term"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -50,6 +55,7 @@ Usage:
                                           Process a single video file
   patro run web [--port N] [--config PATH]
                                           Serve the knowledge library locally (Ctrl+C to stop)
+  patro run dashboard [--config PATH]     Live synthwave status dashboard (q to quit)
   patro --version                         Print the version and exit
 
 Options:
@@ -253,13 +259,33 @@ func runSubcommand(opts *cliOptions) int {
 	switch opts.file {
 	case "web":
 		return runWeb(opts)
+	case "dashboard":
+		return runDashboard(opts)
 	case "":
-		fmt.Fprintln(os.Stderr, "patro: run requires a target (e.g. 'patro run web')")
+		fmt.Fprintln(os.Stderr, "patro: run requires a target ('web' or 'dashboard')")
 		return 2
 	default:
-		fmt.Fprintf(os.Stderr, "patro: unknown run target %q (did you mean 'run web'?)\n", opts.file)
+		fmt.Fprintf(os.Stderr, "patro: unknown run target %q (expected 'web' or 'dashboard')\n", opts.file)
 		return 2
 	}
+}
+
+// runDashboard launches the live synthwave status dashboard.
+func runDashboard(opts *cliOptions) int {
+	cfg, err := config.Load(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+		return 1
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		fmt.Fprintln(os.Stderr, "patro: run dashboard requires an interactive terminal")
+		return 1
+	}
+	if err := tui.Run(cfg, opts.configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "patro: dashboard error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // runWeb starts the local knowledge-library web viewer and blocks until
