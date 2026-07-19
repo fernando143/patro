@@ -17,8 +17,8 @@ The project is intentionally small and self-contained: a single static binary bu
 ## Technology stack
 
 - **Language**: Go 1.26+
-- **Dependencies** (production only): `fsnotify` (inbox watcher), `gopkg.in/yaml.v3` (config parsing), `assemblyai-go-sdk` (transcription + LeMUR), `golang.org/x/text`.
-- **No CLI framework** — command and flag parsing uses the stdlib `flag` package.
+- **Dependencies** (production only): `fsnotify` (inbox watcher), `gopkg.in/yaml.v3` (config parsing), `assemblyai-go-sdk` (transcription + LeMUR), `golang.org/x/text`, `yuin/goldmark` (web viewer Markdown rendering), and the Charm stack — `bubbletea` + `lipgloss` + `bubbles` (dashboard TUI) and `huh` (setup wizard TUI) — plus `golang.org/x/term`.
+- **Command/flag parsing** is hand-rolled in `cmd/patro/main.go` (`parseArgs`), not a CLI framework. The Charm stack is used **only** for the interactive TUIs (`run dashboard`, `init`); the core pipeline stays dependency-light.
 - **Tests**: stdlib `testing`, table-driven style. No other test or lint tooling beyond `gofmt` and `go vet`.
 
 ## Build, test, and run commands
@@ -66,6 +66,8 @@ patro/
 │   ├── transcriber/     # AssemblyAI transcription (assemblyai-go-sdk)
 │   ├── watcher/        # fsnotify-based inbox watcher
 │   ├── web/            # on-demand local web viewer (goldmark) for the library
+│   ├── status/         # live processing state published to .state/status.json
+│   ├── tui/            # synthwave TUIs: dashboard (bubbletea) + wizard theme (huh)
 │   └── pipeline/       # orchestration: ProcessVideo + mocks
 ├── knowledge/           # generated knowledge library (index.md, topics/, meetings/, transcripts/)
 └── .state/processed.json  # deduplication state
@@ -94,12 +96,17 @@ The AssemblyAI API key is **never** stored in `config.yaml`; it is read only fro
 
 ## Runtime architecture
 
-Commands: `patro serve [--mock] [--config PATH]`, `patro process <file> [--mock] [--config PATH]`, `patro init [--config PATH]`, `patro run web [--port N] [--config PATH]`, plus `patro --version`.
+Commands: `patro serve [--mock] [--config PATH]`, `patro process <file> [--mock] [--config PATH]`, `patro init [--config PATH]`, `patro run web [--port N] [--config PATH]`, `patro run dashboard [--config PATH]`, plus `patro --version`.
 
 - **`serve`**: starts an fsnotify watcher on `config.inbox`; stable files are queued and processed sequentially; on startup, existing unprocessed videos in the inbox are scanned and enqueued; runs until SIGINT/SIGTERM; logs to `patro.log` and stdout.
 - **`process`**: processes a single file end to end and exits; skips the file if already recorded in `.state/processed.json` with the same name and size.
-- **`init`**: interactive setup wizard — asks for the AssemblyAI API key, inbox, library, and analyzer backend, locates the CLI binary, writes the config, and optionally installs/starts a user-level background service (systemd user unit on Linux with the key in `override.conf`, LaunchAgent plist on macOS).
+- **`init`**: interactive setup wizard — asks for the AssemblyAI API key, inbox, library, and analyzer backend, locates the CLI binary, writes the config, and optionally installs/starts a user-level background service (systemd user unit on Linux with the key in `override.conf`, LaunchAgent plist on macOS). On an interactive terminal it runs a synthwave `huh` TUI (`runInitTUI`); with no TTY (piped/non-interactive) it falls back to the line-based prompt wizard (`runInitPrompt`).
 - **`run web`**: on-demand, foreground web viewer for the knowledge library (`internal/web`). Renders `.md` to HTML with goldmark, shows `.txt` transcripts as escaped preformatted text, serves everything else raw. Read-only, no external assets/JS, binds to `127.0.0.1:<port>` (default 8765), and shuts down gracefully on Ctrl+C. Not a background service — meant to be started when needed and stopped with Ctrl+C.
+- **`run dashboard`**: on-demand, foreground synthwave status TUI (`internal/tui`, Bubble Tea + Lipgloss). Reads `.state/status.json`, `.state/processed.json`, the service state and the `patro.log` tail on a 1s tick; shows counters (processing/stage, queue, processed total+session, failed), the in-flight job, config + alerts, recent meetings, a focusable failures list, and a colorized follow/scroll log. Keys: `q` quit, `tab` focus, `↑/↓` move, `enter` retry selected failure (spawns `patro process`), `f` follow, `r` refresh, `o`/`w` launch the web viewer. Requires an interactive terminal.
+
+### Live status (`internal/status`)
+
+`serve` owns a `*status.Tracker` that records the live queue, in-flight file + pipeline stage, session processed/failed counts, recent meetings and failures, flushing atomically to `.state/status.json` on every change. It is threaded through the watcher (queue/dequeue/panic-fail) and `pipeline.ProcessVideo` (stage transitions + done); the serve worker reports pipeline failures. **All `Tracker` methods are nil-safe** — the one-shot `process` command passes a nil tracker. This file is the read-only data source for `run dashboard`.
 
 ### Pipeline (`internal/pipeline`)
 
