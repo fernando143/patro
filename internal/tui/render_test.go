@@ -75,3 +75,14 @@ func TestViewDoesNotPanicSmallTerminal(t *testing.T) {
 	m := sampleModel(t, 60, 24)
 	_ = m.View()
 }
+
+func TestSynthwaveHuhThemeBuilds(t *testing.T) {
+	theme := SynthwaveHuhTheme()
+	if theme == nil {
+		t.Fatal("SynthwaveHuhTheme returned nil")
+	}
+	// Focused title should carry our neon magenta foreground.
+	if got := theme.Focused.Title.GetForeground(); got != colorMagenta {
+		t.Errorf("focused title foreground = %v, want %v", got, colorMagenta)
+	}
+}

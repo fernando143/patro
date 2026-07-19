@@ -23,9 +23,10 @@ import (
 	"github.com/fernando143/patro/internal/config"
 )
 
-// runInit runs the interactive setup wizard. flagConfig is the --config
+// runInitPrompt runs the line-based setup wizard used as a fallback when
+// stdin/stdout is not an interactive terminal. flagConfig is the --config
 // value ("" when not given).
-func runInit(flagConfig string) int {
+func runInitPrompt(flagConfig string) int {
 	p := &prompter{reader: bufio.NewReader(os.Stdin)}
 
 	fmt.Println("+------------------------------------------------------+")
@@ -68,10 +69,18 @@ func runInit(flagConfig string) int {
 	}
 	fmt.Println()
 
+	printCompletion(configPath, serviceInstalled)
+	return 0
+}
+
+// printCompletion prints the shared "installation complete" summary for both
+// the TUI and the prompt-based wizards.
+func printCompletion(configPath string, serviceInstalled bool) {
 	fmt.Println("+------------------------------------------------------+")
 	fmt.Println("| Installation complete                                |")
 	fmt.Println("+------------------------------------------------------+")
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Println("Dashboard: patro run dashboard   ·   Web viewer: patro run web")
 	switch runtime.GOOS {
 	case "linux":
 		fmt.Println("View logs: journalctl --user -u patro -f")
@@ -82,7 +91,6 @@ func runInit(flagConfig string) int {
 	if serviceInstalled {
 		fmt.Println("Hint: for Homebrew installs, `brew services start patro` also works.")
 	}
-	return 0
 }
 
 // prompter wraps stdin reading behind question/confirm helpers.
