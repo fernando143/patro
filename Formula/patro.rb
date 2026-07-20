@@ -5,20 +5,20 @@
 class Patro < Formula
   desc "Watch an OBS recordings folder, transcribe meetings with AssemblyAI and distill them into a Markdown knowledge library"
   homepage "https://github.com/fernando143/patro"
-  version "0.2.0"
+  version "0.2.1"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/fernando143/patro/releases/download/v0.2.0/patro_0.2.0_darwin_amd64.tar.gz"
-      sha256 "cde73b4fba032029ef98ba3fd5b4af8c7f05fd9c8d4561eede9ff2ff323d0106"
+      url "https://github.com/fernando143/patro/releases/download/v0.2.1/patro_0.2.1_darwin_amd64.tar.gz"
+      sha256 "3b1e9839ea2be378b26d36316a019ef8eed717e77b685207fcc930f7eee2aec6"
 
       define_method(:install) do
         bin.install "patro"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/fernando143/patro/releases/download/v0.2.0/patro_0.2.0_darwin_arm64.tar.gz"
-      sha256 "59ad8a03405d2fc63867dc2099714ad89a32418719d4b5db3727624fa60a8d97"
+      url "https://github.com/fernando143/patro/releases/download/v0.2.1/patro_0.2.1_darwin_arm64.tar.gz"
+      sha256 "db78ded58d4069a96bf953064755b689b7e68be8bdad2d3b89d103b354d232e4"
 
       define_method(:install) do
         bin.install "patro"
@@ -28,15 +28,15 @@ class Patro < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/fernando143/patro/releases/download/v0.2.0/patro_0.2.0_linux_amd64.tar.gz"
-      sha256 "d9986e465be16b4ffd799c151b29c9cf159d3beeea1fc91ecb7fdfb06b86d934"
+      url "https://github.com/fernando143/patro/releases/download/v0.2.1/patro_0.2.1_linux_amd64.tar.gz"
+      sha256 "aa86a633637ad29e39eb1e7222a0e152d42e6aa05261056f9a1474c479d90832"
       define_method(:install) do
         bin.install "patro"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/fernando143/patro/releases/download/v0.2.0/patro_0.2.0_linux_arm64.tar.gz"
-      sha256 "604d41836cd3308647929b401aaec3e5492ab178df9daab5adaf56fc95fa21c7"
+      url "https://github.com/fernando143/patro/releases/download/v0.2.1/patro_0.2.1_linux_arm64.tar.gz"
+      sha256 "b51aabf8be12854324c8bbd89ddc17575c55e7e59c10af48cfc5899e720b41d9"
       define_method(:install) do
         bin.install "patro"
       end
