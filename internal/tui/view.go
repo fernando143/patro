@@ -66,10 +66,16 @@ func (m model) renderStats() string {
 		processedSession = s.ProcessedSession
 		failed = s.FailedSession
 	}
+	queueValue, queueSub := fmt.Sprint(queue), "esperando"
+	if !m.hasLiveStatus() {
+		// No live snapshot: derive the pending count from the inbox itself so
+		// the card still moves in real time.
+		queueValue, queueSub = fmt.Sprint(m.data.inboxBacklog), "en inbox"
+	}
 
 	cards := []string{
 		statCard("PROCESANDO", processing, m.spinnerOrDash(), colorCyan, inner),
-		statCard("EN COLA", fmt.Sprint(queue), "esperando", colorPurple, inner),
+		statCard("EN COLA", queueValue, queueSub, colorPurple, inner),
 		statCard("PROCESADOS", fmt.Sprint(m.data.processedTotal), fmt.Sprintf("%d esta sesión", processedSession), colorGreen, inner),
 		statCard("FALLADOS", fmt.Sprint(failed), "esta sesión", colorRed, inner),
 	}
@@ -96,6 +102,8 @@ func (m model) renderRow1() string {
 		jobBody = m.spinner.View() + " " + styleAccent.Render(job.File) + "\n" +
 			styleDim.Render("etapa ") + lipgloss.NewStyle().Foreground(colorCyan).Render(string(job.Stage)) +
 			styleDim.Render("  ·  "+elapsed)
+	} else if !m.hasLiveStatus() {
+		jobBody = styleDim.Render("estado en vivo no disponible")
 	} else {
 		jobBody = styleDim.Render("en reposo — sin videos en proceso")
 	}
@@ -118,6 +126,18 @@ func (m model) configBody() string {
 	}
 	if !dirExists(m.cfg.Inbox) {
 		alerts = append(alerts, styleAlert.Render("⚠ inbox no existe"))
+	}
+	switch {
+	case m.data.err != nil:
+		alerts = append(alerts, styleAlert.Render("⚠ status.json ilegible: "+m.data.err.Error()))
+	case m.data.statusMissing && m.data.service == serviceActive:
+		alerts = append(alerts,
+			styleAlert.Render("⚠ el servicio corre pero no publica estado"),
+			styleAlert.Render("  (binario antiguo: reinicia el servicio)"))
+	case m.data.statusMissing:
+		alerts = append(alerts, styleAlert.Render("⚠ sin estado en vivo: inicia patro serve"))
+	case m.data.statusStale:
+		alerts = append(alerts, styleAlert.Render("⚠ estado de una sesión anterior de serve"))
 	}
 	if len(alerts) > 0 {
 		b.WriteString("\n" + strings.Join(alerts, "\n"))
@@ -206,6 +226,12 @@ func (m model) currentJob() *status.Job {
 	return m.data.snap.Current
 }
 
+// hasLiveStatus reports whether the snapshot was written by a serve process
+// that is still running, i.e. its queue/current reflect reality right now.
+func (m model) hasLiveStatus() bool {
+	return m.data.snap != nil && !m.data.statusStale
+}
+
 func (m model) spinnerOrDash() string {
 	if m.currentJob() != nil {
 		return m.spinner.View() + " activo"
@@ -225,7 +251,7 @@ func (m model) serviceLabel() string {
 }
 
 func (m model) uptime() string {
-	if m.data.snap == nil || m.data.snap.StartedAt.IsZero() {
+	if !m.hasLiveStatus() || m.data.snap.StartedAt.IsZero() {
 		return "—"
 	}
 	return formatDuration(time.Since(m.data.snap.StartedAt))

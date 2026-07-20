@@ -2,13 +2,17 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
+	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 )
 
@@ -31,7 +35,18 @@ type logLine struct {
 
 // dashboardData is the full snapshot the view renders, loaded once per tick.
 type dashboardData struct {
-	snap           *status.Snapshot
+	snap *status.Snapshot
+	// statusMissing is true when status.json does not exist at all: no serve
+	// process has ever published live state to this state directory (or the
+	// one running predates the status feature).
+	statusMissing bool
+	// statusStale is true when status.json exists but the serve process that
+	// wrote it is gone; its queue/current are cleared because they describe
+	// work that is no longer running.
+	statusStale bool
+	// inboxBacklog counts unprocessed videos sitting in the inbox. It is only
+	// computed when there is no live snapshot, as a fallback for the queue.
+	inboxBacklog   int
 	processedTotal int
 	log            []logLine
 	service        serviceHealth
@@ -40,7 +55,8 @@ type dashboardData struct {
 
 // loadData reads status.json, processed.json, the log tail and the service
 // health. Individual failures degrade gracefully rather than aborting.
-func loadData(stateDir, logFile string, logTailLines int) dashboardData {
+func loadData(cfg *config.Config, logTailLines int) dashboardData {
+	stateDir := cfg.StateDir()
 	d := dashboardData{}
 
 	snap, err := status.Read(stateDir)
@@ -48,12 +64,62 @@ func loadData(stateDir, logFile string, logTailLines int) dashboardData {
 		d.err = err
 	}
 	d.snap = snap
+	d.statusMissing = snap == nil && err == nil
+	if snap != nil && !processAlive(snap.PID) {
+		// Leftover file from a previous serve run: the queue and in-flight
+		// job describe work that is no longer running, so drop them and keep
+		// only the historical counters and lists.
+		d.statusStale = true
+		snap.Current = nil
+		snap.Queue = nil
+	}
+	if d.snap == nil || d.statusStale {
+		d.inboxBacklog = countInboxBacklog(cfg, stateDir)
+	}
 
 	d.processedTotal = countProcessed(filepath.Join(stateDir, "processed.json"))
-	d.log = tailLog(logFile, logTailLines)
+	d.log = tailLog(cfg.LogFile(), logTailLines)
 	d.service = serviceStatus()
 
 	return d
+}
+
+// processAlive reports whether a process with this PID currently exists. It
+// sends signal 0 (a no-op permission/existence probe); EPERM still proves the
+// process exists. patro's serve and dashboard always run as the same user on
+// the same machine, so this is a reliable liveness check for the snapshot.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// countInboxBacklog counts video files in the inbox not yet recorded in
+// processed.json (same name and size), i.e. the work a healthy serve would
+// pick up. It is the queue fallback when no live snapshot is available.
+func countInboxBacklog(cfg *config.Config, stateDir string) int {
+	entries, err := os.ReadDir(cfg.Inbox)
+	if err != nil {
+		return 0
+	}
+	st := state.New(stateDir)
+	backlog := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(cfg.Inbox, entry.Name())
+		if cfg.IsVideo(path) && !st.IsProcessed(path) {
+			backlog++
+		}
+	}
+	return backlog
 }
 
 // countProcessed returns the number of entries in processed.json.
