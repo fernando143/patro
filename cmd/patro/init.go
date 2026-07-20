@@ -271,10 +271,47 @@ func installService(apiKey, configPath string) bool {
 	}
 }
 
+// serviceExecutablePath returns the patro path a background service should
+// launch. os.Executable resolves symlinks on some platforms, which under
+// Homebrew yields a version-pinned Cellar path that goes stale on the next
+// `brew upgrade`; prefer the stable opt/ symlink when it exists so installed
+// services keep running the current binary.
+func serviceExecutablePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if opt := cellarOptPath(exe); opt != "" {
+		if info, err := os.Stat(opt); err == nil && !info.IsDir() {
+			return opt, nil
+		}
+	}
+	return exe, nil
+}
+
+// cellarOptPath maps a Homebrew Cellar path such as
+// /opt/homebrew/Cellar/patro/0.2.0/bin/patro to its version-independent
+// sibling /opt/homebrew/opt/patro/bin/patro. It returns "" when exe is not a
+// versioned Cellar path.
+func cellarOptPath(exe string) string {
+	sep := string(filepath.Separator)
+	parts := strings.Split(exe, sep)
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] != "Cellar" {
+			continue
+		}
+		mapped := append([]string{}, parts[:i]...)
+		mapped = append(mapped, "opt", parts[i+1]) // keep the formula, drop the version
+		mapped = append(mapped, parts[i+3:]...)
+		return strings.Join(mapped, sep)
+	}
+	return ""
+}
+
 // installLinuxService writes a systemd --user unit plus an API-key
 // drop-in, then enables and starts it.
 func installLinuxService(apiKey, configPath string) bool {
-	exe, err := os.Executable()
+	exe, err := serviceExecutablePath()
 	if err != nil {
 		fmt.Printf("Warning: cannot determine own executable path: %v\n", err)
 		return false
@@ -335,7 +372,7 @@ WantedBy=default.target
 // installMacService writes a LaunchAgent plist (with the API key embedded)
 // and bootstraps it.
 func installMacService(apiKey, configPath string) bool {
-	exe, err := os.Executable()
+	exe, err := serviceExecutablePath()
 	if err != nil {
 		fmt.Printf("Warning: cannot determine own executable path: %v\n", err)
 		return false

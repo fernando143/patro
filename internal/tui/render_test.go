@@ -76,6 +76,52 @@ func TestViewDoesNotPanicSmallTerminal(t *testing.T) {
 	_ = m.View()
 }
 
+func TestViewMissingStatusAlert(t *testing.T) {
+	m := sampleModel(t, 100, 40)
+	d := m.data
+	d.snap = nil
+	d.statusMissing = true
+	d.service = serviceActive
+	d.inboxBacklog = 3
+	nm, _ := m.Update(dataMsg(d))
+	m = nm.(model)
+
+	out := ansiRe.ReplaceAllString(m.View(), "")
+	if !strings.Contains(out, "no publica estado") {
+		t.Error("missing-status alert not rendered for an active service")
+	}
+	if !strings.Contains(out, "en inbox") {
+		t.Error("queue card did not fall back to the inbox backlog")
+	}
+	if !strings.Contains(out, "estado en vivo no disponible") {
+		t.Error("in-flight panel does not flag the missing live status")
+	}
+}
+
+func TestViewStaleStatusAlert(t *testing.T) {
+	m := sampleModel(t, 100, 40)
+	d := m.data
+	d.statusStale = true
+	d.snap.Current = nil
+	d.snap.Queue = nil
+	nm, _ := m.Update(dataMsg(d))
+	m = nm.(model)
+
+	out := ansiRe.ReplaceAllString(m.View(), "")
+	if !strings.Contains(out, "sesión anterior") {
+		t.Error("stale-status alert not rendered")
+	}
+	if !strings.Contains(out, "uptime —") {
+		t.Error("uptime not blanked for a stale snapshot")
+	}
+	if !strings.Contains(out, "estado en vivo no disponible") {
+		t.Error("in-flight panel did not switch to the no-live-status message")
+	}
+	if strings.Contains(out, "etapa analyzing") {
+		t.Error("phantom in-flight job rendered from a stale snapshot")
+	}
+}
+
 func TestSynthwaveHuhThemeBuilds(t *testing.T) {
 	theme := SynthwaveHuhTheme()
 	if theme == nil {

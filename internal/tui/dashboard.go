@@ -89,10 +89,9 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) loadCmd() tea.Cmd {
-	stateDir := m.cfg.StateDir()
-	logFile := m.cfg.LogFile()
+	cfg := m.cfg
 	return func() tea.Msg {
-		return dataMsg(loadData(stateDir, logFile, logTailLines))
+		return dataMsg(loadData(cfg, logTailLines))
 	}
 }
 
