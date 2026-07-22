@@ -7,13 +7,14 @@
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
 //	patro run web [--port N] [--config PATH]
-//	patro run dashboard [--config PATH]
+//	patro run tui [--config PATH]
 //	patro --version
 //
 // init runs the interactive setup wizard. serve watches the configured
 // inbox forever; process handles a single file. run web starts a local,
-// on-demand web viewer for the knowledge library; run dashboard opens the
-// live status TUI (Ctrl+C / q to stop). --mock skips all AssemblyAI calls
+// on-demand web viewer for the knowledge library; run tui opens the menu:
+// the live status dashboard and settings (q / Ctrl+C to quit). --mock skips
+// all AssemblyAI calls
 // and uses deterministic fakes so the whole pipeline can be verified
 // without an API key.
 package main
@@ -25,7 +26,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +34,7 @@ import (
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/pipeline"
+	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/tui"
@@ -55,7 +56,7 @@ Usage:
                                           Process a single video file
   patro run web [--port N] [--config PATH]
                                           Serve the knowledge library locally (Ctrl+C to stop)
-  patro run dashboard [--config PATH]     Live synthwave status dashboard (q to quit)
+  patro run tui [--config PATH]           Menu: live status dashboard and settings
   patro --version                         Print the version and exit
 
 Options:
@@ -214,7 +215,7 @@ func runPipeline(opts *cliOptions) int {
 	defer stop()
 
 	if opts.command == "process" {
-		video := expandPath(opts.file)
+		video := setup.ExpandPath(opts.file)
 		if info, err := os.Stat(video); err != nil || info.IsDir() {
 			logging.Errorf("File not found: %s", video)
 			return 1
@@ -229,7 +230,7 @@ func runPipeline(opts *cliOptions) int {
 	// serve
 	tracker, err := status.NewTracker(cfg.StateDir())
 	if err != nil {
-		logging.Warnf("Cannot write status file (dashboard will be unavailable): %v", err)
+		logging.Warnf("Cannot write status file (the tui dashboard will be unavailable): %v", err)
 	}
 	w := watcher.New(cfg, func(path string) {
 		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, tracker, transcribeFn, analyzeFn); err != nil {
@@ -259,30 +260,30 @@ func runSubcommand(opts *cliOptions) int {
 	switch opts.file {
 	case "web":
 		return runWeb(opts)
-	case "dashboard":
-		return runDashboard(opts)
+	case "tui":
+		return runTUI(opts)
 	case "":
-		fmt.Fprintln(os.Stderr, "patro: run requires a target ('web' or 'dashboard')")
+		fmt.Fprintln(os.Stderr, "patro: run requires a target ('web' or 'tui')")
 		return 2
 	default:
-		fmt.Fprintf(os.Stderr, "patro: unknown run target %q (expected 'web' or 'dashboard')\n", opts.file)
+		fmt.Fprintf(os.Stderr, "patro: unknown run target %q (expected 'web' or 'tui')\n", opts.file)
 		return 2
 	}
 }
 
-// runDashboard launches the live synthwave status dashboard.
-func runDashboard(opts *cliOptions) int {
+// runTUI launches the synthwave menu: status dashboard and settings.
+func runTUI(opts *cliOptions) int {
 	cfg, err := config.Load(opts.configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
 		return 1
 	}
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		fmt.Fprintln(os.Stderr, "patro: run dashboard requires an interactive terminal")
+		fmt.Fprintln(os.Stderr, "patro: run tui requires an interactive terminal")
 		return 1
 	}
 	if err := tui.Run(cfg, opts.configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "patro: dashboard error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "patro: tui error: %v\n", err)
 		return 1
 	}
 	return 0
@@ -336,21 +337,4 @@ func runWeb(opts *cliOptions) int {
 		}
 		return 0
 	}
-}
-
-// expandPath expands a leading "~" and returns the absolute path.
-func expandPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err == nil {
-		switch {
-		case path == "~":
-			path = home
-		case strings.HasPrefix(path, "~/"):
-			path = filepath.Join(home, path[2:])
-		}
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		return abs
-	}
-	return path
 }

@@ -210,7 +210,7 @@ func (m model) renderLog() string {
 
 // renderHelp draws the key hints and any transient toast.
 func (m model) renderHelp() string {
-	keys := styleHelp.Render("q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web")
+	keys := styleHelp.Render("esc menú · q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web")
 	if m.toast != "" && time.Since(m.toastAt) < 6*time.Second {
 		return keys + "\n" + styleActive.Render("» "+m.toast)
 	}

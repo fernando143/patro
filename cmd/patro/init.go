@@ -6,21 +6,18 @@
 //
 // This is a port of scribe/install_wizard.py, minus the Python/venv/pip
 // steps that no longer apply to the Go binary. Prompts use plain bufio +
-// fmt, with no external dependencies beyond gopkg.in/yaml.v3.
+// fmt; the config and service files themselves are written by
+// internal/setup, which the settings TUI shares.
 package main
 
 import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/setup"
 )
 
 // runInitPrompt runs the line-based setup wizard used as a fallback when
@@ -55,8 +52,10 @@ func runInitPrompt(flagConfig string) int {
 	binaryPath := p.promptBinary(backend)
 	fmt.Println()
 
-	configPath := determineConfigPath(flagConfig)
-	if err := writeConfig(configPath, inbox, libraryDir, backend, binaryPath); err != nil {
+	configPath := setup.ConfigPath(flagConfig)
+	if err := setup.WriteConfig(configPath, setup.Values{
+		Inbox: inbox, Library: libraryDir, Backend: backend, BinaryPath: binaryPath,
+	}); err != nil {
 		fmt.Printf("Error: cannot write %s: %v\n", configPath, err)
 		return 1
 	}
@@ -65,7 +64,11 @@ func runInitPrompt(flagConfig string) int {
 
 	serviceInstalled := false
 	if p.confirm("Install and start the background service now?", true) {
-		serviceInstalled = installService(apiKey, configPath)
+		var log []string
+		log, serviceInstalled = setup.InstallService(apiKey, configPath)
+		for _, line := range log {
+			fmt.Println(line)
+		}
 	}
 	fmt.Println()
 
@@ -80,7 +83,7 @@ func printCompletion(configPath string, serviceInstalled bool) {
 	fmt.Println("| Installation complete                                |")
 	fmt.Println("+------------------------------------------------------+")
 	fmt.Printf("Config: %s\n", configPath)
-	fmt.Println("Dashboard: patro run dashboard   ·   Web viewer: patro run web")
+	fmt.Println("TUI: patro run tui   ·   Web viewer: patro run web")
 	switch runtime.GOOS {
 	case "linux":
 		fmt.Println("View logs: journalctl --user -u patro -f")
@@ -154,7 +157,7 @@ func (p *prompter) confirm(label string, def bool) bool {
 func (p *prompter) promptPath(label, def string) string {
 	for {
 		raw := p.required(label, def)
-		path := expandPath(raw)
+		path := setup.ExpandPath(raw)
 		info, err := os.Stat(path)
 		switch {
 		case err == nil && info.IsDir():
@@ -190,281 +193,17 @@ func (p *prompter) promptBackend() string {
 // promptBinary locates the named CLI, letting the user confirm the found
 // path or type an absolute executable path instead.
 func (p *prompter) promptBinary(name string) string {
-	if found, err := exec.LookPath(name); err == nil {
-		if abs, absErr := filepath.Abs(found); absErr == nil {
-			found = abs
-		}
+	if found, err := setup.ResolveBinary(name); err == nil {
 		if p.confirm(fmt.Sprintf("Found '%s' at %s. Use it?", name, found), true) {
 			return found
 		}
 	}
 	for {
 		raw := p.required(fmt.Sprintf("Enter the absolute path to the '%s' executable", name), "")
-		path := expandPath(raw)
+		path := setup.ExpandPath(raw)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			return path
 		}
 		fmt.Printf("'%s' is not an executable file. Please try again.\n", path)
 	}
-}
-
-// determineConfigPath picks the config file to write: the --config value
-// when given, else ./config.yaml when it exists (update in place), else
-// ~/.config/patro/config.yaml.
-func determineConfigPath(flagConfig string) string {
-	path := flagConfig
-	if path == "" {
-		if _, err := os.Stat("config.yaml"); err == nil {
-			path = "config.yaml"
-		} else if userPath := config.UserConfigPath(); userPath != "" {
-			path = userPath
-		} else {
-			path = "config.yaml"
-		}
-	}
-	return expandPath(path)
-}
-
-// writeConfig writes the wizard answers as YAML. An existing file is
-// updated in place: unknown keys already present are preserved.
-func writeConfig(path, inbox, libraryDir, backend, binaryPath string) error {
-	data := map[string]any{}
-	if raw, err := os.ReadFile(path); err == nil {
-		_ = yaml.Unmarshal(raw, &data)
-	}
-	if data == nil {
-		data = map[string]any{}
-	}
-	data["inbox"] = inbox
-	data["library"] = libraryDir
-	data["analyzer_backend"] = backend
-	if backend == "kimi" {
-		data["kimi_path"] = binaryPath
-		delete(data, "claude_path")
-	} else {
-		data["claude_path"] = binaryPath
-		delete(data, "kimi_path")
-	}
-
-	out, err := yaml.Marshal(data)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, out, 0o644)
-}
-
-// installService installs and starts the user-level background service
-// for the current OS. It returns true when the service was set up. Every
-// external command failure is a warning, never fatal to the wizard.
-func installService(apiKey, configPath string) bool {
-	switch runtime.GOOS {
-	case "linux":
-		return installLinuxService(apiKey, configPath)
-	case "darwin":
-		return installMacService(apiKey, configPath)
-	default:
-		fmt.Printf("Unsupported OS: %s. Service installation skipped.\n", runtime.GOOS)
-		return false
-	}
-}
-
-// serviceExecutablePath returns the patro path a background service should
-// launch. os.Executable resolves symlinks on some platforms, which under
-// Homebrew yields a version-pinned Cellar path that goes stale on the next
-// `brew upgrade`; prefer the stable opt/ symlink when it exists so installed
-// services keep running the current binary.
-func serviceExecutablePath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	if opt := cellarOptPath(exe); opt != "" {
-		if info, err := os.Stat(opt); err == nil && !info.IsDir() {
-			return opt, nil
-		}
-	}
-	return exe, nil
-}
-
-// cellarOptPath maps a Homebrew Cellar path such as
-// /opt/homebrew/Cellar/patro/0.2.0/bin/patro to its version-independent
-// sibling /opt/homebrew/opt/patro/bin/patro. It returns "" when exe is not a
-// versioned Cellar path.
-func cellarOptPath(exe string) string {
-	sep := string(filepath.Separator)
-	parts := strings.Split(exe, sep)
-	for i := 0; i+2 < len(parts); i++ {
-		if parts[i] != "Cellar" {
-			continue
-		}
-		mapped := append([]string{}, parts[:i]...)
-		mapped = append(mapped, "opt", parts[i+1]) // keep the formula, drop the version
-		mapped = append(mapped, parts[i+3:]...)
-		return strings.Join(mapped, sep)
-	}
-	return ""
-}
-
-// installLinuxService writes a systemd --user unit plus an API-key
-// drop-in, then enables and starts it.
-func installLinuxService(apiKey, configPath string) bool {
-	exe, err := serviceExecutablePath()
-	if err != nil {
-		fmt.Printf("Warning: cannot determine own executable path: %v\n", err)
-		return false
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Printf("Warning: cannot determine home directory: %v\n", err)
-		return false
-	}
-
-	unitDir := filepath.Join(home, ".config", "systemd", "user")
-	unit := fmt.Sprintf(`[Unit]
-Description=patro: transcribe OBS recordings into a Markdown knowledge library
-After=default.target
-
-[Service]
-Type=simple
-WorkingDirectory=%s
-ExecStart=%s serve --config %s
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-`, filepath.Dir(configPath), exe, configPath)
-
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
-		fmt.Printf("Warning: cannot create %s: %v\n", unitDir, err)
-		return false
-	}
-	unitPath := filepath.Join(unitDir, "patro.service")
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		fmt.Printf("Warning: cannot write %s: %v\n", unitPath, err)
-		return false
-	}
-	fmt.Printf("Wrote %s\n", unitPath)
-
-	overrideDir := filepath.Join(unitDir, "patro.service.d")
-	overridePath := filepath.Join(overrideDir, "override.conf")
-	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
-		fmt.Printf("Warning: cannot create %s: %v\n", overrideDir, err)
-		return true
-	}
-	override := "[Service]\nEnvironment=ASSEMBLYAI_API_KEY=" + apiKey + "\n"
-	if err := os.WriteFile(overridePath, []byte(override), 0o600); err != nil {
-		fmt.Printf("Warning: cannot write %s: %v\n", overridePath, err)
-		return true
-	}
-	fmt.Printf("Wrote API key to %s\n", overridePath)
-
-	runWarn("systemctl", "--user", "daemon-reload")
-	if runWarn("systemctl", "--user", "enable", "--now", "patro") {
-		fmt.Println("Service started and enabled")
-	}
-	return true
-}
-
-// installMacService writes a LaunchAgent plist (with the API key embedded)
-// and bootstraps it.
-func installMacService(apiKey, configPath string) bool {
-	exe, err := serviceExecutablePath()
-	if err != nil {
-		fmt.Printf("Warning: cannot determine own executable path: %v\n", err)
-		return false
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Printf("Warning: cannot determine home directory: %v\n", err)
-		return false
-	}
-
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.patro</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>%s</string>
-        <string>serve</string>
-        <string>--config</string>
-        <string>%s</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>%s</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>ASSEMBLYAI_API_KEY</key>
-        <string>%s</string>
-    </dict>
-
-    <key>KeepAlive</key>
-    <true/>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>/tmp/patro.out.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/tmp/patro.err.log</string>
-</dict>
-</plist>
-`, xmlEscape(exe), xmlEscape(configPath), xmlEscape(filepath.Dir(configPath)), xmlEscape(apiKey))
-
-	plistDir := filepath.Join(home, "Library", "LaunchAgents")
-	if err := os.MkdirAll(plistDir, 0o755); err != nil {
-		fmt.Printf("Warning: cannot create %s: %v\n", plistDir, err)
-		return false
-	}
-	plistPath := filepath.Join(plistDir, "com.patro.plist")
-	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
-		fmt.Printf("Warning: cannot write %s: %v\n", plistPath, err)
-		return false
-	}
-	fmt.Printf("Wrote %s\n", plistPath)
-
-	uid := os.Getuid()
-	// Bootout first in case an older agent is loaded; failure is expected
-	// when nothing is loaded, so its error is ignored entirely.
-	_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/com.patro", uid)).Run()
-	if runWarn("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), plistPath) {
-		fmt.Println("LaunchAgent started")
-	}
-	return true
-}
-
-// runWarn runs an external command, streaming its output; on failure it
-// prints a warning and returns false instead of aborting the wizard.
-func runWarn(name string, args ...string) bool {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("Warning: %s %s failed: %v\n", name, strings.Join(args, " "), err)
-		return false
-	}
-	return true
-}
-
-// xmlEscape escapes the five XML predefined entities for plist strings.
-func xmlEscape(s string) string {
-	r := strings.NewReplacer(
-		"&", "&amp;",
-		"<", "&lt;",
-		">", "&gt;",
-		`"`, "&quot;",
-		"'", "&apos;",
-	)
-	return r.Replace(s)
 }

@@ -44,6 +44,13 @@ type Config struct {
 	KimiPath                 string
 	ClaudePath               string
 	Dir                      string // directory of the config file; base for relative paths
+	Path                     string // resolved config file, "" when none was found
+}
+
+// ValidAnalyzerBackends returns the accepted analyzer_backend values. The
+// result is a copy so callers cannot corrupt validation.
+func ValidAnalyzerBackends() []string {
+	return append([]string(nil), validAnalyzerBackends...)
 }
 
 // yamlConfig mirrors config.yaml. Pointer fields distinguish an absent key
@@ -142,6 +149,7 @@ func Load(flagPath string) (*Config, error) {
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
 		Dir:                      dir,
+		Path:                     configPath,
 	}, nil
 }
 

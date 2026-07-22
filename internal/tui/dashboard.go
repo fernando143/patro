@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/status"
 )
 
@@ -59,25 +60,26 @@ type model struct {
 	ready         bool
 }
 
-// Run starts the dashboard TUI against cfg. configPath is echoed to
-// subprocesses (retry, web viewer). It blocks until the user quits.
-func Run(cfg *config.Config, configPath string) error {
+// newDashboard builds the dashboard model. It is a child of the root TUI
+// model (tui.go), which owns the Bubble Tea program. configPath is echoed to
+// subprocesses (retry, web viewer).
+func newDashboard(cfg *config.Config, configPath string) model {
 	exe, _ := os.Executable()
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colorCyan)
 
-	m := model{
+	return model{
 		cfg:        cfg,
 		configPath: configPath,
 		exePath:    exe,
-		apiKeySet:  strings.TrimSpace(os.Getenv(config.APIKeyEnvVar)) != "",
-		spinner:    sp,
-		followLog:  true,
+		// The alert this drives is about the service's ability to
+		// transcribe, so a key stored in the service environment counts
+		// even though it is absent from this process's env.
+		apiKeySet: strings.TrimSpace(os.Getenv(config.APIKeyEnvVar)) != "" || setup.ServiceAPIKeyConfigured(),
+		spinner:   sp,
+		followLog: true,
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
 }
 
 func (m model) Init() tea.Cmd {
@@ -142,8 +144,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "ctrl+c", "esc":
+	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "esc":
+		return m, func() tea.Msg { return backMsg{} }
 	case "f":
 		m.followLog = !m.followLog
 		if m.followLog {

@@ -7,13 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 	"golang.org/x/term"
 
+	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/tui"
 )
 
@@ -85,8 +84,8 @@ func runInitTUI(flagConfig string) int {
 		return 1
 	}
 
-	inboxPath := expandPath(inbox)
-	libraryPath := expandPath(library)
+	inboxPath := setup.ExpandPath(inbox)
+	libraryPath := setup.ExpandPath(library)
 	for _, p := range []string{inboxPath, libraryPath} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "patro: cannot create %s: %v\n", p, err)
@@ -99,8 +98,10 @@ func runInitTUI(flagConfig string) int {
 		return 1
 	}
 
-	configPath := determineConfigPath(flagConfig)
-	if err := writeConfig(configPath, inboxPath, libraryPath, backend, binaryPath); err != nil {
+	configPath := setup.ConfigPath(flagConfig)
+	if err := setup.WriteConfig(configPath, setup.Values{
+		Inbox: inboxPath, Library: libraryPath, Backend: backend, BinaryPath: binaryPath,
+	}); err != nil {
 		fmt.Printf("Error: cannot write %s: %v\n", configPath, err)
 		return 1
 	}
@@ -108,7 +109,11 @@ func runInitTUI(flagConfig string) int {
 
 	serviceInstalled := false
 	if installSvc {
-		serviceInstalled = installService(apiKey, configPath)
+		var log []string
+		log, serviceInstalled = setup.InstallService(apiKey, configPath)
+		for _, line := range log {
+			fmt.Println(line)
+		}
 	}
 	fmt.Println()
 	printCompletion(configPath, serviceInstalled)
@@ -119,10 +124,7 @@ func runInitTUI(flagConfig string) int {
 // (via a small huh form) when it is not on PATH. The bool is false when the
 // user aborts.
 func resolveBinaryTUI(backend string) (string, bool) {
-	if found, err := exec.LookPath(backend); err == nil {
-		if abs, absErr := filepath.Abs(found); absErr == nil {
-			return abs, true
-		}
+	if found, err := setup.ResolveBinary(backend); err == nil {
 		return found, true
 	}
 
@@ -142,7 +144,7 @@ func resolveBinaryTUI(backend string) (string, bool) {
 		}
 		return "", false
 	}
-	return expandPath(path), true
+	return setup.ExpandPath(path), true
 }
 
 // requiredValidate rejects empty input.
@@ -159,7 +161,7 @@ func dirValidate(s string) error {
 	if strings.TrimSpace(s) == "" {
 		return errors.New("this field is required")
 	}
-	info, err := os.Stat(expandPath(s))
+	info, err := os.Stat(setup.ExpandPath(s))
 	if err == nil && !info.IsDir() {
 		return errors.New("path exists but is not a folder")
 	}
@@ -168,12 +170,5 @@ func dirValidate(s string) error {
 
 // executableValidate requires an existing executable file.
 func executableValidate(s string) error {
-	if strings.TrimSpace(s) == "" {
-		return errors.New("this field is required")
-	}
-	info, err := os.Stat(expandPath(s))
-	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		return errors.New("not an executable file")
-	}
-	return nil
+	return setup.ValidateExecutable(s)
 }

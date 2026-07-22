@@ -1,5 +1,6 @@
-// Package tui holds patro's terminal UIs: the live status dashboard
-// (patro run dashboard) and the shared 80s-synthwave visual theme.
+// Package tui holds patro's terminal UIs: the menu, live status dashboard
+// and settings screens behind `patro run tui`, plus the shared
+// 80s-synthwave visual theme also used by the init wizard.
 package tui
 
 import "github.com/charmbracelet/lipgloss"
