@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -14,28 +15,61 @@ import (
 )
 
 // settingsReserve is the number of rows the settings screen draws around the
-// embedded form (banner, subtitle, blank lines, help).
-const settingsReserve = 8
+// embedded form (banner, step header, detection panel, help).
+const settingsReserve = 12
 
-// backendOptions are the analyzer backends the settings form offers, in
-// display order. The set must match config.ValidAnalyzerBackends.
-var backendOptions = []huh.Option[string]{
-	huh.NewOption("kimi   — local Kimi CLI", "kimi"),
-	huh.NewOption("claude — local Claude CLI", "claude"),
-	huh.NewOption("lemur  — hosted (AssemblyAI)", "lemur"),
+// backendChoice is one analyzer backend as offered by the settings screen.
+type backendChoice struct {
+	value string
+	label string
+	// hosted backends run in AssemblyAI's cloud and need no local binary.
+	hosted bool
 }
 
-// settingsStep is what the screen is doing right now.
+// backendChoices are the backends the settings screen offers, in display
+// order. The set must match config.ValidAnalyzerBackends.
+var backendChoices = []backendChoice{
+	{value: "kimi", label: "kimi   — local Kimi CLI"},
+	{value: "claude", label: "claude — local Claude CLI"},
+	{value: "lemur", label: "lemur  — hosted by AssemblyAI, no local CLI", hosted: true},
+}
+
+// backendOptions builds fresh huh options. huh mutates option state, so the
+// slice must not be shared between forms.
+func backendOptions() []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(backendChoices))
+	for _, c := range backendChoices {
+		opts = append(opts, huh.NewOption(c.label, c.value))
+	}
+	return opts
+}
+
+// isHosted reports whether backend runs in the cloud and needs no CLI path.
+func isHosted(backend string) bool {
+	for _, c := range backendChoices {
+		if c.value == backend {
+			return c.hosted
+		}
+	}
+	return false
+}
+
+// settingsStep is the stage of the settings flow currently on screen. Each
+// stage owns its own form, built when the stage is entered, so every field is
+// seeded with values that are already known — nothing has to be patched into
+// a form that is already on screen.
 type settingsStep int
 
 const (
-	stepForm settingsStep = iota
+	stepBackend settingsStep = iota
+	stepPath
+	stepKey
 	stepSaving
 	stepResult
 )
 
-// submitMsg fires when the form is submitted; saveDoneMsg carries the result
-// of writing the config and updating the service.
+// submitMsg fires when the current step's form is submitted; saveDoneMsg
+// carries the result of writing the config and updating the service.
 type (
 	submitMsg   struct{}
 	saveDoneMsg struct {
@@ -45,33 +79,43 @@ type (
 	}
 )
 
+// settingsValues holds every value bound into a huh form.
+//
+// These live behind a pointer on purpose. Bubble Tea passes models by value,
+// so binding huh's accessors to fields of the model itself would capture the
+// address of a copy that is discarded after the current Update: the form
+// would write the user's answers into a dead stack frame and the live model
+// would never see them.
+type settingsValues struct {
+	backend    string
+	customPath string
+	apiKey     string
+	confirm    bool
+}
+
 // settingsModel edits the analyzer backend and the AssemblyAI API key.
 type settingsModel struct {
-	form      *huh.Form
-	pathInput *huh.Input // kept so the backend switch can re-seed its value
-
-	backend     string
-	lastBackend string
-	binaryPath  string
-	apiKey      string
-	confirm     bool
+	form *huh.Form
+	vals *settingsValues
 
 	cfg        *config.Config
 	configPath string // the --config flag
 	target     string // the config file we actually write
 
+	// detected is the backend CLI found on PATH, "" when the lookup failed.
+	detected    string
+	detectedFor string
+
 	step   settingsStep
 	err    error
-	result string
-
-	width, height int
+	width  int
+	height int
 }
 
-// newSettings builds a fresh settings screen. The root model calls this every
-// time the screen is opened: a huh.Form that has been submitted or aborted
-// ignores later updates and renders nothing, so forms are never reused.
+// newSettings builds a fresh settings screen positioned at the first step.
 func newSettings(cfg *config.Config, flagConfig string, width, height int) (settingsModel, tea.Cmd) {
 	m := settingsModel{
+		vals:       &settingsValues{backend: cfg.AnalyzerBackend},
 		cfg:        cfg,
 		configPath: flagConfig,
 		width:      width,
@@ -80,64 +124,98 @@ func newSettings(cfg *config.Config, flagConfig string, width, height int) (sett
 
 	// Prefer the file config.Load actually resolved. Falling back to
 	// ConfigPath can name a file that does not exist yet, which would move
-	// the state dir on the next load — hence the warning note below.
+	// the state dir on the next load — hence the warning in the header.
 	m.target = cfg.Path
 	if m.target == "" {
 		m.target = setup.ConfigPath(flagConfig)
 	}
-	m.backend = cfg.AnalyzerBackend
-	m.lastBackend = cfg.AnalyzerBackend
-	m.binaryPath = currentBinary(cfg)
 
-	m.pathInput = huh.NewInput().
-		Title("Path to the backend CLI").
-		Description("Auto-detected on PATH. Edit it to use a different binary.").
-		Value(&m.binaryPath).
-		Validate(setup.ValidateExecutable)
+	return m, m.enter(stepBackend)
+}
 
-	var groups []*huh.Group
-	if cfg.Path == "" {
-		groups = append(groups, huh.NewGroup(
-			huh.NewNote().
-				Title("No config file found").
-				Description("Saving will create "+m.target+".\nRun `patro init` first if you want the full setup."),
-		))
+// enter switches to step and builds the form that belongs to it.
+func (m *settingsModel) enter(step settingsStep) tea.Cmd {
+	m.step = step
+	switch step {
+	case stepBackend:
+		m.form = m.backendForm()
+	case stepPath:
+		m.form = m.pathForm()
+	case stepKey:
+		m.form = m.keyForm()
+	default:
+		m.form = nil
+		return nil
 	}
-	groups = append(groups,
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Analyzer backend").
-				Description("Which model writes the knowledge library.").
-				Options(backendOptions...).
-				Value(&m.backend),
-		),
-		huh.NewGroup(m.pathInput).
-			WithHideFunc(func() bool { return m.backend == "lemur" }),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("AssemblyAI API key").
-				Description("Leave blank to keep the current key.\nStored in the service environment, never in config.yaml.").
-				EchoMode(huh.EchoModePassword).
-				Value(&m.apiKey),
-			huh.NewConfirm().
-				Title("Save?").
-				Description("Writes "+m.target+" and restarts the background service.").
-				Value(&m.confirm),
-		),
-	)
+	m.sizeForm()
+	return m.form.Init()
+}
 
-	m.form = huh.NewForm(groups...).
+// newForm applies the shared theme and keymap to a step's groups.
+func newForm(groups ...*huh.Group) *huh.Form {
+	f := huh.NewForm(groups...).
 		WithTheme(SynthwaveHuhTheme()).
 		WithKeyMap(settingsKeyMap()).
 		WithShowHelp(true)
-
 	// Embedded forms get no submit/cancel commands of their own: huh only
 	// assigns them (to tea.Quit / tea.Interrupt) inside its own Run.
-	m.form.SubmitCmd = func() tea.Msg { return submitMsg{} }
-	m.form.CancelCmd = func() tea.Msg { return backMsg{} }
+	f.SubmitCmd = func() tea.Msg { return submitMsg{} }
+	f.CancelCmd = func() tea.Msg { return backMsg{} }
+	return f
+}
 
-	m.sizeForm()
-	return m, m.form.Init()
+func (m *settingsModel) backendForm() *huh.Form {
+	return newForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Analyzer backend").
+			Description("Which model writes the knowledge library.").
+			Options(backendOptions()...).
+			Value(&m.vals.backend),
+	))
+}
+
+// pathForm asks for the CLI path. When the binary was detected the field is
+// optional — an empty answer keeps the detected path — and it is only
+// mandatory when auto-detection came up empty.
+func (m *settingsModel) pathForm() *huh.Form {
+	input := huh.NewInput().Value(&m.vals.customPath)
+
+	if m.detected != "" {
+		input.
+			Title("Custom path (optional)").
+			Description("Leave blank to use the detected binary above.").
+			Placeholder(m.detected).
+			Validate(optionalExecutable)
+	} else {
+		input.
+			Title("Path to the " + m.vals.backend + " executable").
+			Description("Auto-detection failed, so this one is required.\nExample: /usr/local/bin/" + m.vals.backend).
+			Validate(setup.ValidateExecutable)
+	}
+	return newForm(huh.NewGroup(input))
+}
+
+func (m *settingsModel) keyForm() *huh.Form {
+	return newForm(huh.NewGroup(
+		huh.NewInput().
+			Title("AssemblyAI API key").
+			Description("Leave blank to keep the current key.\nStored in the service environment, never in config.yaml.").
+			EchoMode(huh.EchoModePassword).
+			Value(&m.vals.apiKey),
+		huh.NewConfirm().
+			Title("Save these settings?").
+			Description(m.saveSummary()).
+			Value(&m.vals.confirm),
+	))
+}
+
+// optionalExecutable accepts an empty answer, and otherwise requires a real
+// executable.
+func optionalExecutable(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return setup.ValidateExecutable(s)
 }
 
 // settingsKeyMap disables the select's "/" filter. Once filtering is active
@@ -147,6 +225,31 @@ func settingsKeyMap() *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
 	km.Select.Filter = key.NewBinding(key.WithDisabled())
 	return km
+}
+
+// detect looks the backend CLI up on PATH, caching the result per backend.
+func (m *settingsModel) detect() {
+	backend := m.vals.backend
+	if m.detectedFor == backend {
+		return
+	}
+	m.detectedFor = backend
+	m.detected = ""
+	if isHosted(backend) {
+		return
+	}
+	if path, err := setup.ResolveBinary(backend); err == nil {
+		m.detected = path
+	}
+}
+
+// binaryPath is the path that will be written: the user's override when they
+// typed one, otherwise whatever was auto-detected.
+func (m settingsModel) binaryPath() string {
+	if custom := strings.TrimSpace(m.vals.customPath); custom != "" {
+		return setup.ExpandPath(custom)
+	}
+	return m.detected
 }
 
 // currentBinary returns the CLI path configured for cfg's backend.
@@ -171,51 +274,79 @@ func (m settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// esc backs out, discarding changes. Safe to intercept: with the
-		// select filter disabled no huh field binds esc.
+		// esc walks back a step, and leaves the screen from the first one.
+		// Safe to intercept: with the select filter disabled no huh field
+		// binds esc.
 		if msg.String() == "esc" {
-			return m, func() tea.Msg { return backMsg{} }
+			// Bind the command first: advance/back mutate m through a
+			// pointer receiver, and the order in which a return statement
+			// copies m relative to the call is not specified.
+			cmd := m.back()
+			return m, cmd
 		}
 
 	case submitMsg:
-		if !m.confirm {
-			return m, func() tea.Msg { return backMsg{} }
-		}
-		m.step = stepSaving
-		return m, m.saveCmd()
+		cmd := m.advance()
+		return m, cmd
 
 	case saveDoneMsg:
 		if msg.err != nil {
-			m.step = stepResult
 			m.err = msg.err
+			m.step, m.form = stepResult, nil
 			return m, nil
 		}
 		cfg, stored := msg.cfg, msg.apiKeyStored
 		return m, func() tea.Msg { return cfgReloadedMsg{cfg: cfg, apiKeyStored: stored} }
 	}
 
-	if m.step != stepForm || m.form == nil {
+	if m.form == nil {
 		return m, nil
 	}
-
 	fm, cmd := m.form.Update(msg)
 	m.form = fm.(*huh.Form)
-
-	// The path field is prefilled from the backend chosen in the same form.
-	// huh binds input values by pointer but reads that pointer only once,
-	// when Value is called, so re-calling it pushes the newly detected path
-	// into the visible field.
-	if m.backend != m.lastBackend {
-		m.lastBackend = m.backend
-		m.binaryPath = ""
-		if m.backend != "lemur" {
-			if path, err := setup.ResolveBinary(m.backend); err == nil {
-				m.binaryPath = path
-			}
-		}
-		m.pathInput.Value(&m.binaryPath)
-	}
 	return m, cmd
+}
+
+// advance moves to the next step once the current one is submitted.
+func (m *settingsModel) advance() tea.Cmd {
+	switch m.step {
+	case stepBackend:
+		m.detect()
+		// A hosted backend has no binary to point at.
+		if isHosted(m.vals.backend) {
+			m.vals.customPath = ""
+			return m.enter(stepKey)
+		}
+		return m.enter(stepPath)
+
+	case stepPath:
+		return m.enter(stepKey)
+
+	case stepKey:
+		if !m.vals.confirm {
+			return func() tea.Msg { return backMsg{} }
+		}
+		m.step, m.form = stepSaving, nil
+		return m.saveCmd()
+	}
+	return nil
+}
+
+// back steps one screen backwards, leaving settings from the first step.
+func (m *settingsModel) back() tea.Cmd {
+	switch m.step {
+	case stepPath:
+		return m.enter(stepBackend)
+	case stepKey:
+		if isHosted(m.vals.backend) {
+			return m.enter(stepBackend)
+		}
+		return m.enter(stepPath)
+	case stepSaving:
+		// A save in flight cannot be cancelled; ignore the key.
+		return nil
+	}
+	return func() tea.Msg { return backMsg{} }
 }
 
 // sizeForm keeps the embedded form matched to the window. huh only auto-sizes
@@ -235,16 +366,38 @@ func (m *settingsModel) sizeForm() {
 	m.form = m.form.WithWidth(width).WithHeight(height)
 }
 
+// saveSummary describes, in one place, exactly what the confirm step will do.
+func (m settingsModel) saveSummary() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "backend  %s", m.vals.backend)
+	if !isHosted(m.vals.backend) {
+		fmt.Fprintf(&b, "\ncli      %s", orDash(m.binaryPath()))
+	}
+	fmt.Fprintf(&b, "\nconfig   %s", m.target)
+	b.WriteString("\nThe background service is restarted so the change takes effect.")
+	return b.String()
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
 // saveCmd writes the config and updates the service off the UI thread.
 func (m settingsModel) saveCmd() tea.Cmd {
 	target, flagConfig := m.target, m.configPath
-	backend, binary := m.backend, m.binaryPath
-	apiKey := strings.TrimSpace(m.apiKey)
+	backend, binary := m.vals.backend, m.binaryPath()
+	apiKey := strings.TrimSpace(m.vals.apiKey)
 	backendChanged := backend != m.cfg.AnalyzerBackend ||
-		(backend != "lemur" && binary != currentBinary(m.cfg))
+		(!isHosted(backend) && binary != currentBinary(m.cfg))
 
 	return func() tea.Msg {
 		if backendChanged {
+			if !isHosted(backend) && binary == "" {
+				return saveDoneMsg{err: fmt.Errorf("no %s executable found; enter its path", backend)}
+			}
 			if err := setup.SetBackend(target, backend, binary); err != nil {
 				return saveDoneMsg{err: err}
 			}
@@ -279,33 +432,91 @@ func (m settingsModel) View() string {
 	if m.width < 20 {
 		return "cargando…"
 	}
-
 	inner := m.width - 2
-	header := lipgloss.JoinVertical(
-		lipgloss.Left,
-		styleBanner.Render(bannerText),
-		styleSubtitle.Render("settings  ▓▒░"),
+
+	sections := []string{
+		styleBanner.Render(truncate(bannerText, m.width)),
+		styleSubtitle.Render(m.stepLabel()),
 		"",
-	)
+	}
 
 	switch m.step {
 	case stepSaving:
-		body := panelBox("SAVING", colorCyan, inner,
-			styleAccent.Render("Writing config and restarting the service…"))
-		return lipgloss.JoinVertical(lipgloss.Left, header, body)
+		sections = append(sections, panelBox("SAVING", colorCyan, inner,
+			styleAccent.Render("Writing config and restarting the service…")))
 
 	case stepResult:
-		body := panelBox("ERROR", colorRed, inner,
-			styleFail.Render(m.err.Error())+"\n\n"+styleHelp.Render("esc back to menu"))
-		return lipgloss.JoinVertical(lipgloss.Left, header, body)
+		sections = append(sections,
+			panelBox("ERROR", colorRed, inner, styleFail.Render(truncate(m.err.Error(), inner*3))),
+			"",
+			styleHelp.Render("esc back to menu"))
 
 	default:
-		return lipgloss.JoinVertical(
-			lipgloss.Left,
-			header,
-			m.form.View(),
-			"",
-			styleHelp.Render("↑↓/tab move · enter next · esc back (discards changes) · ctrl+c quit"),
-		)
+		if panel := m.detectionPanel(inner); panel != "" {
+			sections = append(sections, panel)
+		}
+		sections = append(sections, m.form.View(), "", styleHelp.Render(m.helpLine()))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// stepLabel names the current step so the flow's length is never a surprise.
+func (m settingsModel) stepLabel() string {
+	total := 3
+	if isHosted(m.vals.backend) {
+		total = 2 // the CLI path step does not apply
+	}
+	switch m.step {
+	case stepBackend:
+		return fmt.Sprintf("settings · step 1/%d — backend", total)
+	case stepPath:
+		return fmt.Sprintf("settings · step 2/%d — cli path", total)
+	case stepKey:
+		return fmt.Sprintf("settings · step %d/%d — api key & save", total, total)
+	case stepSaving:
+		return "settings · saving"
+	default:
+		return "settings"
+	}
+}
+
+// detectionPanel reports the auto-detection result, so the user always knows
+// whether they have to supply a path themselves.
+func (m settingsModel) detectionPanel(inner int) string {
+	if m.step != stepPath && m.step != stepKey {
+		return ""
+	}
+	if isHosted(m.vals.backend) {
+		return panelBox("BACKEND", colorPurple, inner,
+			styleDim.Render(m.vals.backend+" runs in AssemblyAI's cloud — no local CLI needed."))
+	}
+
+	var body, title string
+	border := colorGreen
+	if m.detected != "" {
+		title = "DETECTED"
+		body = styleActive.Render("✓ ") + styleAccent.Render(m.vals.backend) +
+			styleDim.Render(" found at ") + truncate(m.detected, inner-24)
+		if custom := strings.TrimSpace(m.vals.customPath); custom != "" && m.step == stepKey {
+			body += "\n" + styleDim.Render("  overridden by ") + truncate(setup.ExpandPath(custom), inner-20)
+		}
+	} else {
+		title = "NOT DETECTED"
+		border = colorYellow
+		body = styleAlert.Render("⚠ "+m.vals.backend+" was not found on PATH.") + "\n" +
+			styleDim.Render("  Enter its full path below, or install it and reopen settings.")
+	}
+	return panelBox(title, border, inner, body)
+}
+
+func (m settingsModel) helpLine() string {
+	switch m.step {
+	case stepBackend:
+		return "↑↓ choose · enter next · esc back to menu · ctrl+c quit"
+	case stepPath:
+		return "enter next · esc back to backend · ctrl+c quit"
+	default:
+		return "tab move · enter confirm · esc back · ctrl+c quit"
 	}
 }
