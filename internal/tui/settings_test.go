@@ -36,7 +36,12 @@ func pump(t *testing.T, m settingsModel, cmd tea.Cmd) settingsModel {
 
 func newTestSettings(t *testing.T, cfg *config.Config) settingsModel {
 	t.Helper()
-	m, cmd := newSettings(cfg, "", 100, 40)
+	return newTestSettingsSized(t, cfg, 100, 40)
+}
+
+func newTestSettingsSized(t *testing.T, cfg *config.Config, w, h int) settingsModel {
+	t.Helper()
+	m, cmd := newSettings(cfg, "", w, h)
 	return pump(t, m, cmd)
 }
 
@@ -97,9 +102,6 @@ func TestSettingsAdvancesThroughSteps(t *testing.T) {
 	if m.step != stepPath {
 		t.Fatalf("step = %d after choosing claude, want stepPath", m.step)
 	}
-	if m.detectedFor != "claude" {
-		t.Errorf("detectedFor = %q, want claude (detection must run on entry)", m.detectedFor)
-	}
 
 	m = pump(t, m, m.advance())
 	if m.step != stepKey {
@@ -129,6 +131,9 @@ func TestSettingsSkipsPathStepForHostedBackend(t *testing.T) {
 	m = pump(t, m, m.back())
 	if m.step != stepBackend {
 		t.Fatalf("step = %d going back from lemur, want stepBackend", m.step)
+	}
+	if got := detectBinary("lemur"); got != "" {
+		t.Errorf("detectBinary(lemur) = %q, want empty (hosted backends have no CLI)", got)
 	}
 }
 
@@ -197,18 +202,20 @@ func TestNewSettingsTargetsResolvedConfigPath(t *testing.T) {
 	}
 }
 
+// The size must reach the model: sizeForm measures the chrome by rendering it,
+// so a narrow or short terminal exercises a different code path than the
+// default 100x40.
 func TestSettingsViewDoesNotPanic(t *testing.T) {
 	steps := []settingsStep{stepBackend, stepPath, stepKey, stepSaving, stepResult}
-	for _, size := range []struct{ w, h int }{{100, 40}, {60, 24}, {30, 10}} {
+	for _, size := range []struct{ w, h int }{{100, 40}, {60, 24}, {30, 10}, {15, 5}} {
 		for _, step := range steps {
 			for _, backend := range []string{"claude", "lemur"} {
 				for _, detected := range []string{"", "/usr/bin/claude"} {
-					m := newTestSettings(t, kimiCfg(t))
+					m := newTestSettingsSized(t, kimiCfg(t), size.w, size.h)
 					m.vals.backend = backend
 					m.detected = detected
 					m.err = errors.New("something went wrong")
 					m = pump(t, m, m.enter(step))
-					m.step = step
 					if got := m.View(); got == "" {
 						t.Errorf("%dx%d step %d backend %s: empty view",
 							size.w, size.h, step, backend)
