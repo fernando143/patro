@@ -3,7 +3,9 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,10 +15,6 @@ import (
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/setup"
 )
-
-// settingsReserve is the number of rows the settings screen draws around the
-// embedded form (banner, step header, detection panel, help).
-const settingsReserve = 12
 
 // backendChoice is one analyzer backend as offered by the settings screen.
 type backendChoice struct {
@@ -68,6 +66,13 @@ const (
 	stepResult
 )
 
+// stepNames label the steps of the flow for the header.
+var stepNames = map[settingsStep]string{
+	stepBackend: "backend",
+	stepPath:    "cli path",
+	stepKey:     "api key & save",
+}
+
 // submitMsg fires when the current step's form is submitted; saveDoneMsg
 // carries the result of writing the config and updating the service.
 type (
@@ -103,8 +108,7 @@ type settingsModel struct {
 	target     string // the config file we actually write
 
 	// detected is the backend CLI found on PATH, "" when the lookup failed.
-	detected    string
-	detectedFor string
+	detected string
 
 	step   settingsStep
 	err    error
@@ -133,6 +137,16 @@ func newSettings(cfg *config.Config, flagConfig string, width, height int) (sett
 	return m, m.enter(stepBackend)
 }
 
+// flow is the ordered list of steps this backend walks through — the single
+// definition of the sequence, so navigation and the "step N/M" header can
+// never disagree about it. A hosted backend has no CLI path to point at.
+func (m settingsModel) flow() []settingsStep {
+	if isHosted(m.vals.backend) {
+		return []settingsStep{stepBackend, stepKey}
+	}
+	return []settingsStep{stepBackend, stepPath, stepKey}
+}
+
 // enter switches to step and builds the form that belongs to it.
 func (m *settingsModel) enter(step settingsStep) tea.Cmd {
 	m.step = step
@@ -151,10 +165,18 @@ func (m *settingsModel) enter(step settingsStep) tea.Cmd {
 	return m.form.Init()
 }
 
+// Each step builds its own form, so the theme and keymap would otherwise be
+// rebuilt several times per visit. Both are immutable once built — huh's
+// fields copy the structs they need out of them — so one instance is shared.
+var (
+	settingsTheme  = sync.OnceValue(SynthwaveHuhTheme)
+	settingsKeyMap = sync.OnceValue(newSettingsKeyMap)
+)
+
 // newForm applies the shared theme and keymap to a step's groups.
 func newForm(groups ...*huh.Group) *huh.Form {
 	f := huh.NewForm(groups...).
-		WithTheme(SynthwaveHuhTheme()).
+		WithTheme(settingsTheme()).
 		WithKeyMap(settingsKeyMap()).
 		WithShowHelp(true)
 	// Embedded forms get no submit/cancel commands of their own: huh only
@@ -218,36 +240,34 @@ func optionalExecutable(s string) error {
 	return setup.ValidateExecutable(s)
 }
 
-// settingsKeyMap disables the select's "/" filter. Once filtering is active
-// huh binds esc to clearing the filter, which would swallow our back key —
-// and Select.Filtering(false) does not unbind it.
-func settingsKeyMap() *huh.KeyMap {
+// newSettingsKeyMap disables the select's "/" filter. Once filtering is
+// active huh binds esc to clearing the filter, which would swallow our back
+// key — and Select.Filtering(false) does not unbind it.
+func newSettingsKeyMap() *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
 	km.Select.Filter = key.NewBinding(key.WithDisabled())
 	return km
 }
 
-// detect looks the backend CLI up on PATH, caching the result per backend.
-func (m *settingsModel) detect() {
-	backend := m.vals.backend
-	if m.detectedFor == backend {
-		return
-	}
-	m.detectedFor = backend
-	m.detected = ""
+// detectBinary looks the backend CLI up on PATH, returning "" for hosted
+// backends and when the lookup fails.
+func detectBinary(backend string) string {
 	if isHosted(backend) {
-		return
+		return ""
 	}
-	if path, err := setup.ResolveBinary(backend); err == nil {
-		m.detected = path
+	path, err := setup.ResolveBinary(backend)
+	if err != nil {
+		return ""
 	}
+	return path
 }
 
 // binaryPath is the path that will be written: the user's override when they
-// typed one, otherwise whatever was auto-detected.
+// typed one, otherwise whatever was auto-detected. customPath is already
+// expanded — advance does that when the path step is submitted.
 func (m settingsModel) binaryPath() string {
-	if custom := strings.TrimSpace(m.vals.customPath); custom != "" {
-		return setup.ExpandPath(custom)
+	if m.vals.customPath != "" {
+		return m.vals.customPath
 	}
 	return m.detected
 }
@@ -311,16 +331,19 @@ func (m settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *settingsModel) advance() tea.Cmd {
 	switch m.step {
 	case stepBackend:
-		m.detect()
-		// A hosted backend has no binary to point at.
+		m.detected = detectBinary(m.vals.backend)
 		if isHosted(m.vals.backend) {
 			m.vals.customPath = ""
-			return m.enter(stepKey)
 		}
-		return m.enter(stepPath)
 
 	case stepPath:
-		return m.enter(stepKey)
+		// Expand the override once, here, so binaryPath and the detection
+		// panel never redo filesystem work on every frame.
+		if custom := strings.TrimSpace(m.vals.customPath); custom != "" {
+			m.vals.customPath = setup.ExpandPath(custom)
+		} else {
+			m.vals.customPath = ""
+		}
 
 	case stepKey:
 		if !m.vals.confirm {
@@ -329,22 +352,23 @@ func (m *settingsModel) advance() tea.Cmd {
 		m.step, m.form = stepSaving, nil
 		return m.saveCmd()
 	}
+
+	flow := m.flow()
+	if i := slices.Index(flow, m.step); i >= 0 && i+1 < len(flow) {
+		return m.enter(flow[i+1])
+	}
 	return nil
 }
 
 // back steps one screen backwards, leaving settings from the first step.
 func (m *settingsModel) back() tea.Cmd {
-	switch m.step {
-	case stepPath:
-		return m.enter(stepBackend)
-	case stepKey:
-		if isHosted(m.vals.backend) {
-			return m.enter(stepBackend)
-		}
-		return m.enter(stepPath)
-	case stepSaving:
+	if m.step == stepSaving {
 		// A save in flight cannot be cancelled; ignore the key.
 		return nil
+	}
+	flow := m.flow()
+	if i := slices.Index(flow, m.step); i > 0 {
+		return m.enter(flow[i-1])
 	}
 	return func() tea.Msg { return backMsg{} }
 }
@@ -352,14 +376,17 @@ func (m *settingsModel) back() tea.Cmd {
 // sizeForm keeps the embedded form matched to the window. huh only auto-sizes
 // while its own width/height are zero, so once we set them we own sizing.
 func (m *settingsModel) sizeForm() {
-	if m.form == nil || m.width == 0 {
+	if m.form == nil || m.width < 20 {
 		return
 	}
 	width := m.width - 4
 	if width < 20 {
 		width = 20
 	}
-	height := m.height - settingsReserve
+	// Measure the chrome rather than reserving a fixed number of rows: the
+	// detection panel comes and goes and changes height. An empty body
+	// contributes exactly one line to the frame.
+	height := m.height - (lipgloss.Height(m.frame("")) - 1)
 	if height < 6 {
 		height = 6
 	}
@@ -434,51 +461,49 @@ func (m settingsModel) View() string {
 	}
 	inner := m.width - 2
 
+	switch m.step {
+	case stepSaving:
+		return m.frame(panelBox("SAVING", colorCyan, inner,
+			styleAccent.Render("Writing config and restarting the service…")))
+	case stepResult:
+		return m.frame(panelBox("ERROR", colorRed, inner,
+			styleFail.Render(truncate(m.err.Error(), inner*3))))
+	default:
+		return m.frame(m.form.View())
+	}
+}
+
+// frame lays the chrome out around whatever the current step renders. It is
+// the only definition of the layout: sizeForm measures it with an empty body
+// to learn how many rows are left for the form.
+func (m settingsModel) frame(body string) string {
+	inner := m.width - 2
 	sections := []string{
 		styleBanner.Render(truncate(bannerText, m.width)),
 		styleSubtitle.Render(m.stepLabel()),
 		"",
 	}
-
-	switch m.step {
-	case stepSaving:
-		sections = append(sections, panelBox("SAVING", colorCyan, inner,
-			styleAccent.Render("Writing config and restarting the service…")))
-
-	case stepResult:
-		sections = append(sections,
-			panelBox("ERROR", colorRed, inner, styleFail.Render(truncate(m.err.Error(), inner*3))),
-			"",
-			styleHelp.Render("esc back to menu"))
-
-	default:
-		if panel := m.detectionPanel(inner); panel != "" {
-			sections = append(sections, panel)
-		}
-		sections = append(sections, m.form.View(), "", styleHelp.Render(m.helpLine()))
+	if panel := m.detectionPanel(inner); panel != "" {
+		sections = append(sections, panel)
 	}
-
+	sections = append(sections, body, "")
+	if help := m.helpLine(); help != "" {
+		sections = append(sections, styleHelp.Render(help))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 // stepLabel names the current step so the flow's length is never a surprise.
 func (m settingsModel) stepLabel() string {
-	total := 3
-	if isHosted(m.vals.backend) {
-		total = 2 // the CLI path step does not apply
-	}
-	switch m.step {
-	case stepBackend:
-		return fmt.Sprintf("settings · step 1/%d — backend", total)
-	case stepPath:
-		return fmt.Sprintf("settings · step 2/%d — cli path", total)
-	case stepKey:
-		return fmt.Sprintf("settings · step %d/%d — api key & save", total, total)
-	case stepSaving:
+	if m.step == stepSaving {
 		return "settings · saving"
-	default:
+	}
+	flow := m.flow()
+	i := slices.Index(flow, m.step)
+	if i < 0 {
 		return "settings"
 	}
+	return fmt.Sprintf("settings · step %d/%d — %s", i+1, len(flow), stepNames[m.step])
 }
 
 // detectionPanel reports the auto-detection result, so the user always knows
@@ -498,8 +523,8 @@ func (m settingsModel) detectionPanel(inner int) string {
 		title = "DETECTED"
 		body = styleActive.Render("✓ ") + styleAccent.Render(m.vals.backend) +
 			styleDim.Render(" found at ") + truncate(m.detected, inner-24)
-		if custom := strings.TrimSpace(m.vals.customPath); custom != "" && m.step == stepKey {
-			body += "\n" + styleDim.Render("  overridden by ") + truncate(setup.ExpandPath(custom), inner-20)
+		if m.vals.customPath != "" && m.step == stepKey {
+			body += "\n" + styleDim.Render("  overridden by ") + truncate(m.binaryPath(), inner-20)
 		}
 	} else {
 		title = "NOT DETECTED"
@@ -516,6 +541,10 @@ func (m settingsModel) helpLine() string {
 		return "↑↓ choose · enter next · esc back to menu · ctrl+c quit"
 	case stepPath:
 		return "enter next · esc back to backend · ctrl+c quit"
+	case stepSaving:
+		return ""
+	case stepResult:
+		return "esc back to menu"
 	default:
 		return "tab move · enter confirm · esc back · ctrl+c quit"
 	}
