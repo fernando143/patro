@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/status"
@@ -53,21 +52,28 @@ func sampleModel(t *testing.T, w, h int) model {
 }
 
 func TestViewWidthWithinBounds(t *testing.T) {
-	const w = 100
-	m := sampleModel(t, w, 40)
-	out := m.View()
-	if strings.TrimSpace(out) == "" {
-		t.Fatal("empty view")
-	}
-	for i, line := range strings.Split(out, "\n") {
-		if got := lipgloss.Width(line); got > w {
-			t.Errorf("line %d width %d exceeds %d: %q", i, got, w, ansiRe.ReplaceAllString(line, ""))
-		}
+	for _, size := range sizeMatrix {
+		m := sampleModel(t, size.w, size.h)
+		assertNoOverflow(t, "dashboard/live", m.View(), size.w, size.h)
+
+		stale := m.data
+		stale.statusStale = true
+		nm, _ := m.Update(dataMsg(stale))
+		assertNoOverflow(t, "dashboard/stale", nm.(model).View(), size.w, size.h)
+
+		missing := m.data
+		missing.snap = nil
+		missing.statusMissing = true
+		missing.service = serviceActive
+		missing.inboxBacklog = 3
+		nm2, _ := m.Update(dataMsg(missing))
+		assertNoOverflow(t, "dashboard/missing-status", nm2.(model).View(), size.w, size.h)
 	}
 
-	// Dump an ANSI-stripped preview for manual inspection.
+	// Dump an ANSI-stripped preview at a representative size for manual inspection.
 	if dir := os.Getenv("TUI_PREVIEW_DIR"); dir != "" {
-		_ = os.WriteFile(dir+"/dashboard-preview.txt", []byte(ansiRe.ReplaceAllString(out, "")), 0o644)
+		m := sampleModel(t, 100, 40)
+		_ = os.WriteFile(dir+"/dashboard-preview.txt", []byte(ansiRe.ReplaceAllString(m.View(), "")), 0o644)
 	}
 }
 
@@ -119,6 +125,23 @@ func TestViewStaleStatusAlert(t *testing.T) {
 	}
 	if strings.Contains(out, "etapa analyzing") {
 		t.Error("phantom in-flight job rendered from a stale snapshot")
+	}
+}
+
+// resizeLog must early-return when the model is not ready — its viewport is
+// the zero value until the first WindowSizeMsg, and testRoot's dash (used by
+// TestRootRoutesDashboardMsgsWhileAway) is exactly that: a model with no
+// size at all. Computing the log's dimensions before that point would
+// operate on data that is not there yet.
+func TestResizeLogEarlyReturnsWhenNotReady(t *testing.T) {
+	m := model{cfg: &config.Config{AnalyzerBackend: "kimi"}}
+	if m.ready {
+		t.Fatal("test setup: zero-value model must not be ready")
+	}
+	m.resizeLog()
+	if m.log.Width != 0 || m.log.Height != 0 {
+		t.Errorf("resizeLog mutated an unready model's viewport: width=%d height=%d, want both 0",
+			m.log.Width, m.log.Height)
 	}
 }
 

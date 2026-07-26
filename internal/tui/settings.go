@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/setup"
@@ -384,9 +383,8 @@ func (m *settingsModel) sizeForm() {
 		width = 20
 	}
 	// Measure the chrome rather than reserving a fixed number of rows: the
-	// detection panel comes and goes and changes height. An empty body
-	// contributes exactly one line to the frame.
-	height := m.height - (lipgloss.Height(m.frame("")) - 1)
+	// detection panel comes and goes and changes height.
+	height := m.height - reserveRows(m.frame)
 	if height < 6 {
 		height = 6
 	}
@@ -459,7 +457,7 @@ func (m settingsModel) View() string {
 	if m.width < 20 {
 		return "cargando…"
 	}
-	inner := m.width - 2
+	inner := innerWidth(m.width)
 
 	switch m.step {
 	case stepSaving:
@@ -473,24 +471,23 @@ func (m settingsModel) View() string {
 	}
 }
 
-// frame lays the chrome out around whatever the current step renders. It is
-// the only definition of the layout: sizeForm measures it with an empty body
-// to learn how many rows are left for the form.
+// frame lays the shared chrome out around whatever the current step renders.
+// It is the only definition of the layout: sizeForm measures it (via
+// reserveRows) with an empty body to learn how many rows are left for the
+// form.
 func (m settingsModel) frame(body string) string {
-	inner := m.width - 2
-	sections := []string{
-		styleBanner.Render(truncate(bannerText, m.width)),
-		styleSubtitle.Render(m.stepLabel()),
-		"",
+	var panels []string
+	if panel := m.detectionPanel(innerWidth(m.width)); panel != "" {
+		panels = append(panels, panel)
 	}
-	if panel := m.detectionPanel(inner); panel != "" {
-		sections = append(sections, panel)
+	chrome := screenChrome{
+		width:    m.width,
+		height:   m.height,
+		subtitle: m.stepLabel(),
+		panels:   panels,
+		help:     m.helpLine(),
 	}
-	sections = append(sections, body, "")
-	if help := m.helpLine(); help != "" {
-		sections = append(sections, styleHelp.Render(help))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	return chrome.render(body)
 }
 
 // stepLabel names the current step so the flow's length is never a surprise.

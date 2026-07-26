@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // openDashboardMsg and openSettingsMsg ask the root model to switch screens.
@@ -84,14 +83,7 @@ func (m menuModel) View() string {
 		return "cargando…"
 	}
 
-	// The panel's border and padding add 4 columns around the content.
-	inner := m.width/2 - 2
-	if inner < 40 {
-		inner = m.width - 4
-	}
-	if inner > 60 {
-		inner = 60
-	}
+	inner := innerWidth(contentWidth(m.width))
 
 	var body strings.Builder
 	for i, it := range m.items {
@@ -107,25 +99,12 @@ func (m menuModel) View() string {
 		}
 	}
 
-	// Narrow terminals get shorter copy: lipgloss.Place pads every line out
-	// to the widest one, so a single overflowing line would push the whole
-	// menu past the terminal width.
-	subtitle, help := "transcribe · analyze · remember  ▓▒░", "↑↓ move · enter select · q quit"
-	if lipgloss.Width(subtitle) > m.width {
-		subtitle = "▓▒░"
+	chrome := screenChrome{
+		width:    m.width,
+		height:   m.height,
+		subtitle: "transcribe · analyze · remember  ▓▒░",
+		help:     "↑↓ move · enter select · q quit",
+		center:   true,
 	}
-	if lipgloss.Width(help) > m.width {
-		help = "↑↓ · enter · q"
-	}
-
-	box := lipgloss.JoinVertical(
-		lipgloss.Left,
-		styleBanner.Render(truncate(bannerText, m.width)),
-		styleSubtitle.Render(subtitle),
-		"",
-		panelBox("MENU", colorMagenta, inner, body.String()),
-		"",
-		styleHelp.Render(help),
-	)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	return chrome.render(panelBox("MENU", colorMagenta, inner, body.String()))
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -216,10 +217,12 @@ func TestSettingsViewDoesNotPanic(t *testing.T) {
 					m.detected = detected
 					m.err = errors.New("something went wrong")
 					m = pump(t, m, m.enter(step))
-					if got := m.View(); got == "" {
+					out := m.View()
+					if out == "" {
 						t.Errorf("%dx%d step %d backend %s: empty view",
 							size.w, size.h, step, backend)
 					}
+					assertNoOverflow(t, fmt.Sprintf("settings/step-%d/backend-%s", step, backend), out, size.w, size.h)
 				}
 			}
 		}

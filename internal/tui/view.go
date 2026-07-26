@@ -16,12 +16,20 @@ func (m model) View() string {
 	if !m.ready || m.width < 20 {
 		return "cargando dashboard…"
 	}
+	return m.frameWithLog(m.log.View())
+}
+
+// frameWithLog composes the dashboard frame with body as the log panel's
+// content. View() calls it with the live viewport content; resizeLog calls
+// it (via reserveRows) with an empty body to measure how many rows the
+// chrome around the log consumes, replacing the old hardcoded vpReserve.
+func (m model) frameWithLog(body string) string {
 	sections := []string{
 		m.renderHeader(),
 		m.renderStats(),
 		m.renderRow1(),
 		m.renderRow2(),
-		m.renderLog(),
+		m.renderLog(body),
 		m.renderHelp(),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -46,14 +54,16 @@ func (m model) renderHeader() string {
 	return panelStyle.BorderForeground(colorMagenta).Width(inner).Render(line + "\n" + sub)
 }
 
-// renderStats draws the four counter cards.
-func (m model) renderStats() string {
-	total := m.width / 4
-	inner := total - 2
-	if inner < 6 {
-		inner = 6
-	}
+// statCardSpec is the title/value/sub/color for one counter card, decoupled
+// from layout so renderStats can lay the same four cards out at whatever
+// column count fits the terminal.
+type statCardSpec struct {
+	title, value, sub string
+	color             lipgloss.Color
+}
 
+// statCardSpecs builds the four counter cards' content.
+func (m model) statCardSpecs() []statCardSpec {
 	processing := "—"
 	if job := m.currentJob(); job != nil {
 		processing = string(job.Stage)
@@ -73,13 +83,48 @@ func (m model) renderStats() string {
 		queueValue, queueSub = fmt.Sprint(m.data.inboxBacklog), "en inbox"
 	}
 
-	cards := []string{
-		statCard("PROCESANDO", processing, m.spinnerOrDash(), colorCyan, inner),
-		statCard("EN COLA", queueValue, queueSub, colorPurple, inner),
-		statCard("PROCESADOS", fmt.Sprint(m.data.processedTotal), fmt.Sprintf("%d esta sesión", processedSession), colorGreen, inner),
-		statCard("FALLADOS", fmt.Sprint(failed), "esta sesión", colorRed, inner),
+	return []statCardSpec{
+		{"PROCESANDO", processing, m.spinnerOrDash(), colorCyan},
+		{"EN COLA", queueValue, queueSub, colorPurple},
+		{"PROCESADOS", fmt.Sprint(m.data.processedTotal), fmt.Sprintf("%d esta sesión", processedSession), colorGreen},
+		{"FALLADOS", fmt.Sprint(failed), "esta sesión", colorRed},
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+}
+
+// renderStats draws the four counter cards, falling back 4→2→1 columns as
+// splitCols reports each breakpoint infeasible — 4 in a row on wide
+// terminals, a 2x2 grid at medium widths, one per row at the narrow floor.
+func (m model) renderStats() string {
+	specs := m.statCardSpecs()
+	for _, n := range []int{4, 2, 1} {
+		if cols := splitCols(m.width, n, minCardInner); cols != nil {
+			return joinCardGrid(specs, cols)
+		}
+	}
+	// Below splitCols(_, 1, minCardInner)'s own floor (an unrealistically
+	// narrow terminal menu/dashboard already bail out before reaching this
+	// code at): still render one full-width column instead of nothing.
+	return joinCardGrid(specs, []int{max(1, m.width)})
+}
+
+// joinCardGrid lays specs out len(cols) per row, reusing cols for every row
+// so every card in a column shares its width. cols holds each column's
+// on-screen TOTAL width (splitCols' contract: they sum to the terminal
+// width); statCard/panelBox take the Width()-argument, which is 2 columns
+// narrower once the border is added back on render — hence innerWidth.
+func joinCardGrid(specs []statCardSpec, cols []int) string {
+	n := len(cols)
+	rows := make([]string, 0, (len(specs)+n-1)/n)
+	for start := 0; start < len(specs); start += n {
+		end := min(start+n, len(specs))
+		row := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			s := specs[i]
+			row = append(row, statCard(s.title, s.value, s.sub, s.color, innerWidth(cols[i-start])))
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, row...))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // statCard renders a single counter card.
@@ -88,13 +133,9 @@ func statCard(title, value, sub string, color lipgloss.Color, inner int) string 
 	return panelBox(title, color, inner, body)
 }
 
-// renderRow1 draws the in-flight job panel and the config/alerts panel.
+// renderRow1 draws the in-flight job panel and the config/alerts panel,
+// side by side when splitCols allows it, stacked otherwise.
 func (m model) renderRow1() string {
-	leftTotal := m.width / 2
-	rightTotal := m.width - leftTotal
-	leftInner := leftTotal - 2
-	rightInner := rightTotal - 2
-
 	// In-flight job.
 	var jobBody string
 	if job := m.currentJob(); job != nil {
@@ -107,9 +148,19 @@ func (m model) renderRow1() string {
 	} else {
 		jobBody = styleDim.Render("en reposo — sin videos en proceso")
 	}
-	left := panelBox("EN CURSO", colorSunset, leftInner, padLines(jobBody, 2))
+	configBody := m.configBody()
 
-	right := panelBox("CONFIGURACIÓN", colorCyan, rightInner, padLines(m.configBody(), 2))
+	leftTotal, rightTotal := m.width, m.width
+	cols := splitCols(m.width, 2, minPanelInner)
+	if cols != nil {
+		leftTotal, rightTotal = cols[0], cols[1]
+	}
+	left := panelBox("EN CURSO", colorSunset, innerWidth(leftTotal), padLines(jobBody, 2))
+	right := panelBox("CONFIGURACIÓN", colorCyan, innerWidth(rightTotal), padLines(configBody, 2))
+
+	if cols == nil {
+		return lipgloss.JoinVertical(lipgloss.Left, left, right)
+	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
@@ -145,56 +196,95 @@ func (m model) configBody() string {
 	return b.String()
 }
 
-// renderRow2 draws the recent meetings and failures panels.
+// renderRow2 draws the recent meetings and failures panels, side by side
+// when splitCols allows it, stacked otherwise. Both panels grow with
+// listRows(m.height) instead of a fixed 4-item cap, and show a "+N más"
+// indicator when items are truncated so the panel height stays stable.
 func (m model) renderRow2() string {
-	leftTotal := m.width / 2
-	rightTotal := m.width - leftTotal
-	leftInner := leftTotal - 2
-	rightInner := rightTotal - 2
+	n := listRows(m.height)
 
-	// Recent.
-	var recentBody strings.Builder
-	if s := m.data.snap; s != nil && len(s.Recent) > 0 {
-		for i, r := range s.Recent {
-			if i >= 4 {
-				break
-			}
-			fmt.Fprintf(&recentBody, "%s %s\n", styleAccent.Render("•"), truncate(r.Title, leftInner-3))
-		}
-	} else {
-		recentBody.WriteString(styleDim.Render("(sin reuniones aún)"))
+	leftTotal, rightTotal := m.width, m.width
+	cols := splitCols(m.width, 2, minPanelInner)
+	if cols != nil {
+		leftTotal, rightTotal = cols[0], cols[1]
 	}
-	left := panelBox("RECIENTES", colorGreen, leftInner, padLines(strings.TrimRight(recentBody.String(), "\n"), 4))
+	leftInner, rightInner := innerWidth(leftTotal), innerWidth(rightTotal)
 
-	// Failures (focusable).
-	failBorder := colorRed
-	failTitle := "FALLADOS"
-	if m.focus == focusFailures {
-		failTitle = "FALLADOS ◂ enter: reintentar"
+	recentBody := renderRecentBody(m.data.snap, n, leftInner-3)
+	failBody, failTitle := m.renderFailuresBody(n, rightInner-2)
+
+	left := panelBox("RECIENTES", colorGreen, leftInner, padLines(recentBody, n))
+	right := panelBox(failTitle, colorRed, rightInner, padLines(failBody, n))
+
+	if cols == nil {
+		return lipgloss.JoinVertical(lipgloss.Left, left, right)
 	}
-	var failBody strings.Builder
-	failures := m.data.failures()
-	if len(failures) > 0 {
-		for i, f := range failures {
-			if i >= 4 {
-				break
-			}
-			line := truncate(f.File+" — "+f.Reason, rightInner-2)
-			if m.focus == focusFailures && i == m.failSel {
-				failBody.WriteString(styleSelected.Render(" "+line+" ") + "\n")
-			} else {
-				failBody.WriteString(styleFail.Render(line) + "\n")
-			}
-		}
-	} else {
-		failBody.WriteString(styleDim.Render("(sin fallos)"))
-	}
-	right := panelBox(failTitle, failBorder, rightInner, padLines(strings.TrimRight(failBody.String(), "\n"), 4))
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
-// renderLog draws the scrollable, colorized log viewport.
-func (m model) renderLog() string {
+// renderRecentBody lists up to n-1 recent meetings plus a "+N más"
+// indicator when there are more than n, so the panel's height stays stable
+// instead of growing without bound.
+func renderRecentBody(snap *status.Snapshot, n, truncWidth int) string {
+	if snap == nil || len(snap.Recent) == 0 {
+		return styleDim.Render("(sin reuniones aún)")
+	}
+	items := snap.Recent
+	shown, more := listShown(len(items), n)
+
+	var b strings.Builder
+	for i := 0; i < shown; i++ {
+		fmt.Fprintf(&b, "%s %s\n", styleAccent.Render("•"), truncate(items[i].Title, truncWidth))
+	}
+	if more > 0 {
+		fmt.Fprintf(&b, "%s\n", styleDim.Render(fmt.Sprintf("+%d más", more)))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderFailuresBody lists up to n-1 failures plus a "+N más" indicator, and
+// reports the panel title (which grows a hint when the panel is focused).
+func (m model) renderFailuresBody(n, truncWidth int) (body, title string) {
+	title = "FALLADOS"
+	if m.focus == focusFailures {
+		title = "FALLADOS ◂ enter: reintentar"
+	}
+
+	failures := m.data.failures()
+	if len(failures) == 0 {
+		return styleDim.Render("(sin fallos)"), title
+	}
+	shown, more := listShown(len(failures), n)
+
+	var b strings.Builder
+	for i := 0; i < shown; i++ {
+		f := failures[i]
+		line := truncate(f.File+" — "+f.Reason, truncWidth)
+		if m.focus == focusFailures && i == m.failSel {
+			b.WriteString(styleSelected.Render(" "+line+" ") + "\n")
+		} else {
+			b.WriteString(styleFail.Render(line) + "\n")
+		}
+	}
+	if more > 0 {
+		fmt.Fprintf(&b, "%s\n", styleDim.Render(fmt.Sprintf("+%d más", more)))
+	}
+	return strings.TrimRight(b.String(), "\n"), title
+}
+
+// listShown reports how many of total items to render (shown) and how many
+// are left over (more) for a "+N más" indicator, given a panel that can show
+// at most n rows: all of them fit, or n-1 items plus the indicator line.
+func listShown(total, n int) (shown, more int) {
+	if total <= n {
+		return total, 0
+	}
+	return n - 1, total - (n - 1)
+}
+
+// renderLog draws the scrollable, colorized log viewport around body (the
+// live viewport content, or "" when frameWithLog is only being measured).
+func (m model) renderLog(body string) string {
 	inner := m.width - 2
 	mode := "scroll"
 	if m.followLog {
@@ -205,14 +295,15 @@ func (m model) renderLog() string {
 		border = colorCyan
 	}
 	title := fmt.Sprintf("LOG · %s", mode)
-	return panelBox(title, border, inner, m.log.View())
+	return panelBox(title, border, inner, body)
 }
 
-// renderHelp draws the key hints and any transient toast.
+// renderHelp draws the key hints and any transient toast, truncated to the
+// terminal width like every other line in the frame.
 func (m model) renderHelp() string {
-	keys := styleHelp.Render("esc menú · q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web")
+	keys := styleHelp.Render(truncate("esc menú · q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web", m.width))
 	if m.toast != "" && time.Since(m.toastAt) < 6*time.Second {
-		return keys + "\n" + styleActive.Render("» "+m.toast)
+		return keys + "\n" + styleActive.Render(truncate("» "+m.toast, m.width))
 	}
 	return keys
 }
