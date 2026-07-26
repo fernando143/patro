@@ -26,3 +26,7 @@ knowledge/
 
 # GoReleaser output
 /dist/
+
+# Local tooling metadata (gentle-ai, CodeGraph)
+.atl/
+.codegraph/

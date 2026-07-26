@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // pressKey sends a single key to the menu and returns the updated model plus
@@ -78,20 +76,10 @@ func TestMenuQuitItemIsLast(t *testing.T) {
 }
 
 func TestMenuViewWithinBounds(t *testing.T) {
-	for _, size := range []struct{ w, h int }{{100, 40}, {60, 24}, {30, 10}} {
+	for _, size := range sizeMatrix {
 		m := newMenu()
 		nm, _ := m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
 		out := nm.(menuModel).View()
-
-		if strings.TrimSpace(out) == "" {
-			t.Errorf("%dx%d: empty view", size.w, size.h)
-			continue
-		}
-		for i, line := range strings.Split(out, "\n") {
-			if got := lipgloss.Width(line); got > size.w {
-				t.Errorf("%dx%d: line %d width %d exceeds %d: %q",
-					size.w, size.h, i, got, size.w, ansiRe.ReplaceAllString(line, ""))
-			}
-		}
+		assertNoOverflow(t, "menu", out, size.w, size.h)
 	}
 }

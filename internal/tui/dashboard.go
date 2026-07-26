@@ -21,7 +21,6 @@ import (
 const (
 	refreshInterval = time.Second
 	logTailLines    = 400
-	vpReserve       = 22 // rows reserved above the log viewport
 )
 
 // focusArea is the pane currently receiving up/down/enter.
@@ -101,17 +100,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		vpHeight := msg.Height - vpReserve
-		if vpHeight < 3 {
-			vpHeight = 3
-		}
 		if !m.ready {
-			m.log = viewport.New(msg.Width-4, vpHeight)
+			m.log = viewport.New(0, 0)
 			m.ready = true
-		} else {
-			m.log.Width = msg.Width - 4
-			m.log.Height = vpHeight
 		}
+		m.resizeLog()
 		m.refreshLog()
 		return m, nil
 
@@ -123,6 +116,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.failSel >= len(m.data.failures()) {
 			m.failSel = 0
 		}
+		// Alerts/panels appearing or disappearing changes how many rows the
+		// chrome around the log consumes, so the viewport must be resized
+		// here too, not just on WindowSizeMsg.
+		m.resizeLog()
 		m.refreshLog()
 		return m, nil
 
@@ -236,6 +233,20 @@ func (m model) retrySelected() tea.Cmd {
 		}
 		return toastMsg("Reintentando " + file + " …")
 	}
+}
+
+// resizeLog keeps the log viewport's dimensions matched to the terminal and
+// the chrome currently drawn around it. It early-returns when the model is
+// not ready: the viewport is the zero value before the first
+// tea.WindowSizeMsg, and tui_test.go's testRoot builds exactly that kind of
+// model (width 0, not ready) to prove the dashboard's background poll keeps
+// running while another screen is active — there is nothing to resize yet.
+func (m *model) resizeLog() {
+	if !m.ready {
+		return
+	}
+	m.log.Width = innerWidth(contentWidth(m.width)) - 2
+	m.log.Height = max(3, m.height-reserveRows(m.frameWithLog))
 }
 
 // refreshLog rebuilds the viewport content from the current log data.
