@@ -1,5 +1,8 @@
 # patro
 
+[![ci](https://github.com/fernando143/patro/actions/workflows/ci.yml/badge.svg)](https://github.com/fernando143/patro/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/fernando143/patro/branch/main/graph/badge.svg)](https://codecov.io/gh/fernando143/patro)
+
 `patro` is a small, local service written in Go that turns your meeting recordings into a growing Markdown knowledge library.
 
 It watches a folder for new videos (for example, where OBS Studio saves your recordings), sends the audio to [AssemblyAI](https://www.assemblyai.com/) for transcription, and then asks a local AI — [Kimi Code CLI](https://www.kimi.com/code) or [Claude Code CLI](https://claude.ai/download) — to write structured notes. The results are saved locally and organized by topic.

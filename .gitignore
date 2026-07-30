@@ -27,6 +27,9 @@ knowledge/
 # GoReleaser output
 /dist/
 
+# Test coverage output
+coverage.out
+
 # Local tooling metadata (gentle-ai, CodeGraph)
 .atl/
 .codegraph/
