@@ -145,6 +145,20 @@ func TestSetBackendRejectsMalformedYAML(t *testing.T) {
 	}
 }
 
+func TestWriteConfigMkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "nested", "config.yaml")
+
+	err := WriteConfig(path, Values{Inbox: "/in", Library: "/lib", Backend: "kimi", BinaryPath: "/bin/kimi"})
+	if err == nil {
+		t.Error("WriteConfig() error = nil, want error when the parent directory cannot be created")
+	}
+}
+
 func TestWriteConfigSwapsBackendPath(t *testing.T) {
 	path := writeConfigFile(t, fullConfig)
 

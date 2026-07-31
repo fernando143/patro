@@ -54,6 +54,100 @@ func writeSnapshot(t *testing.T, stateDir string, snap status.Snapshot) {
 	}
 }
 
+func TestCountProcessed(t *testing.T) {
+	dir := t.TempDir()
+
+	if got := countProcessed(filepath.Join(dir, "missing.json")); got != 0 {
+		t.Errorf("countProcessed(missing file) = %d, want 0", got)
+	}
+
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := countProcessed(corrupt); got != 0 {
+		t.Errorf("countProcessed(corrupt file) = %d, want 0", got)
+	}
+
+	valid := filepath.Join(dir, "processed.json")
+	if err := os.WriteFile(valid, []byte(`{"a.mkv": {}, "b.mkv": {}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := countProcessed(valid); got != 2 {
+		t.Errorf("countProcessed(valid file) = %d, want 2", got)
+	}
+}
+
+func TestParseLogLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want logLine
+	}{
+		{
+			name: "well-formed INFO line",
+			line: "2026-07-18 19:17:56,504 INFO patro: Processing meeting.mkv ...",
+			want: logLine{Time: "19:17:56", Level: "INFO", Message: "Processing meeting.mkv ..."},
+		},
+		{
+			name: "WARNING line",
+			line: "2026-07-18 19:18:00,000 WARNING patro: disk usage high",
+			want: logLine{Time: "19:18:00", Level: "WARNING", Message: "disk usage high"},
+		},
+		{
+			name: "unrecognized level falls back to raw",
+			line: "2026-07-18 19:18:00,000 DEBUG patro: verbose noise",
+			want: logLine{Raw: "2026-07-18 19:18:00,000 DEBUG patro: verbose noise"},
+		},
+		{
+			name: "too few fields falls back to raw",
+			line: "not a log line",
+			want: logLine{Raw: "not a log line"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseLogLine(tt.line); got != tt.want {
+				t.Errorf("parseLogLine(%q) = %+v, want %+v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTailLogReturnsLastNParsedLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "patro.log")
+	content := "2026-07-18 19:17:56,001 INFO patro: one\n" +
+		"2026-07-18 19:17:56,002 INFO patro: two\n" +
+		"2026-07-18 19:17:56,003 INFO patro: three\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLog(path, 2)
+	if len(got) != 2 {
+		t.Fatalf("tailLog(n=2) returned %d lines, want 2", len(got))
+	}
+	if got[0].Message != "two" || got[1].Message != "three" {
+		t.Errorf("tailLog(n=2) = %+v, want the last two lines", got)
+	}
+}
+
+func TestTailLogMissingFile(t *testing.T) {
+	if got := tailLog(filepath.Join(t.TempDir(), "missing.log"), 10); got != nil {
+		t.Errorf("tailLog(missing file) = %v, want nil", got)
+	}
+}
+
+// serviceStatus shells out to `systemctl --user is-active patro`, a
+// read-only query safe to run for real: this development machine runs an
+// actual, active patro.service, so the result is deterministic here.
+func TestServiceStatusReadsRealService(t *testing.T) {
+	if got := serviceStatus(); got != serviceActive {
+		t.Errorf("serviceStatus() = %v, want serviceActive (this machine's patro.service is running)", got)
+	}
+}
+
 func TestLoadDataMissingStatus(t *testing.T) {
 	cfg := testConfig(t)
 	if err := os.WriteFile(filepath.Join(cfg.Inbox, "new.mkv"), []byte("x"), 0o644); err != nil {

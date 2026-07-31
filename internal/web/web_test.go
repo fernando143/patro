@@ -116,6 +116,81 @@ func TestServeHTTPRejectsNonGet(t *testing.T) {
 	}
 }
 
+// ServeHTTP always Stat()s before dispatching, so serveMarkdown/serveText's
+// own ReadFile error branch (a defensive check against a stat-then-read
+// race) is unreachable through a normal request. Calling the unexported
+// method directly with a path that never existed reaches it.
+func TestServeMarkdownMissingFileIs404(t *testing.T) {
+	srv := NewServer(t.TempDir())
+	req := httptest.NewRequest(http.MethodGet, "/topics/gone.md", nil)
+	rec := httptest.NewRecorder()
+
+	srv.serveMarkdown(rec, req, filepath.Join(srv.Root, "topics", "gone.md"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestServeTextMissingFileIs404(t *testing.T) {
+	srv := NewServer(t.TempDir())
+	req := httptest.NewRequest(http.MethodGet, "/transcripts/gone.txt", nil)
+	rec := httptest.NewRecorder()
+
+	srv.serveText(rec, req, filepath.Join(srv.Root, "transcripts", "gone.txt"))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestListSectionMissingDirReturnsEmpty(t *testing.T) {
+	srv := NewServer(t.TempDir())
+	if got := srv.listSection("topics", false); len(got) != 0 {
+		t.Errorf("listSection(missing dir) = %v, want empty", got)
+	}
+}
+
+func TestListSectionOrdersNewestFirst(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"2026-07-01-a.md", "2026-07-18-b.md"} {
+		full := filepath.Join(root, "meetings", name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("# "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := NewServer(root)
+
+	got := srv.listSection("meetings", true)
+	if len(got) != 2 || got[0].URL != "/meetings/2026-07-18-b.md" {
+		t.Errorf("listSection(newestFirst) = %+v, want the 07-18 entry first", got)
+	}
+}
+
+func TestServeDirReadDirError(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "topics")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+
+	srv := NewServer(root)
+	req := httptest.NewRequest(http.MethodGet, "/topics/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestServeDirListingWithoutIndex(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "topics"), 0o755); err != nil {

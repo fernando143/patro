@@ -371,3 +371,52 @@ func TestParseAnalysisTitleAndListDefaults(t *testing.T) {
 		t.Errorf("Title = %q, want %q", got.Title, "Untitled meeting")
 	}
 }
+
+func TestIsTruthy(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{"nil", nil, false},
+		{"true", true, true},
+		{"false", false, false},
+		{"non-empty string", "x", true},
+		{"empty string", "", false},
+		{"non-zero float", float64(1), true},
+		{"zero float", float64(0), false},
+		{"non-empty slice", []any{1}, true},
+		{"empty slice", []any{}, false},
+		{"non-empty map", map[string]any{"a": 1}, true},
+		{"empty map", map[string]any{}, false},
+		{"unrecognized type defaults true", struct{}{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTruthy(tt.value); got != tt.want {
+				t.Errorf("isTruthy(%#v) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPyStr(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"nil", nil, "None"},
+		{"string", "hello", "hello"},
+		{"true", true, "True"},
+		{"false", false, "False"},
+		{"float", float64(3.5), "3.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pyStr(tt.value); got != tt.want {
+				t.Errorf("pyStr(%#v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}

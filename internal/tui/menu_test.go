@@ -21,6 +21,12 @@ func pressKey(t *testing.T, m menuModel, key string) (menuModel, tea.Msg) {
 	return updated, cmd()
 }
 
+func TestMenuInitIsNil(t *testing.T) {
+	if cmd := newMenu().Init(); cmd != nil {
+		t.Error("menuModel.Init() = non-nil, want nil (no startup work)")
+	}
+}
+
 func TestMenuNavigationClamps(t *testing.T) {
 	m := newMenu()
 	if m.cursor != 0 {

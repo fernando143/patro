@@ -222,6 +222,40 @@ func TestWatcherRecoversProcessPanic(t *testing.T) {
 	}
 }
 
+func TestScanExistingMissingInboxLogsAndReturns(t *testing.T) {
+	cfg := &config.Config{
+		Inbox:           filepath.Join(t.TempDir(), "does-not-exist"),
+		VideoExtensions: []string{".mkv"},
+	}
+	called := false
+	w := New(cfg, func(string) { called = true })
+
+	w.scanExisting()
+
+	if called {
+		t.Error("processFn was called despite a missing inbox directory")
+	}
+}
+
+func TestStabilityIntervalUsesConfigWhenNoOverride(t *testing.T) {
+	cfg := &config.Config{StabilityIntervalSeconds: 7}
+	w := New(cfg, func(string) {})
+
+	if got := w.stabilityInterval(); got != 7*time.Second {
+		t.Errorf("stabilityInterval() = %v, want 7s from config", got)
+	}
+}
+
+func TestStabilityIntervalPrefersOverride(t *testing.T) {
+	cfg := &config.Config{StabilityIntervalSeconds: 7}
+	w := New(cfg, func(string) {})
+	w.interval = 50 * time.Millisecond
+
+	if got := w.stabilityInterval(); got != 50*time.Millisecond {
+		t.Errorf("stabilityInterval() = %v, want the 50ms override", got)
+	}
+}
+
 func TestRunSetupFailure(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {

@@ -1,0 +1,17 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+
+# Excluded: thin adapters around the AssemblyAI SDK. Each function builds a
+# concrete client and makes one real network call with no injectable seam,
+# so there is no meaningful local logic to unit test without hitting the
+# live API.
+ignore:
+  - "internal/analyzer/lemur.go"
+  - "internal/transcriber/transcriber.go"

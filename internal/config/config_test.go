@@ -173,6 +173,150 @@ func TestLoadResolvesRelativePathsAgainstDir(t *testing.T) {
 	}
 }
 
+func TestLoadMalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "inbox: [unclosed\n")
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() succeeded on malformed YAML, want an error")
+	}
+}
+
+func TestLoadEmptyFlagUsesLocalConfigYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "stability_checks: 9\n")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if cfg.StabilityChecks != 9 {
+		t.Errorf("StabilityChecks = %d, want 9 (from ./config.yaml)", cfg.StabilityChecks)
+	}
+	if cfg.Path != filepath.Join(dir, "config.yaml") {
+		t.Errorf("Path = %q, want the local config.yaml", cfg.Path)
+	}
+}
+
+func TestLoadEmptyFlagFallsBackToUserConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userConfigDir := filepath.Join(home, ".config", "patro")
+	if err := os.MkdirAll(userConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, userConfigDir, "stability_checks: 3\n")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noLocalConfig := t.TempDir()
+	if err := os.Chdir(noLocalConfig); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if cfg.StabilityChecks != 3 {
+		t.Errorf("StabilityChecks = %d, want 3 (from the user config path)", cfg.StabilityChecks)
+	}
+}
+
+func TestLoadEmptyFlagNoConfigAnywhereUsesDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if cfg.Path != "" {
+		t.Errorf("Path = %q, want empty when no config file exists anywhere", cfg.Path)
+	}
+	if cfg.Dir != dir {
+		t.Errorf("Dir = %q, want the cwd %q", cfg.Dir, dir)
+	}
+}
+
+func TestValidAnalyzerBackendsReturnsIndependentCopy(t *testing.T) {
+	got := ValidAnalyzerBackends()
+	if len(got) == 0 {
+		t.Fatal("ValidAnalyzerBackends() returned no backends")
+	}
+	got[0] = "corrupted"
+
+	again := ValidAnalyzerBackends()
+	if again[0] == "corrupted" {
+		t.Error("mutating a returned slice corrupted the package's internal list")
+	}
+}
+
+func TestUserConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	want := filepath.Join(home, ".config", "patro", "config.yaml")
+	if got := UserConfigPath(); got != want {
+		t.Errorf("UserConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestAPIKeyMissingAndSet(t *testing.T) {
+	cfg := &Config{}
+
+	t.Setenv(APIKeyEnvVar, "")
+	if _, err := cfg.APIKey(); err == nil {
+		t.Error("APIKey() = nil error, want an error when unset")
+	}
+
+	t.Setenv(APIKeyEnvVar, "  secret-key  ")
+	got, err := cfg.APIKey()
+	if err != nil {
+		t.Fatalf("APIKey() error = %v, want nil", err)
+	}
+	if got != "secret-key" {
+		t.Errorf("APIKey() = %q, want trimmed %q", got, "secret-key")
+	}
+}
+
+func TestBinaryPathOr(t *testing.T) {
+	blank := "   "
+	set := "/opt/bin/kimi"
+
+	if got := binaryPathOr(nil, "fallback"); got != "fallback" {
+		t.Errorf("binaryPathOr(nil) = %q, want fallback", got)
+	}
+	if got := binaryPathOr(&blank, "fallback"); got != "fallback" {
+		t.Errorf("binaryPathOr(blank) = %q, want fallback", got)
+	}
+	if got := binaryPathOr(&set, "fallback"); got != set {
+		t.Errorf("binaryPathOr(set) = %q, want %q", got, set)
+	}
+}
+
 func TestLoadAbsolutePathsAreKept(t *testing.T) {
 	dir := t.TempDir()
 	inbox := filepath.Join(dir, "abs-inbox")

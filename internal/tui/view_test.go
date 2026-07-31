@@ -4,9 +4,31 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fernando143/patro/internal/status"
 )
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"negative clamps to zero", -5 * time.Second, "00:00"},
+		{"zero", 0, "00:00"},
+		{"seconds only", 42 * time.Second, "00:42"},
+		{"minutes and seconds", 90 * time.Second, "01:30"},
+		{"hours included", 2*time.Hour + 3*time.Minute + 4*time.Second, "2:03:04"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatDuration(tt.d); got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
 
 // TestListShownTruncationMath is a direct, exhaustive table test of
 // listShown's total>n branch (the "+N más" math) and its two boundaries:

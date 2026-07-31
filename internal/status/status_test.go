@@ -1,6 +1,8 @@
 package status
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -99,6 +101,72 @@ func TestReadMissingReturnsNil(t *testing.T) {
 	}
 	if snap != nil {
 		t.Fatalf("snap = %+v, want nil", snap)
+	}
+}
+
+func TestReadCorruptJSONReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(dir); err == nil {
+		t.Error("Read() error = nil, want error for corrupt JSON")
+	}
+}
+
+func TestDequeueMissingEntryIsNoop(t *testing.T) {
+	tr := newTestTracker(t)
+	tr.Enqueue("a.mkv")
+	tr.Dequeue("not-in-queue.mkv")
+	if len(tr.snap.Queue) != 1 || tr.snap.Queue[0] != "a.mkv" {
+		t.Errorf("queue = %v, want a.mkv untouched", tr.snap.Queue)
+	}
+}
+
+func TestFlushLockedStateDirBlockedByFile(t *testing.T) {
+	base := t.TempDir()
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(blocker, "state")
+
+	if _, err := NewTracker(stateDir); err == nil {
+		t.Error("NewTracker() error = nil, want error when the state dir cannot be created")
+	}
+}
+
+func TestFlushLockedStateDirReadOnly(t *testing.T) {
+	stateDir := t.TempDir()
+	tr, err := NewTracker(stateDir)
+	if err != nil {
+		t.Fatalf("NewTracker: %v", err)
+	}
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	tr.Enqueue("a.mkv")
+	snap, err := Read(stateDir)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(snap.Queue) != 0 {
+		t.Errorf("queue = %v, want the failed flush to leave the on-disk snapshot unchanged", snap.Queue)
+	}
+}
+
+func TestFlushLockedRenameOntoDirectoryFails(t *testing.T) {
+	stateDir := t.TempDir()
+	// status.json already exists as a directory: NewTracker's initial
+	// flush cannot replace it with the freshly written temp file.
+	if err := os.MkdirAll(filepath.Join(stateDir, FileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewTracker(stateDir); err == nil {
+		t.Error("NewTracker() error = nil, want error when status.json is a directory")
 	}
 }
 
