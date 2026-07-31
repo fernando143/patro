@@ -101,6 +101,67 @@ func TestSaveProducesValidCompatibleJSON(t *testing.T) {
 	}
 }
 
+func TestMarkProcessedMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	if err := s.MarkProcessed(filepath.Join(dir, "gone.mkv"), "id"); err == nil {
+		t.Error("MarkProcessed(missing file) error = nil, want error")
+	}
+}
+
+func TestMarkProcessedStateDirBlockedByFile(t *testing.T) {
+	base := t.TempDir()
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(blocker, "state")
+	video := filepath.Join(base, "meeting.mkv")
+	if err := os.WriteFile(video, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(stateDir)
+	if err := s.MarkProcessed(video, "id"); err == nil {
+		t.Error("MarkProcessed() error = nil, want error when the state dir cannot be created")
+	}
+}
+
+func TestMarkProcessedStateDirReadOnly(t *testing.T) {
+	stateDir := t.TempDir()
+	video := filepath.Join(stateDir, "meeting.mkv")
+	if err := os.WriteFile(video, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	s := New(stateDir)
+	if err := s.MarkProcessed(video, "id"); err == nil {
+		t.Error("MarkProcessed() error = nil, want error when the state dir is not writable")
+	}
+}
+
+func TestMarkProcessedRenameOntoDirectoryFails(t *testing.T) {
+	dir := t.TempDir()
+	video := filepath.Join(dir, "meeting.mkv")
+	if err := os.WriteFile(video, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// processed.json already exists as a directory: the final os.Rename in
+	// saveLocked cannot replace it with the freshly written temp file.
+	if err := os.MkdirAll(filepath.Join(dir, "processed.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(dir)
+	if err := s.MarkProcessed(video, "id"); err == nil {
+		t.Error("MarkProcessed() error = nil, want error when processed.json is a directory")
+	}
+}
+
 func TestNewWithCorruptStateFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "processed.json"), []byte("{not json"), 0o644); err != nil {

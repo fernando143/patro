@@ -145,6 +145,13 @@ func TestResizeLogEarlyReturnsWhenNotReady(t *testing.T) {
 	}
 }
 
+func TestViewNotReadyShowsLoadingPlaceholder(t *testing.T) {
+	m := model{cfg: &config.Config{AnalyzerBackend: "kimi"}}
+	if got := m.View(); got != "cargando dashboard…" {
+		t.Errorf("View() = %q, want the loading placeholder before the first WindowSizeMsg", got)
+	}
+}
+
 func TestSynthwaveHuhThemeBuilds(t *testing.T) {
 	theme := SynthwaveHuhTheme()
 	if theme == nil {

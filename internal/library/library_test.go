@@ -63,6 +63,125 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func TestNewLibraryFailsWhenASubdirIsBlocked(t *testing.T) {
+	root := t.TempDir()
+	// topics/ is created first and succeeds; meetings/ is pre-occupied by a
+	// plain file, so the loop's second MkdirAll must fail and return early.
+	if err := os.WriteFile(filepath.Join(root, "meetings"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewLibrary(root); err == nil {
+		t.Error("NewLibrary() error = nil, want error when meetings/ cannot be created")
+	}
+}
+
+func TestAddMeeting(t *testing.T) {
+	l := newTestLibrary(t)
+	transcript := &types.TranscriptResult{
+		ID:   "t1",
+		Text: "Full transcript text.",
+		Utterances: []types.Utterance{
+			{Speaker: "A", Text: "Hello."},
+		},
+	}
+	analysis := &types.AnalysisResult{
+		Title:   "Weekly sync",
+		Summary: "We discussed the roadmap.",
+		Topics: []types.Topic{
+			{Slug: "roadmap", Name: "Roadmap", Content: "- item one"},
+		},
+	}
+
+	notePath, err := l.AddMeeting(transcript, analysis, "/inbox/weekly-sync.mkv")
+	if err != nil {
+		t.Fatalf("AddMeeting: %v", err)
+	}
+	if _, err := os.Stat(notePath); err != nil {
+		t.Errorf("meeting note not written at %s: %v", notePath, err)
+	}
+	if _, err := os.Stat(filepath.Join(l.TranscriptsDir, "t1.txt")); err != nil {
+		t.Errorf("transcript not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.TopicsDir, "roadmap.md")); err != nil {
+		t.Errorf("topic file not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Root, "index.md")); err != nil {
+		t.Errorf("index not rebuilt: %v", err)
+	}
+}
+
+func TestAddMeetingPropagatesWriteTranscriptError(t *testing.T) {
+	l := newTestLibrary(t)
+	if err := os.Chmod(l.TranscriptsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.TranscriptsDir, 0o755) })
+
+	_, err := l.AddMeeting(
+		&types.TranscriptResult{ID: "t1"},
+		&types.AnalysisResult{Title: "x"},
+		"/inbox/x.mkv",
+	)
+	if err == nil {
+		t.Error("AddMeeting() error = nil, want error when the transcript cannot be written")
+	}
+}
+
+func TestAddMeetingPropagatesWriteMeetingNoteError(t *testing.T) {
+	l := newTestLibrary(t)
+	if err := os.Chmod(l.MeetingsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.MeetingsDir, 0o755) })
+
+	_, err := l.AddMeeting(
+		&types.TranscriptResult{ID: "t1"},
+		&types.AnalysisResult{Title: "x"},
+		"/inbox/x.mkv",
+	)
+	if err == nil {
+		t.Error("AddMeeting() error = nil, want error when the meeting note cannot be written")
+	}
+}
+
+func TestAddMeetingPropagatesAppendTopicSectionError(t *testing.T) {
+	l := newTestLibrary(t)
+	if err := os.Chmod(l.TopicsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.TopicsDir, 0o755) })
+
+	_, err := l.AddMeeting(
+		&types.TranscriptResult{ID: "t1"},
+		&types.AnalysisResult{
+			Title:  "x",
+			Topics: []types.Topic{{Slug: "roadmap", Name: "Roadmap", Content: "- item"}},
+		},
+		"/inbox/x.mkv",
+	)
+	if err == nil {
+		t.Error("AddMeeting() error = nil, want error when a topic section cannot be written")
+	}
+}
+
+func TestAddMeetingPropagatesRebuildIndexError(t *testing.T) {
+	l := newTestLibrary(t)
+	if err := os.Chmod(l.Root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.Root, 0o755) })
+
+	_, err := l.AddMeeting(
+		&types.TranscriptResult{ID: "t1"},
+		&types.AnalysisResult{Title: "x"},
+		"/inbox/x.mkv",
+	)
+	if err == nil {
+		t.Error("AddMeeting() error = nil, want error when index.md cannot be written")
+	}
+}
+
 func TestWriteTranscript(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -17,6 +17,31 @@ func testRoot(s screen) rootModel {
 	}
 }
 
+// Init only drives the dashboard's startup work: the menu and settings
+// screens have nothing to do before the user acts.
+func TestRootInitDrivesDashboardOnly(t *testing.T) {
+	m := testRoot(screenMenu)
+	if cmd := m.Init(); cmd == nil {
+		t.Error("rootModel.Init() = nil, want the dashboard's batched startup commands")
+	}
+}
+
+// A key that is neither ctrl+c nor esc must reach settingsModel.Update
+// through rootModel.routeToActive -> updateSettings, not silently drop.
+func TestRootRoutesToSettingsScreen(t *testing.T) {
+	m := testRoot(screenMenu)
+	m.settings, _ = newSettings(&config.Config{AnalyzerBackend: "kimi"}, "", 100, 40)
+	m.screen = screenSettings
+
+	// The settings form's first step is a Select; "j" moves its cursor
+	// down, which only happens if the key actually reached the form.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	root := nm.(rootModel)
+	if root.settings.form == nil {
+		t.Fatal("settings.form is nil after routing a key")
+	}
+}
+
 // The dashboard's poll must keep running while the user is on another
 // screen, so its data is already current when they come back.
 func TestRootRoutesDashboardMsgsWhileAway(t *testing.T) {

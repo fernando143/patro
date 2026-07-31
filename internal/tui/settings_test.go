@@ -55,6 +55,13 @@ func kimiCfg(t *testing.T) *config.Config {
 	}
 }
 
+func TestSettingsInitIsNil(t *testing.T) {
+	m := newTestSettings(t, kimiCfg(t))
+	if cmd := m.Init(); cmd != nil {
+		t.Error("settingsModel.Init() = non-nil, want nil (enter() drives startup work instead)")
+	}
+}
+
 // The settings screen must offer exactly the backends config accepts —
 // as a set, since the two deliberately use different display orders.
 func TestSettingsBackendOptionsMatchConfig(t *testing.T) {

@@ -1,6 +1,23 @@
 package transcriber
 
-import "testing"
+import (
+	"context"
+	"path/filepath"
+	"testing"
+)
+
+// Transcribe has no injection seam for the AssemblyAI client, so it can only
+// be unit-tested up to the point where it would talk to the network. The
+// file-open failure happens before any request is made, so it is the one
+// path reachable here without a real API call.
+func TestTranscribeMissingFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.mkv")
+
+	_, err := Transcribe(context.Background(), missing, "irrelevant-key")
+	if err == nil {
+		t.Fatal("Transcribe error = nil, want error when the video file does not exist")
+	}
+}
 
 func TestDerefStr(t *testing.T) {
 	if got := derefStr(nil); got != "" {
