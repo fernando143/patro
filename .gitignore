@@ -24,6 +24,9 @@ knowledge/
 # Built binary
 /patro
 
+# embedbench dev-tool build artifact (nested module, never released)
+/tools/embedbench/embedbench
+
 # GoReleaser output
 /dist/
 

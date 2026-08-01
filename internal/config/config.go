@@ -26,11 +26,22 @@ const (
 	defaultAnalyzerBackend          = "kimi"
 	defaultKimiPath                 = "kimi"
 	defaultClaudePath               = "claude"
+	// defaultEmbeddingBackend is provisional: cybertron is the only
+	// candidate with third-party adoption evidence as of design D9.
+	// tools/embedbench settles the final default once all three backends
+	// land (units 1b-1d).
+	defaultEmbeddingBackend = "cybertron"
 )
 
 var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
 	validAnalyzerBackends  = []string{"kimi", "lemur", "claude"}
+	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
+	// (design D9). It is a separate, explicit list here rather than a call
+	// into internal/embed so config validation has no dependency on the
+	// embed package, matching the validAnalyzerBackends precedent. Kept in
+	// sync by hand as adapters land in units 1b/1c/1d.
+	validEmbeddingBackends = []string{"cybertron", "sentex", "zerfoo"}
 )
 
 // Config is the runtime configuration with all paths resolved.
@@ -41,6 +52,7 @@ type Config struct {
 	StabilityChecks          int
 	StabilityIntervalSeconds int
 	AnalyzerBackend          string
+	EmbeddingBackend         string
 	KimiPath                 string
 	ClaudePath               string
 	Dir                      string // directory of the config file; base for relative paths
@@ -53,6 +65,12 @@ func ValidAnalyzerBackends() []string {
 	return append([]string(nil), validAnalyzerBackends...)
 }
 
+// ValidEmbeddingBackends returns the accepted embedding_backend values. The
+// result is a copy so callers cannot corrupt validation.
+func ValidEmbeddingBackends() []string {
+	return append([]string(nil), validEmbeddingBackends...)
+}
+
 // yamlConfig mirrors config.yaml. Pointer fields distinguish an absent key
 // (fall back to the default) from an explicitly set zero value.
 type yamlConfig struct {
@@ -62,6 +80,7 @@ type yamlConfig struct {
 	StabilityChecks          *int     `yaml:"stability_checks"`
 	StabilityIntervalSeconds *int     `yaml:"stability_interval_seconds"`
 	AnalyzerBackend          *string  `yaml:"analyzer_backend"`
+	EmbeddingBackend         *string  `yaml:"embedding_backend"`
 	KimiPath                 *string  `yaml:"kimi_path"`
 	ClaudePath               *string  `yaml:"claude_path"`
 }
@@ -139,6 +158,14 @@ func Load(flagPath string) (*Config, error) {
 		)
 	}
 
+	embeddingBackend := strings.ToLower(strings.TrimSpace(stringOr(raw.EmbeddingBackend, defaultEmbeddingBackend)))
+	if !validEmbeddingBackend(embeddingBackend) {
+		return nil, fmt.Errorf(
+			"invalid embedding_backend %q in %s; valid values: %s",
+			embeddingBackend, filepath.Base(configPath), strings.Join(validEmbeddingBackends, ", "),
+		)
+	}
+
 	return &Config{
 		Inbox:                    resolvePath(stringOr(raw.Inbox, defaultInbox), dir),
 		Library:                  resolvePath(stringOr(raw.Library, defaultLibrary), dir),
@@ -146,6 +173,7 @@ func Load(flagPath string) (*Config, error) {
 		StabilityChecks:          intOr(raw.StabilityChecks, defaultStabilityChecks),
 		StabilityIntervalSeconds: intOr(raw.StabilityIntervalSeconds, defaultStabilityIntervalSeconds),
 		AnalyzerBackend:          backend,
+		EmbeddingBackend:         embeddingBackend,
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
 		Dir:                      dir,
@@ -224,6 +252,15 @@ func binaryPathOr(value *string, fallback string) string {
 
 func validBackend(backend string) bool {
 	for _, b := range validAnalyzerBackends {
+		if b == backend {
+			return true
+		}
+	}
+	return false
+}
+
+func validEmbeddingBackend(backend string) bool {
+	for _, b := range validEmbeddingBackends {
 		if b == backend {
 			return true
 		}
