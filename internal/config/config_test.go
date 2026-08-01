@@ -76,7 +76,7 @@ inbox: ~/recordings
 library: ./notes
 stability_checks: 4
 analyzer_backend: LeMUR
-embedding_backend: ZERFOO
+embedding_backend: CYBERTRON
 kimi_path: /opt/kimi
 `)
 
@@ -106,8 +106,8 @@ kimi_path: /opt/kimi
 	if cfg.AnalyzerBackend != "lemur" {
 		t.Errorf("AnalyzerBackend = %q, want %q", cfg.AnalyzerBackend, "lemur")
 	}
-	if cfg.EmbeddingBackend != "zerfoo" {
-		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "zerfoo")
+	if cfg.EmbeddingBackend != "cybertron" {
+		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "cybertron")
 	}
 	if cfg.KimiPath != "/opt/kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "/opt/kimi")

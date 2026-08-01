@@ -31,19 +31,22 @@ func stubRegistry(t *testing.T, table map[string]factory) {
 	t.Cleanup(func() { registry = original })
 }
 
-func TestAvailableOnEmptyProductionRegistry(t *testing.T) {
-	// Unit 1a ships the registry skeleton only; adapters land in 1b/1c/1d.
-	// Available() must return an empty, non-nil-panicking slice rather than
-	// hardcoding backend names that do not exist yet.
+func TestAvailableListsProductionBackends(t *testing.T) {
+	// go-sentex was dropped and zerfoo was blocked before registration
+	// (see design D9 amendment and the tasks Unit 1c finding); cybertron
+	// (Unit 1d) is the only backend that passed verification and is
+	// registered. Available() must reflect exactly the compiled-in table,
+	// not a hardcoded aspirational list.
 	got := Available()
-	if len(got) != 0 {
-		t.Fatalf("Available() = %v, want empty (no adapters registered yet)", got)
+	want := []string{"cybertron"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Available() = %v, want %v", got, want)
 	}
 }
 
-func TestNewOnEmptyProductionRegistry(t *testing.T) {
-	if _, err := New("anything"); err == nil {
-		t.Fatal("New(\"anything\") on the empty production registry did not return an error")
+func TestNewOnUnknownNameInProductionRegistry(t *testing.T) {
+	if _, err := New("anything-unregistered"); err == nil {
+		t.Fatal("New(\"anything-unregistered\") did not return an error")
 	}
 }
 
@@ -158,8 +161,8 @@ func TestNopEmbedderIsDeterministicAndUnitNorm(t *testing.T) {
 
 func TestNopEmbedderIsNotInProductionRegistry(t *testing.T) {
 	// nopEmbedder is a test/--mock double, not a config-selectable
-	// embedding_backend value (design D9: only the 3 real adapters are
-	// registered).
+	// embedding_backend value (design D9: only real, verified adapters are
+	// registered — currently just cybertron).
 	for _, name := range Available() {
 		if name == "nop" {
 			t.Error("nop embedder must not be registered as a selectable backend")

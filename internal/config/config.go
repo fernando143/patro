@@ -28,8 +28,8 @@ const (
 	defaultClaudePath               = "claude"
 	// defaultEmbeddingBackend is provisional: cybertron is the only
 	// candidate with third-party adoption evidence as of design D9.
-	// tools/embedbench settles the final default once all three backends
-	// land (units 1b-1d).
+	// tools/embedbench settles the final default once both backends
+	// land (units 1c-1d).
 	defaultEmbeddingBackend = "cybertron"
 )
 
@@ -37,11 +37,20 @@ var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
 	validAnalyzerBackends  = []string{"kimi", "lemur", "claude"}
 	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
-	// (design D9). It is a separate, explicit list here rather than a call
-	// into internal/embed so config validation has no dependency on the
-	// embed package, matching the validAnalyzerBackends precedent. Kept in
-	// sync by hand as adapters land in units 1b/1c/1d.
-	validEmbeddingBackends = []string{"cybertron", "sentex", "zerfoo"}
+	// (design D9 amendment). It is a separate, explicit list here rather
+	// than a call into internal/embed so config validation has no
+	// dependency on the embed package, matching the validAnalyzerBackends
+	// precedent. Kept in sync by hand as adapters land.
+	// go-sentex was dropped (D9 revision 4): its LoadModel() downloads
+	// ~87MB of weights from HuggingFace Hub on first call with no way to
+	// inject local/embedded bytes, incompatible with the
+	// zero-network-after-install requirement (decision 2). zerfoo was
+	// investigated (Unit 1c) but never registered: its only exported
+	// embedding API mean-pools the static token-embedding table and never
+	// runs the transformer, so it cannot produce genuine contextual
+	// sentence embeddings. cybertron (Unit 1d) is the sole verified,
+	// registered backend.
+	validEmbeddingBackends = []string{"cybertron"}
 )
 
 // Config is the runtime configuration with all paths resolved.

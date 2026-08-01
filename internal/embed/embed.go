@@ -8,12 +8,11 @@
 // internal/config.validAnalyzerBackends: every compiled-in backend is
 // visible by reading this one table.
 //
-// This file ships only the Embedder contract, the registry skeleton, and a
-// deterministic no-op double for tests/--mock. Real backend adapters
-// (go-sentex, zerfoo, cybertron) are added in later units and register
-// themselves in the registry table below; the shape of Embedder, Available
-// and New is final as of this unit so adapters can plug in without changing
-// callers.
+// This file ships the Embedder contract, the registry, and a deterministic
+// no-op double for tests/--mock. Real backend adapters register themselves
+// in the registry table below (see cybertron.go); the shape of Embedder,
+// Available and New is unchanged since the registry skeleton landed, so
+// adapters can plug in without changing callers.
 package embed
 
 import (
@@ -41,13 +40,18 @@ type Embedder interface {
 // loading weights for backends it does not select.
 type factory func() (Embedder, error)
 
-// registry is the explicit table of compiled-in backends. It intentionally
-// starts empty: adapters register their own entry here in units 1b/1c/1d
-// (go-sentex, zerfoo, cybertron respectively). Keeping it a plain map
-// literal — not init()-based self-registration — means every compiled-in
+// registry is the explicit table of compiled-in backends. Keeping it a plain
+// map literal — not init()-based self-registration — means every compiled-in
 // backend is visible by reading this file, matching the
 // validAnalyzerBackends/backendChoices precedent elsewhere in the codebase.
-var registry = map[string]factory{}
+//
+// go-sentex was dropped (network-dependent weight loading, D9 amendment
+// revision 4) and zerfoo was blocked (no contextual-embedding path in its
+// public API, see tasks Unit 1c finding) before either was registered here.
+// cybertron (Unit 1d) is the only backend that passed verification.
+var registry = map[string]factory{
+	cybertronName: newCybertronEmbedder,
+}
 
 // Available returns the names of every compiled-in backend, sorted for a
 // deterministic order. The result is a copy: mutating it cannot corrupt the
