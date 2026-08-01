@@ -52,6 +52,12 @@ func TestLoadDefaultsForMissingFile(t *testing.T) {
 	if cfg.EmbeddingBackend != "cybertron" {
 		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "cybertron")
 	}
+	if cfg.MergeThreshold != 0.90 {
+		t.Errorf("MergeThreshold = %v, want %v", cfg.MergeThreshold, 0.90)
+	}
+	if cfg.NewTopicThreshold != 0.70 {
+		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.70)
+	}
 	if cfg.KimiPath != "kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "kimi")
 	}
@@ -77,6 +83,8 @@ library: ./notes
 stability_checks: 4
 analyzer_backend: LeMUR
 embedding_backend: CYBERTRON
+merge_threshold: 0.95
+new_topic_threshold: 0.6
 kimi_path: /opt/kimi
 `)
 
@@ -108,6 +116,12 @@ kimi_path: /opt/kimi
 	}
 	if cfg.EmbeddingBackend != "cybertron" {
 		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "cybertron")
+	}
+	if cfg.MergeThreshold != 0.95 {
+		t.Errorf("MergeThreshold = %v, want %v", cfg.MergeThreshold, 0.95)
+	}
+	if cfg.NewTopicThreshold != 0.6 {
+		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.6)
 	}
 	if cfg.KimiPath != "/opt/kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "/opt/kimi")

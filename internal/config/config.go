@@ -31,6 +31,13 @@ const (
 	// tools/embedbench settles the final default once both backends
 	// land (units 1c-1d).
 	defaultEmbeddingBackend = "cybertron"
+	// defaultMergeThreshold / defaultNewTopicThreshold are the 3-band
+	// reconciliation thresholds (design D7), provisional until calibrated
+	// with tools/embedbench: cosine >= merge_threshold auto-merges, cosine
+	// < new_topic_threshold creates a new topic, the gray zone between them
+	// triggers one reconciliation LLM call.
+	defaultMergeThreshold    = 0.90
+	defaultNewTopicThreshold = 0.70
 )
 
 var (
@@ -62,6 +69,8 @@ type Config struct {
 	StabilityIntervalSeconds int
 	AnalyzerBackend          string
 	EmbeddingBackend         string
+	MergeThreshold           float64
+	NewTopicThreshold        float64
 	KimiPath                 string
 	ClaudePath               string
 	Dir                      string // directory of the config file; base for relative paths
@@ -90,6 +99,8 @@ type yamlConfig struct {
 	StabilityIntervalSeconds *int     `yaml:"stability_interval_seconds"`
 	AnalyzerBackend          *string  `yaml:"analyzer_backend"`
 	EmbeddingBackend         *string  `yaml:"embedding_backend"`
+	MergeThreshold           *float64 `yaml:"merge_threshold"`
+	NewTopicThreshold        *float64 `yaml:"new_topic_threshold"`
 	KimiPath                 *string  `yaml:"kimi_path"`
 	ClaudePath               *string  `yaml:"claude_path"`
 }
@@ -183,6 +194,8 @@ func Load(flagPath string) (*Config, error) {
 		StabilityIntervalSeconds: intOr(raw.StabilityIntervalSeconds, defaultStabilityIntervalSeconds),
 		AnalyzerBackend:          backend,
 		EmbeddingBackend:         embeddingBackend,
+		MergeThreshold:           floatOr(raw.MergeThreshold, defaultMergeThreshold),
+		NewTopicThreshold:        floatOr(raw.NewTopicThreshold, defaultNewTopicThreshold),
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
 		Dir:                      dir,
@@ -235,6 +248,13 @@ func stringOr(value *string, fallback string) string {
 }
 
 func intOr(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func floatOr(value *float64, fallback float64) float64 {
 	if value == nil {
 		return fallback
 	}

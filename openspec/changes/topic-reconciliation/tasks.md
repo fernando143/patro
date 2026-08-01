@@ -65,14 +65,14 @@
 - [x] 3.6 RED→GREEN: `Rebuild()` reconstructs both indexes from markdown alone after `.state/{vectors,search-index}` deletion.
 - [x] 3.7 Integration test: pipeline ingestion continues (non-blocking) during a rebuild.
 
-## Phase 5 (Unit 4): library reconciliation seam
-- [ ] 4.1 `internal/library/reconcile.go` — `Reconciler` iface, `Resolution{...}`, `.state/reconciliation.json` ledger writer.
-- [ ] 4.2 RED→GREEN: 3-band table test — ≥0.90 merge, <0.70 new, gray zone → exactly one LLM call.
-- [ ] 4.3 RED→GREEN: gray-zone LLM error/timeout ⇒ new+flagged, never merge (threat matrix: subprocess arg composition — explicit argv, ctx timeout).
-- [ ] 4.4 RED→GREEN: merge writes markdown annotation (proposed slug + cosine) AND matching `.state/reconciliation.json` entry.
-- [ ] 4.5 GREEN: `library.go` — `Reconciler` field, `AddMeetingCtx`, `AppendTopicSectionAnnotated`, `ExistingTopicsRecent`; old signatures delegate unchanged.
-- [ ] 4.6 [CHECKPOINT] Existing `internal/library/library_test.go` passes unmodified with nil `Reconciler`.
-- [ ] 4.7 RED→GREEN: meeting mid-rebuild → `ErrRebuilding` → new+flagged, picked up by next reconcile pass.
+## Phase 5 (Unit 4): library reconciliation seam — **DONE**, verified (`go build/vet/test ./...` green, `library_test.go`/`analyzer_test.go` byte-identical), committed
+- [x] 4.1 `internal/library/reconcile.go` — `Reconciler` iface, `Resolution{...}`, `.state/reconciliation.json` ledger writer. Also adds `NearestFinder`/`Embedder` narrow local interfaces (testability without importing internal/embed) and `GrayZoneCLI` — the concrete subprocess-based `GrayZoneDecider` (explicit argv via `exec.CommandContext`, injectable timeout).
+- [x] 4.2 RED→GREEN: 3-band table test (`TestSemanticReconcilerThreeBand`) — ≥0.90 merge, <0.70 new, gray zone → exactly one LLM call (call-count asserted).
+- [x] 4.3 RED→GREEN: gray-zone LLM error/timeout ⇒ new+flagged, never merge (`TestSemanticReconcilerGrayZoneErrorSafeFails`, `TestGrayZoneCLITimeout`, `TestGrayZoneCLINonZeroExit`, `TestGrayZoneCLIArgvNotShellInterpreted` — threat matrix: subprocess arg composition, explicit argv, ctx timeout).
+- [x] 4.4 RED→GREEN: merge writes markdown annotation (proposed slug + cosine) AND matching `.state/reconciliation.json` entry (`TestAddMeetingCtxMergeAnnotatesAndLedgers`).
+- [x] 4.5 GREEN: `library.go` — `Reconciler` field, `AddMeetingCtx`, `AppendTopicSectionAnnotated`, `ExistingTopicsRecent`; old `AddMeeting`/`AppendTopicSection` delegate unchanged. `internal/config` gains `merge_threshold`/`new_topic_threshold` (0.90/0.70 defaults, D7).
+- [x] 4.6 [CHECKPOINT] Existing `internal/library/library_test.go` passes unmodified with nil `Reconciler` (`git diff --stat` empty; `TestAddMeetingNilReconcilerUnaffected` added in reconcile_test.go for extra coverage).
+- [x] 4.7 RED→GREEN: meeting mid-rebuild → `ErrRebuilding` → new+flagged, picked up by next reconcile pass (`TestSemanticReconcilerErrRebuildingSafeFails`).
 
 ## Phase 6 (Unit 5): analyzer prompt cap
 - [ ] 5.1 `Library.ExistingTopicsRecent(n)` sorted by lastUpdate desc.

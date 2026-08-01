@@ -36,14 +36,20 @@ phases:
 
   tasks:
     status: in_progress
-    file: null
+    file: tasks.md
+    engram_topic_key: sdd/topic-reconciliation/tasks
     note: >
-      Being authored directly in Engram in a separate ongoing process.
-      Not yet materialized to tasks.md — do not create tasks.md until
-      that process completes.
+      Materialized to tasks.md (10 stacked units, 1a->1c->1d->2->3->4->5->6->7->8).
+      Units 1a, 1d, 2, 3, 4 are done and committed; 1c (zerfoo) is blocked
+      (see finding in Phase 2); units 5-8 not started.
 
   apply:
-    status: not_started
+    status: in_progress
+    note: >
+      Unit 4 (library reconciliation seam) done and committed on
+      feature/topic-reconciliation-3-vectors-searchindex. Units 5-8
+      (analyzer prompt cap, web /search, status Maintenance + patro
+      reconcile, TUI) remain.
 
   verify:
     status: not_started
