@@ -1,0 +1,52 @@
+change: topic-reconciliation
+artifact_store: hybrid   # engram (source of truth during authoring) + openspec files (backfilled)
+
+phases:
+  exploration:
+    status: done
+
+  proposal:
+    status: done
+    file: proposal.md
+    engram_topic_key: sdd/topic-reconciliation/proposal
+    engram_id: 136
+    revisions: 2
+
+  spec:
+    status: done
+    file: specs/{domain}/spec.md
+    engram_topic_key: sdd/topic-reconciliation/spec
+    engram_id: 138
+    revisions: 1
+    domains:
+      - topic-reconciliation
+      - local-embeddings
+      - library-search
+      - meeting-analysis
+      - settings-management
+      - maintenance-status
+      - embedbench
+
+  design:
+    status: done
+    file: design.md
+    engram_topic_key: sdd/topic-reconciliation/design
+    engram_id: 137
+    revisions: 3
+
+  tasks:
+    status: in_progress
+    file: null
+    note: >
+      Being authored directly in Engram in a separate ongoing process.
+      Not yet materialized to tasks.md — do not create tasks.md until
+      that process completes.
+
+  apply:
+    status: not_started
+
+  verify:
+    status: not_started
+
+  archive:
+    status: not_started

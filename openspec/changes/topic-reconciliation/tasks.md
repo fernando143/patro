@@ -11,7 +11,9 @@
 | Delivery strategy | **feature-branch-chain** (confirmed) — long-lived `feature/topic-reconciliation` branch, chained units on top, merged to `main` once the full chain is done |
 | Chain strategy | feature-branch-chain (confirmed) |
 
-**Flagged risk**: Slice 1 (`internal/embed`), as one PR, is at the same 400-line risk that caused design to split slice 7 out of TUI — interface+registry+adapters+tests+config validation is authored code, not just weight blobs. Splitting it into 1a (registry+interface+nopEmbedder, config validation) and one PR per backend adapter (each trivially droppable behind the interface) removes the risk without reopening D9. **Update**: unit 1b (`go-sentex`) was dropped during implementation. **Second update**: unit 1c (`zerfoo`) is now also **BLOCKED** (finding above — no contextual-embedding path in zerfoo's public API, not a quick fix) — see finding in Phase 2 below. **This leaves only 1 remaining candidate backend (cybertron, Unit 1d, not yet verified).** A single surviving backend materially changes the `tools/embedbench` (Unit 2) value proposition — it becomes a quality/perf report on one backend, not an A/B comparison, which was one of its stated purposes (D11: "the instrument that sets D7's thresholds and D9's default" — a default choice needs no comparison if there is only one candidate). **This needs a real decision before Unit 1d or beyond proceeds**: (a) verify cybertron and, if it works, accept a 1-backend registry (D9's "registry" framing still has value for future backends, but the current PR chain's "2 backends" premise from the 1b resolution no longer holds); (b) re-open the embedding-runtime candidate search for a genuine second option before locking in cybertron as the sole backend; or (c) accept zerfoo behind the registry anyway as a deliberately lower-quality "cheap" option with the quality gap documented and thresholds calibrated accordingly (not recommended — silently ships a weaker default than the design assumed). This apply run does not decide among these and stops for orchestrator/human input.
+**Flagged risk**: Slice 1 (`internal/embed`), as one PR, is at the same 400-line risk that caused design to split slice 7 out of TUI — interface+registry+adapters+tests+config validation is authored code, not just weight blobs. Splitting it into 1a (registry+interface+nopEmbedder, config validation) and one PR per backend adapter (each trivially droppable behind the interface) removes the risk without reopening D9. **Update**: unit 1b (`go-sentex`) was dropped during implementation. **Second update**: unit 1c (`zerfoo`) is now also **BLOCKED** (finding above — no contextual-embedding path in zerfoo's public API, not a quick fix) — see finding in Phase 2 below.
+
+**RESOLVED (2026-08-01, human/orchestrator decision confirmed)**: option (a) — cybertron verified and accepted as the sole embedding backend. `internal/embed` ships a 1-backend registry; D9's "registry" framing is kept for future backends, but the current chain no longer assumes an A/B comparison. `tools/embedbench` (Unit 2) is accepted as a single-backend quality/perf report, not an A/B tool. Units 1d, 2, and 3 proceeded on this basis and are verified working (`go build/vet/test` green). Options (b) and (c) are not pursued.
 
 ### Suggested Work Units
 
@@ -20,7 +22,7 @@
 | 1a | embed registry+interface+nopEmbedder+config validation | 1a | `go test ./internal/embed/... ./internal/config/...` | N/A — no adapter yet; `go build ./...` only | delete embed.go + config keys, no callers |
 | ~~1b~~ | ~~go-sentex adapter~~ — **DROPPED** (network-dependent weight loading, incompatible with decision 2; see D9 amendment rev 4) | — | — | — | n/a — no code was written |
 | 1c | zerfoo adapter — **BLOCKED**, no contextual-embedding path in public API (see finding below) | 1c | `go test ./internal/embed/ -run Zerfoo` | N/A — build-only | n/a — no code was written |
-| 1d | cybertron adapter + size/dim gate — **now the only unblocked backend candidate; verify before proceeding** | 1d | `go test ./internal/embed/ -run Cybertron` | `goreleaser build --snapshot` archive-size check, all 4 platforms | remove cybertron.go + registry entry; escape hatch = trim build tag |
+| 1d | cybertron adapter + size/dim gate — **DONE**, sole backend, tests green | 1d | `go test ./internal/embed/ -run Cybertron` | `goreleaser build --snapshot` archive-size check, all 4 platforms | remove cybertron.go + registry entry; escape hatch = trim build tag |
 | 2 | `tools/embedbench` nested module | 2 | `cd tools/embedbench && go build ./... && go vet ./...` | `cd tools/embedbench && go run .` → manual form at `127.0.0.1:<port>` | delete `tools/embedbench/` dir, zero root-module impact |
 | 3 | `internal/vectors` + `internal/searchindex` | 3 | `go test ./internal/vectors/... ./internal/searchindex/... -race` | N/A pre-Unit-7 (no CLI trigger yet) | delete `.state/vectors`, `.state/search-index` |
 | 4 | library reconciliation seam | 4 | `go test ./internal/library/...` | `./patro process --mock <file>` with stub Reconciler | `Library.Reconciler = nil` restores exact-slug behavior |
@@ -44,24 +46,24 @@
   - Compounding: zerfoo's own documented "Embeddings" feature (README, `examples/embedding/`, `examples/rag/`) is demonstrated exclusively with full generative LLMs — Gemma 3 1B, Llama 3.2 1B — not any small dedicated embedding model. Embedding either at build time would be GB-scale per platform, far beyond even the 87MB already flagged as large for go-sentex, and incompatible with the project's embed-at-build-time size budget. A small hand-sourced MiniLM-family GGUF would fit the size budget but would still hit the "no contextual path" limitation above — size and quality cannot both be solved by choosing a different model, because the limitation is in `Embed()` itself, not in model size.
   - Action taken: no `zerfoo.go` written, no `"zerfoo"` registry entry added. The exploratory `go get` was reverted (`git checkout -- go.mod go.sum`); working tree confirmed byte-identical to the 1b-drop-sentex commit. `go build/vet/test ./...` green after revert.
   - **This is NOT a same-shape finding as 1b (no locked-decision violation — zerfoo is network-free).** It is a "does the stable API actually deliver a usable embedding model" finding, matching the caveat this task was scoped to test for. Requires a human/design decision — see risk note above and D9 amendment (revision 4 note). Not unilaterally dropped, unlike 1b: this apply run stops here and reports rather than guessing.
-- [ ] 1d.1 RED→GREEN: `internal/embed/cybertron.go` — cybertron/spago adapter, same contract test shape. **Now the only remaining unblocked backend adapter — see flagged risk above.**
-- [ ] 1.gate Measure release archive size once backends are resolved, `CGO_ENABLED=0` × darwin/linux × amd64/arm64. Scope pending 1c resolution — do not reopen D9 without a decision.
-- [ ] 1.checkpoint Confirm dims for whichever backends ship; record actual values if any mismatch (D10 tagging makes mismatch safe, not silent).
+- [x] 1d.1 RED→GREEN: `internal/embed/cybertron.go` — cybertron/spago adapter, same contract test shape. Committed `cb36b26`. Sole backend, per resolved decision above.
+- [ ] 1.gate Measure release archive size, `CGO_ENABLED=0` × darwin/linux × amd64/arm64, cybertron-only.
+- [x] 1.checkpoint Cybertron dims confirmed via `internal/embed` tests.
 
-## Phase 3 (Unit 2): tools/embedbench
-- [ ] 2.1 `server.go`/`main.go`: Server mirroring `internal/web` shape, one inlined `template.Must` page, graceful shutdown.
-- [ ] 2.2 RED→GREEN: listener address is loopback-only (threat matrix: dev-tool network exposure).
-- [ ] 2.3 Form: text A/B → per-backend `Dim()`, wall-time, `cos(A,B)`, cross-backend agreement matrix. Reuses `embed.Available()`/`New()` only.
-- [ ] 2.4 Confirm CI + `.goreleaser.yaml` do not reach `tools/embedbench`.
+## Phase 3 (Unit 2): tools/embedbench — **DONE**, verified (`go build/vet/test` green), uncommitted at time of audit
+- [x] 2.1 `server.go`/`main.go`: Server mirroring `internal/web` shape, one inlined `template.Must` page, graceful shutdown.
+- [x] 2.2 RED→GREEN: listener address is loopback-only (threat matrix: dev-tool network exposure).
+- [x] 2.3 Form: text A/B → per-backend `Dim()`, wall-time, `cos(A,B)`, cross-backend agreement matrix. Reuses `embed.Available()`/`New()` only.
+- [x] 2.4 Confirm CI + `.goreleaser.yaml` do not reach `tools/embedbench`.
 
-## Phase 4 (Unit 3): vectors + searchindex
-- [ ] 3.1 RED: concurrent `Nearest()` during rebuild returns `ErrRebuilding`, never a partial result (design: "highest-risk new interaction") — write before/alongside concurrency code.
-- [ ] 3.2 RED: second rebuild trigger while one is in flight is a no-op (single-flight gate).
-- [ ] 3.3 GREEN: `internal/vectors/{store.go,rebuild.go}` — flat cosine store, backend/dim-tagged, `Upsert/Nearest/Rebuild(ctx,src,onProgress)`, no `internal/status` import.
-- [ ] 3.4 RED→GREEN: backend-mismatch invalidation schedules `Rebuild()`.
-- [ ] 3.5 `internal/searchindex/{index.go,rebuild.go}` — bleve BM25 (no `vectors` tag), `Index/Query/Rebuild`.
-- [ ] 3.6 RED→GREEN: `Rebuild()` reconstructs both indexes from markdown alone after `.state/{vectors,search-index}` deletion.
-- [ ] 3.7 Integration test: pipeline ingestion continues (non-blocking) during a rebuild.
+## Phase 4 (Unit 3): vectors + searchindex — **DONE**, verified (`go test ./internal/vectors/... ./internal/searchindex/...` green), uncommitted at time of audit
+- [x] 3.1 RED: concurrent `Nearest()` during rebuild returns `ErrRebuilding`, never a partial result (design: "highest-risk new interaction") — write before/alongside concurrency code.
+- [x] 3.2 RED: second rebuild trigger while one is in flight is a no-op (single-flight gate).
+- [x] 3.3 GREEN: `internal/vectors/{store.go,rebuild.go}` — flat cosine store, backend/dim-tagged, `Upsert/Nearest/Rebuild(ctx,src,onProgress)`, no `internal/status` import.
+- [x] 3.4 RED→GREEN: backend-mismatch invalidation schedules `Rebuild()`.
+- [x] 3.5 `internal/searchindex/{index.go,rebuild.go}` — bleve BM25 (no `vectors` tag), `Index/Query/Rebuild`.
+- [x] 3.6 RED→GREEN: `Rebuild()` reconstructs both indexes from markdown alone after `.state/{vectors,search-index}` deletion.
+- [x] 3.7 Integration test: pipeline ingestion continues (non-blocking) during a rebuild.
 
 ## Phase 5 (Unit 4): library reconciliation seam
 - [ ] 4.1 `internal/library/reconcile.go` — `Reconciler` iface, `Resolution{...}`, `.state/reconciliation.json` ledger writer.

@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.26+. Production dependencies are deliberately few:
+  fsnotify (inbox watcher), gopkg.in/yaml.v3 (config), assemblyai-go-sdk
+  (transcription + LeMUR), golang.org/x/text, yuin/goldmark (web viewer
+  Markdown rendering), and the Charm stack (bubbletea/lipgloss/bubbles/huh)
+  used only for the interactive TUIs. Command/flag parsing is hand-rolled in
+  cmd/patro/main.go (parseArgs) — no CLI framework.
+  Architecture: a single static Go binary, module github.com/fernando143/patro,
+  built with CGO_ENABLED=0 and cross-compiled darwin/linux x amd64/arm64 via
+  GoReleaser, distributed through a Homebrew tap (fernando143/patro). Runs as
+  a local, user-level background service — no sudo, no cloud dependency
+  beyond the AssemblyAI API and the configured analyzer backend (kimi/claude
+  CLI or LeMUR). The core pipeline (watch -> transcribe -> analyze -> write
+  Markdown knowledge library) stays dependency-light; the Charm stack is
+  scoped to `run tui`/`init` only.
+  Testing: stdlib `testing`, table-driven style. No other test or lint
+  tooling beyond `gofmt` and `go vet`. Strict TDD mode is enabled for this
+  project (RED-GREEN-REFACTOR expected during apply).
+  Style: gofmt-clean and go vet-clean; logging goes through internal/logging
+  (never ad hoc log/fmt in library packages); secrets are never stored in
+  config.yaml, only read from environment variables (e.g. ASSEMBLYAI_API_KEY).
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns
+    tdd: true
+    test_command: "go test ./..."
+  verify:
+    test_command: "go test ./..."
+    build_command: "go build ./..."
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
