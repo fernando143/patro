@@ -243,6 +243,13 @@ func (c *Config) StateDir() string {
 	return filepath.Join(c.Dir, ".state")
 }
 
+// SearchIndexDir returns the directory holding the BM25 full-text index
+// (design D3, internal/searchindex). It is a derived, deletable artifact —
+// never the source of truth.
+func (c *Config) SearchIndexDir() string {
+	return filepath.Join(c.StateDir(), "search-index")
+}
+
 // LogFile returns the path of patro's log file.
 func (c *Config) LogFile() string {
 	return filepath.Join(c.Dir, "patro.log")

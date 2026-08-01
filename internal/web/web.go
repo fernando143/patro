@@ -11,6 +11,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"html/template"
 	"net/http"
 	"os"
@@ -21,7 +22,10 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/searchindex"
+	"github.com/fernando143/patro/internal/vectors"
 )
 
 // pageTemplate wraps rendered content in a minimal, theme-aware HTML shell
@@ -101,6 +105,17 @@ th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; }
 type Server struct {
 	Root string
 	md   goldmark.Markdown
+
+	// SearchIndex, Vectors and Embedder power the read-only /search route
+	// (design D3/D5). All three are optional and independently nil-able:
+	// the caller (cmd/patro's `run web`) attaches whatever it managed to
+	// open. When SearchIndex is nil, /search reports it is not available
+	// yet; when only Vectors/Embedder are nil, results degrade to BM25-only
+	// (design "Migration / Rollout") — /search never fails with a 500
+	// because these are unset.
+	SearchIndex *searchindex.Index
+	Vectors     *vectors.Store
+	Embedder    embed.Embedder
 }
 
 // NewServer returns a Server that serves the library under root. Root is
@@ -123,6 +138,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rel := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+
+	if rel == "search" {
+		s.handleSearch(w, r)
+		return
+	}
+
 	full := filepath.Join(s.Root, rel)
 
 	// Guard against path traversal: the resolved path must stay under Root.
@@ -214,6 +235,157 @@ func (s *Server) serveText(w http.ResponseWriter, r *http.Request, full string) 
 	body := "<h1>" + template.HTMLEscapeString(titleFor(full)) + "</h1>\n<pre>" +
 		template.HTMLEscapeString(string(data)) + "</pre>"
 	s.render(w, r, titleFor(full), template.HTML(body))
+}
+
+// rrfK is the reciprocal-rank-fusion damping constant (design D3). 60 is
+// the value from the original RRF paper and is a common default: it flattens
+// the influence of rank 1 vs. rank 2 without needing per-ranker score
+// normalization (BM25 and cosine scores are not on comparable scales).
+const rrfK = 60
+
+// searchResultLimit bounds how many hits are requested from each ranker
+// before fusion.
+const searchResultLimit = 50
+
+// searchResult is one fused, render-ready hit.
+type searchResult struct {
+	ID    string // "topic:slug" or "meeting:slug"
+	Kind  string
+	Title string
+	URL   string
+}
+
+// handleSearch serves the read-only /search route: a query form plus, once
+// a query is submitted, ranked hits fusing BM25 (internal/searchindex) and
+// cosine similarity (internal/vectors) via reciprocal-rank fusion. It never
+// fails with a 500 — an unavailable index/store degrades to fewer results
+// or an explicit message, per design "Migration / Rollout".
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	var b strings.Builder
+	b.WriteString("<h1>Search</h1>\n")
+	b.WriteString(`<form method="get" action="/search">` +
+		`<input type="text" name="q" value="` + template.HTMLEscapeString(q) +
+		`" placeholder="Search topics and meetings" style="width:100%;padding:0.5rem;font-size:1rem;">` +
+		`<button type="submit" style="margin-top:0.5rem;">Search</button></form>`)
+
+	switch {
+	case q == "":
+		// No query yet: just the form.
+	case s.SearchIndex == nil && s.Vectors == nil:
+		b.WriteString(`<p>Search index is not available yet. Run "patro reconcile" (or start ` +
+			`"patro serve") to build it.</p>`)
+	default:
+		results := s.rankedResults(r.Context(), q)
+		if len(results) == 0 {
+			b.WriteString("<p>No results.</p>\n")
+		} else {
+			b.WriteString("<ol>\n")
+			for _, res := range results {
+				b.WriteString(`<li><a href="` + template.HTMLEscapeString(res.URL) + `">` +
+					template.HTMLEscapeString(res.Title) + `</a> <small>(` +
+					template.HTMLEscapeString(res.Kind) + `)</small></li>` + "\n")
+			}
+			b.WriteString("</ol>\n")
+		}
+	}
+
+	s.render(w, r, "Search", template.HTML(b.String()))
+}
+
+// rankedResults runs both rankers (whichever are available), fuses their
+// ranked ID lists with reciprocal-rank fusion, and resolves each fused ID to
+// render-ready metadata. Either ranker failing (including a nil field) is
+// treated as "no hits from that ranker", never an error response.
+func (s *Server) rankedResults(ctx context.Context, q string) []searchResult {
+	var bm25IDs, vecIDs []string
+	meta := map[string]searchResult{}
+
+	if s.SearchIndex != nil {
+		hits, err := s.SearchIndex.Query(q, searchResultLimit)
+		if err != nil {
+			logging.Warnf("web: search index query failed: %v", err)
+		}
+		for _, h := range hits {
+			bm25IDs = append(bm25IDs, h.ID)
+			meta[h.ID] = searchResult{ID: h.ID, Kind: h.Kind, Title: h.Title, URL: urlFor(h.Kind, h.ID)}
+		}
+	}
+
+	if s.Vectors != nil && s.Embedder != nil {
+		if vec, err := s.Embedder.Embed(ctx, q); err != nil {
+			logging.Warnf("web: embedding search query failed: %v", err)
+		} else {
+			hits, err := s.Vectors.Nearest(vec, searchResultLimit)
+			if err != nil {
+				logging.Warnf("web: vector search failed: %v", err)
+			}
+			for _, h := range hits {
+				// The vector store only ever holds topic embeddings
+				// (design D2); tag its bare slugs into the same
+				// "kind:slug" ID space searchindex uses so both rankers
+				// can be fused by a single ID.
+				id := searchindex.KindTopic + ":" + h.ID
+				vecIDs = append(vecIDs, id)
+				if _, ok := meta[id]; !ok {
+					meta[id] = searchResult{
+						ID:    id,
+						Kind:  searchindex.KindTopic,
+						Title: s.topicTitle(h.ID),
+						URL:   urlFor(searchindex.KindTopic, id),
+					}
+				}
+			}
+		}
+	}
+
+	fused := reciprocalRankFusion(rrfK, bm25IDs, vecIDs)
+
+	results := make([]searchResult, 0, len(fused))
+	for _, id := range fused {
+		results = append(results, meta[id])
+	}
+	return results
+}
+
+// reciprocalRankFusion fuses any number of already-ranked ID lists into one
+// list ordered by descending fused score: score(id) = sum over rankers of
+// 1/(k+rank), rank being 1-based (design D3). Ties break on ID for a
+// deterministic order.
+func reciprocalRankFusion(k int, rankings ...[]string) []string {
+	scores := map[string]float64{}
+	for _, ranking := range rankings {
+		for i, id := range ranking {
+			scores[id] += 1.0 / float64(k+i+1)
+		}
+	}
+
+	ids := make([]string, 0, len(scores))
+	for id := range scores {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if scores[ids[i]] != scores[ids[j]] {
+			return scores[ids[i]] > scores[ids[j]]
+		}
+		return ids[i] < ids[j]
+	})
+	return ids
+}
+
+// urlFor builds the library-relative link for a "kind:slug" search hit ID.
+func urlFor(kind, id string) string {
+	slug := strings.TrimPrefix(id, kind+":")
+	return "/" + kind + "s/" + slug + ".md"
+}
+
+// topicTitle resolves a topic slug's display title straight from its
+// markdown file, mirroring headingOrStem — used when a hit reaches the
+// results list only via the vector ranker and has no BM25 Hit to borrow
+// Title/Kind from.
+func (s *Server) topicTitle(slug string) string {
+	return headingOrStem(filepath.Join(s.Root, "topics", slug+".md"))
 }
 
 // notFound renders a 404 page that still carries the navigation sidebar.

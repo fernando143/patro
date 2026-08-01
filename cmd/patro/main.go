@@ -26,18 +26,22 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/pipeline"
+	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/tui"
+	"github.com/fernando143/patro/internal/vectors"
 	"github.com/fernando143/patro/internal/watcher"
 	"github.com/fernando143/patro/internal/web"
 
@@ -289,6 +293,45 @@ func runTUI(opts *cliOptions) int {
 	return 0
 }
 
+// wireSearch opens the BM25 index and vector store that power the web
+// viewer's read-only /search route and attaches whichever it manages to
+// open to srv. Neither is required to exist yet — a fresh install has no
+// index until "patro reconcile" or "patro serve" build one (Unit 7) — so a
+// failure here is only logged, never fatal: /search degrades gracefully
+// (design "Migration / Rollout") instead of stopping `patro run web` from
+// starting. It returns a cleanup func the caller should defer.
+func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
+	closeFn = func() {}
+
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		logging.Warnf("search index unavailable, /search will return no results: %v", err)
+	} else {
+		srv.SearchIndex = idx
+		closeFn = func() {
+			if err := idx.Close(); err != nil {
+				logging.Warnf("closing search index: %v", err)
+			}
+		}
+	}
+
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		logging.Warnf("embedding backend unavailable, /search will use text search only: %v", err)
+		return closeFn
+	}
+
+	store, err := vectors.NewStore(filepath.Join(cfg.StateDir(), "vectors", "topics.json"), embedder, embedder.Name())
+	if err != nil {
+		logging.Warnf("vector store unavailable, /search will use text search only: %v", err)
+		return closeFn
+	}
+	srv.Vectors = store
+	srv.Embedder = embedder
+
+	return closeFn
+}
+
 // runWeb starts the local knowledge-library web viewer and blocks until
 // SIGINT/SIGTERM, then shuts the server down gracefully.
 func runWeb(opts *cliOptions) int {
@@ -307,8 +350,12 @@ func runWeb(opts *cliOptions) int {
 		return 1
 	}
 
+	srv := web.NewServer(cfg.Library)
+	closeSearch := wireSearch(srv, cfg)
+	defer closeSearch()
+
 	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
-	server := &http.Server{Addr: addr, Handler: web.NewServer(cfg.Library)}
+	server := &http.Server{Addr: addr, Handler: srv}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

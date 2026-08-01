@@ -1,12 +1,18 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/searchindex"
+	"github.com/fernando143/patro/internal/vectors"
 )
 
 // setupLibrary creates a temporary knowledge library with an index, a
@@ -210,5 +216,154 @@ func TestServeDirListingWithoutIndex(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `href="a.md"`) {
 		t.Errorf("listing does not link a.md\n%s", body)
+	}
+}
+
+// setupSearchLibrary builds a library plus a BM25 index and a vector store
+// over its topics/meetings, mirroring the shapes internal/searchindex and
+// internal/vectors already prove in their own Rebuild tests.
+func setupSearchLibrary(t *testing.T) (root string, idx *searchindex.Index, store *vectors.Store, embedder embed.Embedder) {
+	t.Helper()
+	root = t.TempDir()
+	topicsDir := filepath.Join(root, "topics")
+	meetingsDir := filepath.Join(root, "meetings")
+	if err := os.MkdirAll(topicsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(meetingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	topicContent := "# Roadmap\n\nQ3 zephyr rollout planning and deployment goals.\n"
+	meetingContent := "# Kickoff\n\nDiscussed the zephyr rollout timeline.\n"
+	if err := os.WriteFile(filepath.Join(topicsDir, "roadmap.md"), []byte(topicContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(meetingsDir, "2026-01-05-kickoff.md"), []byte(meetingContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var err error
+	idx, err = searchindex.Open(filepath.Join(root, ".state", "search-index"))
+	if err != nil {
+		t.Fatalf("searchindex.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	if err := idx.Rebuild(context.Background(), topicsDir, meetingsDir); err != nil {
+		t.Fatalf("searchindex Rebuild: %v", err)
+	}
+
+	embedder = embed.NewNop(4)
+	store, err = vectors.NewStore(filepath.Join(root, ".state", "vectors", "topics.json"), embedder, embedder.Name())
+	if err != nil {
+		t.Fatalf("vectors.NewStore: %v", err)
+	}
+	if err := store.Rebuild(context.Background(), topicsDir, nil); err != nil {
+		t.Fatalf("vectors Rebuild: %v", err)
+	}
+
+	return root, idx, store, embedder
+}
+
+func TestSearchFusesHitsFromTopicsAndMeetings(t *testing.T) {
+	root, idx, store, embedder := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+	srv.Vectors = store
+	srv.Embedder = embedder
+
+	req := httptest.NewRequest(http.MethodGet, "/search?q=zephyr", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/topics/roadmap.md"`) {
+		t.Errorf("results missing topic hit\n%s", body)
+	}
+	if !strings.Contains(body, `href="/meetings/2026-01-05-kickoff.md"`) {
+		t.Errorf("results missing meeting hit\n%s", body)
+	}
+}
+
+// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the fused ranking
+// genuinely incorporates the cosine signal, not just BM25: with SearchIndex
+// nil, the only way a result can appear at all is through vectors.Nearest,
+// and its title/link metadata must be resolved from the topic file directly
+// (there is no BM25 Hit to borrow Title/Kind from).
+func TestSearchVectorOnlyFallbackWhenBM25Unavailable(t *testing.T) {
+	root, _, store, embedder := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.Vectors = store
+	srv.Embedder = embedder
+
+	topicContent := "# Roadmap\n\nQ3 zephyr rollout planning and deployment goals.\n"
+	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(topicContent), nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/topics/roadmap.md"`) || !strings.Contains(body, "Roadmap") {
+		t.Errorf("results missing vector-only topic hit with resolved title\n%s", body)
+	}
+}
+
+func TestSearchEmptyQueryShowsForm(t *testing.T) {
+	root, idx, store, embedder := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+	srv.Vectors = store
+	srv.Embedder = embedder
+
+	req := httptest.NewRequest(http.MethodGet, "/search", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `action="/search"`) {
+		t.Errorf("expected a search form\n%s", body)
+	}
+}
+
+func TestSearchWithoutIndexDegradesGracefully(t *testing.T) {
+	srv := NewServer(setupLibrary(t))
+
+	req := httptest.NewRequest(http.MethodGet, "/search?q=anything", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (must never 500 when index/store are unavailable)", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "not available") {
+		t.Errorf("expected a graceful not-available message\n%s", body)
+	}
+}
+
+// TestSearchNoMatchesShowsMessage wires BM25 only (no vector store): kNN
+// search is approximate and always returns its k-nearest entries regardless
+// of relevance, so a genuine "no results" case is only observable when the
+// only active ranker is exact-term BM25.
+func TestSearchNoMatchesShowsMessage(t *testing.T) {
+	root, idx, _, _ := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+
+	req := httptest.NewRequest(http.MethodGet, "/search?q=nonexistentterm", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "No results") {
+		t.Errorf("expected a no-results message\n%s", body)
 	}
 }
