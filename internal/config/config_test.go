@@ -58,6 +58,9 @@ func TestLoadDefaultsForMissingFile(t *testing.T) {
 	if cfg.NewTopicThreshold != 0.70 {
 		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.70)
 	}
+	if cfg.TopicPromptLimit != 50 {
+		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 50)
+	}
 	if cfg.KimiPath != "kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "kimi")
 	}
@@ -85,6 +88,7 @@ analyzer_backend: LeMUR
 embedding_backend: CYBERTRON
 merge_threshold: 0.95
 new_topic_threshold: 0.6
+topic_prompt_limit: 25
 kimi_path: /opt/kimi
 `)
 
@@ -122,6 +126,9 @@ kimi_path: /opt/kimi
 	}
 	if cfg.NewTopicThreshold != 0.6 {
 		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.6)
+	}
+	if cfg.TopicPromptLimit != 25 {
+		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 25)
 	}
 	if cfg.KimiPath != "/opt/kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "/opt/kimi")

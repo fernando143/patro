@@ -40,16 +40,17 @@ phases:
     engram_topic_key: sdd/topic-reconciliation/tasks
     note: >
       Materialized to tasks.md (10 stacked units, 1a->1c->1d->2->3->4->5->6->7->8).
-      Units 1a, 1d, 2, 3, 4 are done and committed; 1c (zerfoo) is blocked
-      (see finding in Phase 2); units 5-8 not started.
+      Units 1a, 1d, 2, 3, 4, 5 are done and committed; 1c (zerfoo) is blocked
+      (see finding in Phase 2); units 6-8 not started.
 
   apply:
     status: in_progress
     note: >
-      Unit 4 (library reconciliation seam) done and committed on
-      feature/topic-reconciliation-3-vectors-searchindex. Units 5-8
-      (analyzer prompt cap, web /search, status Maintenance + patro
-      reconcile, TUI) remain.
+      Units 4 (library reconciliation seam) and 5 (analyzer prompt cap +
+      the previously-unwired production reconciler wiring in
+      internal/pipeline/pipeline.go) done and committed on
+      feature/topic-reconciliation-3-vectors-searchindex. Units 6-8
+      (web /search, status Maintenance + patro reconcile, TUI) remain.
 
   verify:
     status: not_started

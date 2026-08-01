@@ -38,6 +38,11 @@ const (
 	// triggers one reconciliation LLM call.
 	defaultMergeThreshold    = 0.90
 	defaultNewTopicThreshold = 0.70
+	// defaultTopicPromptLimit bounds how many existing topics are shown to
+	// the analyzer LLM per request (design D6/D7): BuildPrompt stays a pure
+	// formatter, the caller (pipeline) passes an already recency-capped
+	// list via Library.ExistingTopicsRecent(n) instead of every topic.
+	defaultTopicPromptLimit = 50
 )
 
 var (
@@ -71,6 +76,7 @@ type Config struct {
 	EmbeddingBackend         string
 	MergeThreshold           float64
 	NewTopicThreshold        float64
+	TopicPromptLimit         int
 	KimiPath                 string
 	ClaudePath               string
 	Dir                      string // directory of the config file; base for relative paths
@@ -101,6 +107,7 @@ type yamlConfig struct {
 	EmbeddingBackend         *string  `yaml:"embedding_backend"`
 	MergeThreshold           *float64 `yaml:"merge_threshold"`
 	NewTopicThreshold        *float64 `yaml:"new_topic_threshold"`
+	TopicPromptLimit         *int     `yaml:"topic_prompt_limit"`
 	KimiPath                 *string  `yaml:"kimi_path"`
 	ClaudePath               *string  `yaml:"claude_path"`
 }
@@ -196,6 +203,7 @@ func Load(flagPath string) (*Config, error) {
 		EmbeddingBackend:         embeddingBackend,
 		MergeThreshold:           floatOr(raw.MergeThreshold, defaultMergeThreshold),
 		NewTopicThreshold:        floatOr(raw.NewTopicThreshold, defaultNewTopicThreshold),
+		TopicPromptLimit:         intOr(raw.TopicPromptLimit, defaultTopicPromptLimit),
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
 		Dir:                      dir,
