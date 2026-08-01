@@ -1,0 +1,177 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/fernando143/patro/internal/embed"
+)
+
+// pageTemplate renders the embedbench form and, once a report has been
+// computed, a results table. Mirrors internal/web's shape: one inlined
+// template.Must page, no external assets, no JavaScript.
+//
+// Scope note: this was originally designed as a cross-backend agreement
+// matrix (3, later 2, embedding backends side by side). Both go-sentex and
+// zerfoo were dropped before shipping and cybertron is the only backend
+// that made it into the registry (see the topic-reconciliation design doc,
+// D9 amendment), so the report below is a single-backend quality/
+// performance instrument, not a comparison matrix. It iterates purely
+// through embed.Available()/embed.New(name) — nothing here hardcodes
+// "cybertron" — so it becomes a real A/B comparison again automatically if
+// a second backend is ever registered.
+var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>embedbench</title>
+<style>
+body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+h1 { margin-bottom: 0.2rem; }
+p.sub { color: #666; margin-top: 0; }
+textarea { width: 100%; font-family: inherit; padding: 0.5rem; }
+label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+button { margin-top: 1rem; padding: 0.5rem 1.2rem; }
+table { border-collapse: collapse; margin-top: 1.5rem; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; }
+.err { color: #b00020; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>embedbench</h1>
+<p class="sub">Single-backend embedding quality/performance report &mdash; {{.BackendCount}} backend(s) compiled in: {{.Backends}}.</p>
+<form method="get" action="/">
+<label for="a">Text A</label>
+<textarea id="a" name="a" rows="3">{{.A}}</textarea>
+<label for="b">Text B (optional &mdash; cosine similarity is reported when set)</label>
+<textarea id="b" name="b" rows="3">{{.B}}</textarea>
+<button type="submit">Embed</button>
+</form>
+{{if .Err}}<p class="err">{{.Err}}</p>{{end}}
+{{if .Rows}}
+<table>
+<tr><th>Backend</th><th>Dim</th><th>Embed A time</th><th>Embed B time</th><th>cos(A,B)</th></tr>
+{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Dim}}</td><td>{{.TimeA}}</td><td>{{.TimeB}}</td><td>{{.Cosine}}</td></tr>{{end}}
+</table>
+{{end}}
+</body>
+</html>`))
+
+// pageData is the template's view model.
+type pageData struct {
+	A, B         string
+	Backends     string
+	BackendCount int
+	Rows         []reportRow
+	Err          string
+}
+
+// reportRow is one backend's result line in the report table.
+type reportRow struct {
+	Name   string
+	Dim    int
+	TimeA  string
+	TimeB  string
+	Cosine string
+}
+
+// Server serves the embedbench form and report. It carries no state: every
+// backend is constructed fresh per request via embed.New, so the tool never
+// pays weight-loading cost until someone actually submits text.
+type Server struct{}
+
+// NewServer returns an embedbench Server.
+func NewServer() *Server { return &Server{} }
+
+// ServeHTTP renders the form, and — once text A is submitted — a report
+// table with each compiled-in backend's dimensionality, embed wall time,
+// and (when text B is also set) cosine similarity.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	a := q.Get("a")
+	b := q.Get("b")
+
+	page := pageData{
+		A:            a,
+		B:            b,
+		Backends:     strings.Join(embed.Available(), ", "),
+		BackendCount: len(embed.Available()),
+	}
+
+	if strings.TrimSpace(a) != "" {
+		rows, err := report(r.Context(), a, b)
+		if err != nil {
+			page.Err = err.Error()
+		} else {
+			page.Rows = rows
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = pageTemplate.Execute(w, page)
+}
+
+// report runs every compiled-in embedding backend against a and, when b is
+// non-empty, reports their cosine similarity. Backends are iterated purely
+// via embed.Available()/embed.New(name) (see the package doc scope note) —
+// this function has no backend-specific logic of its own.
+func report(ctx context.Context, a, b string) ([]reportRow, error) {
+	names := embed.Available()
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no embedding backends compiled in")
+	}
+
+	withB := strings.TrimSpace(b) != ""
+	rows := make([]reportRow, 0, len(names))
+	for _, name := range names {
+		e, err := embed.New(name)
+		if err != nil {
+			return nil, fmt.Errorf("backend %q: %w", name, err)
+		}
+
+		start := time.Now()
+		va, err := e.Embed(ctx, a)
+		if err != nil {
+			return nil, fmt.Errorf("backend %q: embed A: %w", name, err)
+		}
+		row := reportRow{Name: e.Name(), Dim: e.Dim(), TimeA: time.Since(start).String()}
+
+		if withB {
+			start = time.Now()
+			vb, err := e.Embed(ctx, b)
+			if err != nil {
+				return nil, fmt.Errorf("backend %q: embed B: %w", name, err)
+			}
+			row.TimeB = time.Since(start).String()
+			row.Cosine = fmt.Sprintf("%.4f", cosine(va, vb))
+		}
+
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// cosine returns the cosine similarity of two vectors. Embedder
+// implementations are contracted to return unit-norm (L2-normalized)
+// vectors, so this is a plain dot product (design D2).
+func cosine(a, b []float32) float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	var dot float64
+	for i := 0; i < n; i++ {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	return dot
+}
