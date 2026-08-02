@@ -93,7 +93,7 @@ func TestOverflowDashboard(t *testing.T) {
 // Pre-migration (before phase 5), this is expected to be RED at narrow
 // widths — sizeForm/frame still use ad-hoc m.width math.
 func TestOverflowSettings(t *testing.T) {
-	steps := []settingsStep{stepBackend, stepPath, stepKey, stepSaving, stepResult}
+	steps := []settingsStep{stepBackend, stepPath, stepThresholds, stepKey, stepSaving, stepResult}
 	for _, size := range sizeMatrix {
 		for _, step := range steps {
 			m := newTestSettingsSized(t, kimiCfg(t), size.w, size.h)
