@@ -49,6 +49,18 @@ func TestLoadDefaultsForMissingFile(t *testing.T) {
 	if cfg.AnalyzerBackend != "kimi" {
 		t.Errorf("AnalyzerBackend = %q, want %q", cfg.AnalyzerBackend, "kimi")
 	}
+	if cfg.EmbeddingBackend != "cybertron" {
+		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "cybertron")
+	}
+	if cfg.MergeThreshold != 0.90 {
+		t.Errorf("MergeThreshold = %v, want %v", cfg.MergeThreshold, 0.90)
+	}
+	if cfg.NewTopicThreshold != 0.70 {
+		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.70)
+	}
+	if cfg.TopicPromptLimit != 50 {
+		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 50)
+	}
 	if cfg.KimiPath != "kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "kimi")
 	}
@@ -73,6 +85,10 @@ inbox: ~/recordings
 library: ./notes
 stability_checks: 4
 analyzer_backend: LeMUR
+embedding_backend: CYBERTRON
+merge_threshold: 0.95
+new_topic_threshold: 0.6
+topic_prompt_limit: 25
 kimi_path: /opt/kimi
 `)
 
@@ -102,6 +118,18 @@ kimi_path: /opt/kimi
 	if cfg.AnalyzerBackend != "lemur" {
 		t.Errorf("AnalyzerBackend = %q, want %q", cfg.AnalyzerBackend, "lemur")
 	}
+	if cfg.EmbeddingBackend != "cybertron" {
+		t.Errorf("EmbeddingBackend = %q, want %q", cfg.EmbeddingBackend, "cybertron")
+	}
+	if cfg.MergeThreshold != 0.95 {
+		t.Errorf("MergeThreshold = %v, want %v", cfg.MergeThreshold, 0.95)
+	}
+	if cfg.NewTopicThreshold != 0.6 {
+		t.Errorf("NewTopicThreshold = %v, want %v", cfg.NewTopicThreshold, 0.6)
+	}
+	if cfg.TopicPromptLimit != 25 {
+		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 25)
+	}
 	if cfg.KimiPath != "/opt/kimi" {
 		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "/opt/kimi")
 	}
@@ -119,6 +147,21 @@ func TestLoadInvalidBackend(t *testing.T) {
 		t.Fatal("Load() succeeded, want an invalid-backend error")
 	}
 	for _, want := range []string{"bogus", "kimi, lemur, claude"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestLoadInvalidEmbeddingBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "embedding_backend: bogus\n")
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() succeeded, want an invalid-embedding-backend error")
+	}
+	for _, want := range []string{"bogus", strings.Join(ValidEmbeddingBackends(), ", ")} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
@@ -269,6 +312,19 @@ func TestValidAnalyzerBackendsReturnsIndependentCopy(t *testing.T) {
 	got[0] = "corrupted"
 
 	again := ValidAnalyzerBackends()
+	if again[0] == "corrupted" {
+		t.Error("mutating a returned slice corrupted the package's internal list")
+	}
+}
+
+func TestValidEmbeddingBackendsReturnsIndependentCopy(t *testing.T) {
+	got := ValidEmbeddingBackends()
+	if len(got) == 0 {
+		t.Fatal("ValidEmbeddingBackends() returned no backends")
+	}
+	got[0] = "corrupted"
+
+	again := ValidEmbeddingBackends()
 	if again[0] == "corrupted" {
 		t.Error("mutating a returned slice corrupted the package's internal list")
 	}

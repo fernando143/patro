@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+
 	"github.com/fernando143/patro/internal/status"
 )
 
@@ -73,6 +75,75 @@ func TestListShownTruncationMath(t *testing.T) {
 					tc.total, tc.n, shown, tc.n)
 			}
 		})
+	}
+}
+
+// TestMaintenanceBodyPhases exercises maintenanceBody's every branch: idle
+// with nothing pending, idle with flagged topics waiting, and both
+// in-progress phases (rebuild -> reconcile, matching design D8's "one card,
+// two phases" transition).
+func TestMaintenanceBodyPhases(t *testing.T) {
+	cases := []struct {
+		name   string
+		maint  *status.Maintenance
+		flag   int
+		wantIn []string
+	}{
+		{"idle nothing pending", nil, 0, []string{"sin temas pendientes"}},
+		{"idle with flagged topics", nil, 3, []string{"3", "marcados"}},
+		{"rebuilding index", &status.Maintenance{Phase: status.PhaseRebuildingIndex, Done: 40, Total: 500}, 0,
+			[]string{"reconstruyendo índice", "40/500"}},
+		{"reconciling flagged", &status.Maintenance{Phase: status.PhaseReconciling, Done: 2, Total: 7}, 0,
+			[]string{"reconciliando", "2/7", "marcados"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{spinner: spinner.New(), data: dashboardData{
+				snap:         &status.Snapshot{Maintenance: tc.maint},
+				flaggedCount: tc.flag,
+			}}
+			out := ansiRe.ReplaceAllString(m.maintenanceBody(), "")
+			for _, want := range tc.wantIn {
+				if !strings.Contains(out, want) {
+					t.Errorf("maintenanceBody() = %q, want it to contain %q", out, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderRow1MaintenanceCardBesidesJobCard is task 8.7's proof: an
+// in-flight video job (EN CURSO) and background maintenance progress
+// (MANTENIMIENTO) are independent design D10/D12 states that must both be
+// representable on screen at once — this renders both non-nil simultaneously
+// and checks each card shows its own state, unaffected by the other.
+func TestRenderRow1MaintenanceCardBesidesJobCard(t *testing.T) {
+	m := sampleModel(t, 200, 40) // wide enough for EN CURSO/MANTENIMIENTO side by side
+	d := m.data
+	d.snap.Maintenance = &status.Maintenance{Phase: status.PhaseReconciling, Done: 2, Total: 7}
+	d.flaggedCount = 7
+	nm, _ := m.Update(dataMsg(d))
+	m = nm.(model)
+
+	out := ansiRe.ReplaceAllString(m.renderRow1(), "")
+
+	// The in-flight job card (seeded by sampleModel: roadmap-review.mkv,
+	// stage analyzing) must still render exactly as it would with no
+	// maintenance running.
+	if !strings.Contains(out, "roadmap-review.mkv") {
+		t.Error("in-flight job card missing after adding a maintenance card")
+	}
+	if !strings.Contains(out, "analyzing") {
+		t.Error("in-flight job stage missing after adding a maintenance card")
+	}
+	// The maintenance card must show the live phase/progress, not the idle
+	// flagged-count summary — a live Maintenance always wins over the
+	// idle-count fallback.
+	if !strings.Contains(out, "reconciliando") {
+		t.Error("maintenance card does not show the reconciling phase")
+	}
+	if !strings.Contains(out, "2/7") {
+		t.Error("maintenance card does not show its progress")
 	}
 }
 

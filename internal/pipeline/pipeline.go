@@ -15,16 +15,26 @@ import (
 	"encoding/hex"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fernando143/patro/internal/analyzer"
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/transcriber"
 	"github.com/fernando143/patro/internal/types"
+	"github.com/fernando143/patro/internal/vectors"
 )
+
+// grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
+// (library.GrayZoneCLI): a short yes/no question about two topics, not a
+// full transcript analysis, so it uses a much smaller budget than the
+// analyzer's own CLI timeout (internal/analyzer/cli.go's cliTimeoutSeconds
+// = 600s).
+const grayZoneTimeoutSeconds = 60
 
 // TranscribeFunc turns one video file into a transcript.
 type TranscribeFunc func(ctx context.Context, videoPath string, cfg *config.Config) (*types.TranscriptResult, error)
@@ -122,6 +132,67 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 
 // ------------------------------------------------------------------ pipeline
 
+// newReconciler builds the production Reconciler wired to the configured
+// embedding backend and vector store (design D1/D2/D7/D9/D10). It returns
+// nil — never an error — on any construction failure (unknown/misconfigured
+// embedding_backend, or a vector store that cannot be opened): Library.
+// Reconciler is nil-safe and falls back to today's exact-slug-only behavior
+// (design D1), so a missing/misconfigured embedding backend never blocks
+// video processing. This also means the pipeline never fails --mock runs or
+// tests that construct a *config.Config directly and leave
+// EmbeddingBackend unset: embed.New("") fails fast (a registry map lookup,
+// no weight loading), well before any vector store I/O is attempted.
+//
+// The vector store is rooted at cfg.StateDir()/vectors/topics.json (design
+// D10) and is only ever populated out of band by Rebuild — never
+// incrementally by the reconciler itself. That rebuild trigger
+// (`patro reconcile` / serve-startup integrity check) is Unit 7's scope,
+// not this one: wiring the reconciler here is safe before Unit 7 lands
+// because an empty or stale store degrades to "nothing to compare against"
+// (new, unflagged topic) or vectors.ErrRebuilding (new, flagged topic) —
+// both already-designed safe-fail paths, never a wrong merge.
+// NewReconciler is the exported form of newReconciler, so cmd/patro can wire
+// the identical production Reconciler for "patro reconcile" (Unit 7) without
+// duplicating this construction logic.
+func NewReconciler(cfg *config.Config) library.Reconciler {
+	return newReconciler(cfg)
+}
+
+func newReconciler(cfg *config.Config) library.Reconciler {
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		logging.Warnf("reconciliation disabled: %v", err)
+		return nil
+	}
+
+	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+	if err != nil {
+		logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, err)
+		return nil
+	}
+
+	// The gray-zone LLM binary follows the configured analyzer backend,
+	// mirroring MakeAnalyzeFunc's own kimi/claude choice: kimi_path/
+	// claude_path are always populated with a default (internal/config),
+	// so this never needs its own separate config key. lemur (hosted, no
+	// local CLI) falls back to kimi_path, matching kimi's status as the
+	// project's default local CLI.
+	binaryPath := cfg.KimiPath
+	if cfg.AnalyzerBackend == "claude" {
+		binaryPath = cfg.ClaudePath
+	}
+
+	return &library.SemanticReconciler{
+		Embedder:          embedder,
+		Store:             store,
+		MergeThreshold:    cfg.MergeThreshold,
+		NewTopicThreshold: cfg.NewTopicThreshold,
+		Decide:            library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second),
+		LedgerPath:        filepath.Join(cfg.StateDir(), "reconciliation.json"),
+	}
+}
+
 // ProcessVideo processes one video end to end. It returns the meeting note
 // path, or "" when the file was skipped (already processed). Errors are
 // propagated to the caller, which logs them.
@@ -136,6 +207,7 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 	if err != nil {
 		return "", err
 	}
+	lib.Reconciler = newReconciler(cfg)
 
 	tracker.Start(videoPath)
 	tracker.Stage(status.StageTranscribing)
@@ -144,12 +216,12 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 		return "", err
 	}
 	tracker.Stage(status.StageAnalyzing)
-	analysis, err := af(ctx, transcript, lib.ExistingTopics())
+	analysis, err := af(ctx, transcript, lib.ExistingTopicsRecent(cfg.TopicPromptLimit))
 	if err != nil {
 		return "", err
 	}
 	tracker.Stage(status.StageWriting)
-	notePath, err := lib.AddMeeting(transcript, analysis, videoPath)
+	notePath, err := lib.AddMeetingCtx(ctx, transcript, analysis, videoPath)
 	if err != nil {
 		return "", err
 	}

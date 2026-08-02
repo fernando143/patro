@@ -1,0 +1,61 @@
+change: topic-reconciliation
+artifact_store: hybrid   # engram (source of truth during authoring) + openspec files (backfilled)
+
+phases:
+  exploration:
+    status: done
+
+  proposal:
+    status: done
+    file: proposal.md
+    engram_topic_key: sdd/topic-reconciliation/proposal
+    engram_id: 136
+    revisions: 2
+
+  spec:
+    status: done
+    file: specs/{domain}/spec.md
+    engram_topic_key: sdd/topic-reconciliation/spec
+    engram_id: 138
+    revisions: 1
+    domains:
+      - topic-reconciliation
+      - local-embeddings
+      - library-search
+      - meeting-analysis
+      - settings-management
+      - maintenance-status
+      - embedbench
+
+  design:
+    status: done
+    file: design.md
+    engram_topic_key: sdd/topic-reconciliation/design
+    engram_id: 137
+    revisions: 3
+
+  tasks:
+    status: done
+    file: tasks.md
+    engram_topic_key: sdd/topic-reconciliation/tasks
+    note: >
+      Materialized to tasks.md (10 stacked units, 1a->1c->1d->2->3->4->5->6->7->8,
+      plus Phase 10 final gate). Units 1a, 1d, 2, 3, 4, 5, 6, 7, 8 done and
+      committed; 1c (zerfoo) stays blocked/dropped (see finding in Phase 2,
+      D9 amendment) — cybertron ships as the sole embedding backend.
+
+  apply:
+    status: done
+    note: >
+      All 8 work units + Phase 10 final gate complete on
+      feature/topic-reconciliation-3-vectors-searchindex (12 commits,
+      083bed9..ade30f1). CGO_ENABLED=0 cross-compile verified for all 4
+      release targets (~109-111MB each with embedded cybertron weights).
+      Full go build/vet/test green across all 16 packages. Ready for
+      sdd-verify.
+
+  verify:
+    status: not_started
+
+  archive:
+    status: not_started

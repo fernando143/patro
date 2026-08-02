@@ -112,11 +112,20 @@ func TestSettingsAdvancesThroughSteps(t *testing.T) {
 	}
 
 	m = pump(t, m, m.advance())
+	if m.step != stepThresholds {
+		t.Fatalf("step = %d, want stepThresholds", m.step)
+	}
+
+	m = pump(t, m, m.advance())
 	if m.step != stepKey {
 		t.Fatalf("step = %d, want stepKey", m.step)
 	}
 
 	// esc walks back the same way.
+	m = pump(t, m, m.back())
+	if m.step != stepThresholds {
+		t.Fatalf("step = %d after esc, want stepThresholds", m.step)
+	}
 	m = pump(t, m, m.back())
 	if m.step != stepPath {
 		t.Fatalf("step = %d after esc, want stepPath", m.step)
@@ -127,14 +136,23 @@ func TestSettingsAdvancesThroughSteps(t *testing.T) {
 	}
 }
 
-// lemur is hosted, so the CLI-path step is skipped in both directions.
+// lemur is hosted, so the CLI-path step is skipped in both directions, but
+// the (backend-agnostic) thresholds step still runs.
 func TestSettingsSkipsPathStepForHostedBackend(t *testing.T) {
 	m := newTestSettings(t, kimiCfg(t))
 	m.vals.backend = "lemur"
 
 	m = pump(t, m, m.advance())
+	if m.step != stepThresholds {
+		t.Fatalf("step = %d for lemur, want stepThresholds (path step must be skipped)", m.step)
+	}
+	m = pump(t, m, m.advance())
 	if m.step != stepKey {
-		t.Fatalf("step = %d for lemur, want stepKey (path step must be skipped)", m.step)
+		t.Fatalf("step = %d for lemur, want stepKey", m.step)
+	}
+	m = pump(t, m, m.back())
+	if m.step != stepThresholds {
+		t.Fatalf("step = %d going back from stepKey, want stepThresholds", m.step)
 	}
 	m = pump(t, m, m.back())
 	if m.step != stepBackend {
@@ -210,11 +228,141 @@ func TestNewSettingsTargetsResolvedConfigPath(t *testing.T) {
 	}
 }
 
+func TestValidateThreshold(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"0", false}, {"1", false}, {"0.9", false}, {"0.70", false},
+		{"", true}, {"not a number", true}, {"-0.1", true}, {"1.1", true},
+	}
+	for _, tc := range cases {
+		err := validateThreshold(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("validateThreshold(%q) error = %v, wantErr %v", tc.in, err, tc.wantErr)
+		}
+	}
+}
+
+func TestValidatePositiveInt(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"1", false}, {"50", false},
+		{"0", true}, {"-1", true}, {"", true}, {"abc", true}, {"1.5", true},
+	}
+	for _, tc := range cases {
+		err := validatePositiveInt(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("validatePositiveInt(%q) error = %v, wantErr %v", tc.in, err, tc.wantErr)
+		}
+	}
+}
+
+// The 3-band reconciler needs merge > new-topic to have a gray zone at all
+// (spec's three-band table) — the thresholds step must reject the inverse.
+func TestValidateThresholdOrder(t *testing.T) {
+	if err := validateThresholdOrder("0.90", "0.70"); err != nil {
+		t.Errorf("validateThresholdOrder(0.90, 0.70) = %v, want nil", err)
+	}
+	if err := validateThresholdOrder("0.70", "0.90"); err == nil {
+		t.Error("validateThresholdOrder(0.70, 0.90) = nil, want an error (no gray zone left)")
+	}
+	if err := validateThresholdOrder("0.5", "0.5"); err == nil {
+		t.Error("validateThresholdOrder(0.5, 0.5) = nil, want an error (equal thresholds leave no gray zone)")
+	}
+}
+
+// newSettings must seed the thresholds step from the current config, the
+// same way it seeds backend.
+func TestNewSettingsSeedsThresholdsFromConfig(t *testing.T) {
+	cfg := kimiCfg(t)
+	cfg.MergeThreshold = 0.93
+	cfg.NewTopicThreshold = 0.65
+	cfg.TopicPromptLimit = 42
+
+	m := newTestSettings(t, cfg)
+	if m.vals.mergeThreshold != "0.93" {
+		t.Errorf("mergeThreshold = %q, want 0.93", m.vals.mergeThreshold)
+	}
+	if m.vals.newTopicThreshold != "0.65" {
+		t.Errorf("newTopicThreshold = %q, want 0.65", m.vals.newTopicThreshold)
+	}
+	if m.vals.topicPromptLimit != "42" {
+		t.Errorf("topicPromptLimit = %q, want 42", m.vals.topicPromptLimit)
+	}
+}
+
+// thresholdValues must detect a genuine change and leave unchanged values
+// alone, exactly like backendChanged does for the backend/path step —
+// saveCmd only calls setup.SetThresholds (and restarts the service) when
+// this reports changed.
+func TestThresholdValuesDetectsChange(t *testing.T) {
+	cfg := &config.Config{MergeThreshold: 0.90, NewTopicThreshold: 0.70, TopicPromptLimit: 50}
+
+	same := &settingsValues{mergeThreshold: "0.90", newTopicThreshold: "0.70", topicPromptLimit: "50"}
+	if _, _, _, changed := thresholdValues(same, cfg); changed {
+		t.Error("thresholdValues() changed = true for values identical to cfg")
+	}
+
+	changedVals := &settingsValues{mergeThreshold: "0.95", newTopicThreshold: "0.60", topicPromptLimit: "20"}
+	merge, newTopic, limit, changed := thresholdValues(changedVals, cfg)
+	if !changed {
+		t.Fatal("thresholdValues() changed = false, want true")
+	}
+	if merge != 0.95 || newTopic != 0.60 || limit != 20 {
+		t.Errorf("thresholdValues() = %v/%v/%v, want 0.95/0.60/20", merge, newTopic, limit)
+	}
+}
+
+// Submitting the thresholds step ends with setup.SetThresholds writing the
+// parsed values to config.yaml — this is the exact call saveCmd makes when
+// thresholdValues reports a change (proved above), exercised here the same
+// way TestSetThresholdsPreservesUnknownKeys exercises SetBackend: end to end
+// against a real file, without touching setup.SetAPIKey/RestartService
+// (which shell out to the real service manager — service_test.go documents
+// why those are never exercised directly).
+func TestSettingsThresholdsStepPersistsToConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("analyzer_backend: kimi\nkimi_path: /bin/kimi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", Path: path,
+		MergeThreshold: 0.90, NewTopicThreshold: 0.70, TopicPromptLimit: 50}
+
+	m := newTestSettings(t, cfg)
+	m.vals.mergeThreshold = "0.95"
+	m.vals.newTopicThreshold = "0.60"
+	m.vals.topicPromptLimit = "20"
+
+	merge, newTopic, limit, changed := thresholdValues(m.vals, m.cfg)
+	if !changed {
+		t.Fatal("thresholdValues() changed = false after editing every field")
+	}
+	if err := setup.SetThresholds(m.target, merge, newTopic, limit); err != nil {
+		t.Fatalf("setup.SetThresholds: %v", err)
+	}
+
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if reloaded.MergeThreshold != 0.95 || reloaded.NewTopicThreshold != 0.60 || reloaded.TopicPromptLimit != 20 {
+		t.Errorf("reloaded thresholds = %v/%v/%v, want 0.95/0.60/20",
+			reloaded.MergeThreshold, reloaded.NewTopicThreshold, reloaded.TopicPromptLimit)
+	}
+	// analyzer_backend must survive the partial edit untouched.
+	if reloaded.AnalyzerBackend != "kimi" {
+		t.Errorf("analyzer_backend = %q, want kimi preserved", reloaded.AnalyzerBackend)
+	}
+}
+
 // The size must reach the model: sizeForm measures the chrome by rendering it,
 // so a narrow or short terminal exercises a different code path than the
 // default 100x40.
 func TestSettingsViewDoesNotPanic(t *testing.T) {
-	steps := []settingsStep{stepBackend, stepPath, stepKey, stepSaving, stepResult}
+	steps := []settingsStep{stepBackend, stepPath, stepThresholds, stepKey, stepSaving, stepResult}
 	for _, size := range []struct{ w, h int }{{100, 40}, {60, 24}, {30, 10}, {15, 5}} {
 		for _, step := range steps {
 			for _, backend := range []string{"claude", "lemur"} {

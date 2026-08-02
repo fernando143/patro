@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/status"
 )
 
@@ -240,6 +241,93 @@ func TestProcessAlive(t *testing.T) {
 	}
 	if pid := deadPID(t); processAlive(pid) {
 		t.Errorf("processAlive(%d) = true for a reaped process, want false", pid)
+	}
+}
+
+func TestCountFlaggedTopicsMissingLedger(t *testing.T) {
+	if got := countFlaggedTopics(t.TempDir()); got != 0 {
+		t.Errorf("countFlaggedTopics(no ledger) = %d, want 0", got)
+	}
+}
+
+func TestCountFlaggedTopicsCorruptLedgerDegradesToZero(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reconciliation.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := countFlaggedTopics(dir); got != 0 {
+		t.Errorf("countFlaggedTopics(corrupt ledger) = %d, want 0", got)
+	}
+}
+
+func TestCountFlaggedTopicsCountsLatestPerSlug(t *testing.T) {
+	dir := t.TempDir()
+	entries := struct {
+		Entries []library.LedgerEntry `json:"entries"`
+	}{Entries: []library.LedgerEntry{
+		{Slug: "a", Flagged: true},
+		{Slug: "b", Flagged: true},
+	}}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reconciliation.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := countFlaggedTopics(dir); got != 2 {
+		t.Errorf("countFlaggedTopics = %d, want 2", got)
+	}
+}
+
+// loadData must surface the flagged count, and clear a stale (dead-writer)
+// snapshot's Maintenance the same way it already clears Current/Queue.
+func TestLoadDataSurfacesFlaggedCountAndClearsStaleMaintenance(t *testing.T) {
+	cfg := testConfig(t)
+	entries := struct {
+		Entries []library.LedgerEntry `json:"entries"`
+	}{Entries: []library.LedgerEntry{{Slug: "x", Flagged: true}}}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.StateDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir(), "reconciliation.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeSnapshot(t, cfg.StateDir(), status.Snapshot{
+		PID:         deadPID(t),
+		Maintenance: &status.Maintenance{Phase: status.PhaseRebuildingIndex, Done: 3, Total: 10},
+	})
+
+	d := loadData(cfg, 10)
+
+	if d.flaggedCount != 1 {
+		t.Errorf("flaggedCount = %d, want 1", d.flaggedCount)
+	}
+	if !d.statusStale {
+		t.Fatal("statusStale = false, want true for a snapshot from a dead process")
+	}
+	if got := d.maintenance(); got != nil {
+		t.Errorf("maintenance() = %v, want nil for a stale (dead-writer) snapshot", got)
+	}
+}
+
+// A live snapshot's Maintenance must survive untouched.
+func TestLoadDataSurfacesLiveMaintenance(t *testing.T) {
+	cfg := testConfig(t)
+	writeSnapshot(t, cfg.StateDir(), status.Snapshot{
+		PID:         os.Getpid(),
+		Maintenance: &status.Maintenance{Phase: status.PhaseReconciling, Done: 1, Total: 4},
+	})
+
+	d := loadData(cfg, 10)
+
+	got := d.maintenance()
+	if got == nil || got.Phase != status.PhaseReconciling || got.Done != 1 || got.Total != 4 {
+		t.Errorf("maintenance() = %+v, want the live Maintenance from status.json", got)
 	}
 }
 

@@ -26,11 +26,43 @@ const (
 	defaultAnalyzerBackend          = "kimi"
 	defaultKimiPath                 = "kimi"
 	defaultClaudePath               = "claude"
+	// defaultEmbeddingBackend is provisional: cybertron is the only
+	// candidate with third-party adoption evidence as of design D9.
+	// tools/embedbench settles the final default once both backends
+	// land (units 1c-1d).
+	defaultEmbeddingBackend = "cybertron"
+	// defaultMergeThreshold / defaultNewTopicThreshold are the 3-band
+	// reconciliation thresholds (design D7), provisional until calibrated
+	// with tools/embedbench: cosine >= merge_threshold auto-merges, cosine
+	// < new_topic_threshold creates a new topic, the gray zone between them
+	// triggers one reconciliation LLM call.
+	defaultMergeThreshold    = 0.90
+	defaultNewTopicThreshold = 0.70
+	// defaultTopicPromptLimit bounds how many existing topics are shown to
+	// the analyzer LLM per request (design D6/D7): BuildPrompt stays a pure
+	// formatter, the caller (pipeline) passes an already recency-capped
+	// list via Library.ExistingTopicsRecent(n) instead of every topic.
+	defaultTopicPromptLimit = 50
 )
 
 var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
 	validAnalyzerBackends  = []string{"kimi", "lemur", "claude"}
+	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
+	// (design D9 amendment). It is a separate, explicit list here rather
+	// than a call into internal/embed so config validation has no
+	// dependency on the embed package, matching the validAnalyzerBackends
+	// precedent. Kept in sync by hand as adapters land.
+	// go-sentex was dropped (D9 revision 4): its LoadModel() downloads
+	// ~87MB of weights from HuggingFace Hub on first call with no way to
+	// inject local/embedded bytes, incompatible with the
+	// zero-network-after-install requirement (decision 2). zerfoo was
+	// investigated (Unit 1c) but never registered: its only exported
+	// embedding API mean-pools the static token-embedding table and never
+	// runs the transformer, so it cannot produce genuine contextual
+	// sentence embeddings. cybertron (Unit 1d) is the sole verified,
+	// registered backend.
+	validEmbeddingBackends = []string{"cybertron"}
 )
 
 // Config is the runtime configuration with all paths resolved.
@@ -41,6 +73,10 @@ type Config struct {
 	StabilityChecks          int
 	StabilityIntervalSeconds int
 	AnalyzerBackend          string
+	EmbeddingBackend         string
+	MergeThreshold           float64
+	NewTopicThreshold        float64
+	TopicPromptLimit         int
 	KimiPath                 string
 	ClaudePath               string
 	Dir                      string // directory of the config file; base for relative paths
@@ -53,6 +89,12 @@ func ValidAnalyzerBackends() []string {
 	return append([]string(nil), validAnalyzerBackends...)
 }
 
+// ValidEmbeddingBackends returns the accepted embedding_backend values. The
+// result is a copy so callers cannot corrupt validation.
+func ValidEmbeddingBackends() []string {
+	return append([]string(nil), validEmbeddingBackends...)
+}
+
 // yamlConfig mirrors config.yaml. Pointer fields distinguish an absent key
 // (fall back to the default) from an explicitly set zero value.
 type yamlConfig struct {
@@ -62,6 +104,10 @@ type yamlConfig struct {
 	StabilityChecks          *int     `yaml:"stability_checks"`
 	StabilityIntervalSeconds *int     `yaml:"stability_interval_seconds"`
 	AnalyzerBackend          *string  `yaml:"analyzer_backend"`
+	EmbeddingBackend         *string  `yaml:"embedding_backend"`
+	MergeThreshold           *float64 `yaml:"merge_threshold"`
+	NewTopicThreshold        *float64 `yaml:"new_topic_threshold"`
+	TopicPromptLimit         *int     `yaml:"topic_prompt_limit"`
 	KimiPath                 *string  `yaml:"kimi_path"`
 	ClaudePath               *string  `yaml:"claude_path"`
 }
@@ -139,6 +185,14 @@ func Load(flagPath string) (*Config, error) {
 		)
 	}
 
+	embeddingBackend := strings.ToLower(strings.TrimSpace(stringOr(raw.EmbeddingBackend, defaultEmbeddingBackend)))
+	if !validEmbeddingBackend(embeddingBackend) {
+		return nil, fmt.Errorf(
+			"invalid embedding_backend %q in %s; valid values: %s",
+			embeddingBackend, filepath.Base(configPath), strings.Join(validEmbeddingBackends, ", "),
+		)
+	}
+
 	return &Config{
 		Inbox:                    resolvePath(stringOr(raw.Inbox, defaultInbox), dir),
 		Library:                  resolvePath(stringOr(raw.Library, defaultLibrary), dir),
@@ -146,6 +200,10 @@ func Load(flagPath string) (*Config, error) {
 		StabilityChecks:          intOr(raw.StabilityChecks, defaultStabilityChecks),
 		StabilityIntervalSeconds: intOr(raw.StabilityIntervalSeconds, defaultStabilityIntervalSeconds),
 		AnalyzerBackend:          backend,
+		EmbeddingBackend:         embeddingBackend,
+		MergeThreshold:           floatOr(raw.MergeThreshold, defaultMergeThreshold),
+		NewTopicThreshold:        floatOr(raw.NewTopicThreshold, defaultNewTopicThreshold),
+		TopicPromptLimit:         intOr(raw.TopicPromptLimit, defaultTopicPromptLimit),
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
 		Dir:                      dir,
@@ -185,6 +243,13 @@ func (c *Config) StateDir() string {
 	return filepath.Join(c.Dir, ".state")
 }
 
+// SearchIndexDir returns the directory holding the BM25 full-text index
+// (design D3, internal/searchindex). It is a derived, deletable artifact —
+// never the source of truth.
+func (c *Config) SearchIndexDir() string {
+	return filepath.Join(c.StateDir(), "search-index")
+}
+
 // LogFile returns the path of patro's log file.
 func (c *Config) LogFile() string {
 	return filepath.Join(c.Dir, "patro.log")
@@ -198,6 +263,13 @@ func stringOr(value *string, fallback string) string {
 }
 
 func intOr(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func floatOr(value *float64, fallback float64) float64 {
 	if value == nil {
 		return fallback
 	}
@@ -224,6 +296,15 @@ func binaryPathOr(value *string, fallback string) string {
 
 func validBackend(backend string) bool {
 	for _, b := range validAnalyzerBackends {
+		if b == backend {
+			return true
+		}
+	}
+	return false
+}
+
+func validEmbeddingBackend(backend string) bool {
+	for _, b := range validEmbeddingBackends {
 		if b == backend {
 			return true
 		}

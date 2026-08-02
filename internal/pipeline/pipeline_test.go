@@ -3,14 +3,20 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/types"
+	"github.com/fernando143/patro/internal/vectors"
 )
 
 // newTestVideo creates a real file on disk: state.IsProcessed/MarkProcessed
@@ -27,7 +33,14 @@ func newTestVideo(t *testing.T, dir, name string) string {
 func newTestCfg(t *testing.T) *config.Config {
 	t.Helper()
 	root := t.TempDir()
-	return &config.Config{Library: filepath.Join(root, "library")}
+	// TopicPromptLimit mirrors config.Load's default (50, design D7) since
+	// this struct literal bypasses Load's defaulting. EmbeddingBackend is
+	// deliberately left unset: newReconciler then fails fast on
+	// embed.New("") and lib.Reconciler stays nil, preserving these tests'
+	// pre-existing exact-slug-only behavior without spinning up a real
+	// embedding backend or writing under a relative ".state" (Dir is also
+	// unset here).
+	return &config.Config{Library: filepath.Join(root, "library"), TopicPromptLimit: 50}
 }
 
 var errBoom = errors.New("boom")
@@ -382,6 +395,271 @@ func TestMockTranscribeIsDeterministic(t *testing.T) {
 	}
 	if a.Language != "en" {
 		t.Errorf("MockTranscribe language = %q, want \"en\"", a.Language)
+	}
+}
+
+// ------------------------------------------------------- Unit 5: topic_prompt_limit (D6/D7)
+
+// TestProcessVideoTopicPromptLimitCapsAndOrdersMostRecentFirst is the
+// checkpoint 5.3 fixture: 500 existing topics, each with a distinct dated
+// section, prove the analyzer only ever sees at most cfg.TopicPromptLimit
+// entries and that they are the most recently updated ones (Library.
+// ExistingTopicsRecent, wired at pipeline.go's analyze call site per design
+// D6 — BuildPrompt itself is untouched, see analyzer_test.go checkpoint 5.4).
+func TestProcessVideoTopicPromptLimitCapsAndOrdersMostRecentFirst(t *testing.T) {
+	dir := t.TempDir()
+	video := newTestVideo(t, dir, "meeting.mkv")
+	cfg := newTestCfg(t)
+	cfg.TopicPromptLimit = 50
+	st := state.New(t.TempDir())
+
+	const total = 500
+	topicsDir := filepath.Join(cfg.Library, "topics")
+	if err := os.MkdirAll(topicsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < total; i++ {
+		slug := fmt.Sprintf("topic-%03d", i)
+		date := base.AddDate(0, 0, i).Format("2006-01-02")
+		content := fmt.Sprintf("# Topic %03d\n\n## %s Some meeting\n\nSome content.\n", i, date)
+		path := filepath.Join(topicsDir, slug+".md")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+
+	var gotExisting []types.TopicRef
+	af := func(ctx context.Context, tr *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
+		gotExisting = existing
+		return MockAnalyze(ctx, tr, existing)
+	}
+
+	if _, err := ProcessVideo(context.Background(), video, cfg, st, nil, MockTranscribe, af); err != nil {
+		t.Fatalf("ProcessVideo error = %v", err)
+	}
+
+	if len(gotExisting) != cfg.TopicPromptLimit {
+		t.Fatalf("len(existing) = %d, want %d (prompt must stay capped at topic_prompt_limit even with %d topics)",
+			len(gotExisting), cfg.TopicPromptLimit, total)
+	}
+	// Most-recent-first: topic-499 has the latest date, so it must be
+	// first; the 50th entry is topic-450 (indices 499..450 descending).
+	if gotExisting[0].Slug != "topic-499" {
+		t.Errorf("existing[0].Slug = %q, want %q (most recently updated topic first)", gotExisting[0].Slug, "topic-499")
+	}
+	if last := gotExisting[len(gotExisting)-1].Slug; last != "topic-450" {
+		t.Errorf("existing[last].Slug = %q, want %q", last, "topic-450")
+	}
+}
+
+// -------------------------------------------------- unwired reconciler gap
+
+// TestNewReconcilerUnknownBackendReturnsNil covers the graceful-degradation
+// path: an unset/unknown embedding_backend (e.g. the zero-value config used
+// throughout this file's other tests, or --mock configs that never set one)
+// must not fail pipeline processing — newReconciler logs and returns nil,
+// so Library.Reconciler stays nil and AddMeetingCtx keeps today's
+// exact-slug-only behavior (design D1).
+func TestNewReconcilerUnknownBackendReturnsNil(t *testing.T) {
+	cfg := &config.Config{Dir: t.TempDir(), EmbeddingBackend: "does-not-exist"}
+	if r := newReconciler(cfg); r != nil {
+		t.Errorf("newReconciler(unknown backend) = %#v, want nil", r)
+	}
+}
+
+func TestNewReconcilerEmptyBackendReturnsNil(t *testing.T) {
+	cfg := &config.Config{Dir: t.TempDir()}
+	if r := newReconciler(cfg); r != nil {
+		t.Errorf("newReconciler(empty backend) = %#v, want nil", r)
+	}
+}
+
+// TestNewReconcilerValidBackendWiresSemanticReconciler proves the real
+// wiring (the gap flagged by the Unit 4 implementer): a valid
+// embedding_backend must produce a *library.SemanticReconciler with a real
+// embedder, a vector store rooted at cfg.StateDir()/vectors/topics.json, the
+// configured thresholds, a non-nil gray-zone decider, and the ledger path
+// at cfg.StateDir()/reconciliation.json.
+func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Dir:               dir,
+		EmbeddingBackend:  "cybertron",
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+		AnalyzerBackend:   "kimi",
+		KimiPath:          "kimi",
+	}
+
+	r := newReconciler(cfg)
+	sr, ok := r.(*library.SemanticReconciler)
+	if !ok {
+		t.Fatalf("newReconciler(cybertron) = %#v (%T), want *library.SemanticReconciler", r, r)
+	}
+	if sr.Embedder == nil {
+		t.Error("SemanticReconciler.Embedder = nil, want a real embedder")
+	}
+	if sr.Store == nil {
+		t.Error("SemanticReconciler.Store = nil, want a real vector store")
+	}
+	if sr.MergeThreshold != 0.90 {
+		t.Errorf("MergeThreshold = %v, want 0.90", sr.MergeThreshold)
+	}
+	if sr.NewTopicThreshold != 0.70 {
+		t.Errorf("NewTopicThreshold = %v, want 0.70", sr.NewTopicThreshold)
+	}
+	if sr.Decide == nil {
+		t.Error("Decide (gray-zone decider) = nil, want GrayZoneCLI wired")
+	}
+	wantLedger := filepath.Join(cfg.StateDir(), "reconciliation.json")
+	if sr.LedgerPath != wantLedger {
+		t.Errorf("LedgerPath = %q, want %q", sr.LedgerPath, wantLedger)
+	}
+
+	// The store must be reachable at the documented, stable path (design
+	// D10: ".state/vectors/topics.json") so a later Unit 7 rebuild
+	// populates the exact same store this reconciler queries. NewStore
+	// does not create the directory eagerly (lazy, mirrors vectors' own
+	// on-first-flush behavior) — Upsert exercises the same path and
+	// proves it is writable.
+	wantStore := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	vec, err := sr.Embedder.Embed(context.Background(), "probe")
+	if err != nil {
+		t.Fatalf("Embed error = %v", err)
+	}
+	if err := sr.Store.(*vectors.Store).Upsert("probe", vec); err != nil {
+		t.Fatalf("Upsert error = %v", err)
+	}
+	if _, err := os.Stat(wantStore); err != nil {
+		t.Errorf("vector store file %s not written after Upsert: %v", wantStore, err)
+	}
+}
+
+// TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend covers the
+// binary-path selection judgment call: the gray-zone LLM binary follows
+// cfg.AnalyzerBackend, mirroring MakeAnalyzeFunc's own kimi/claude choice.
+func TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho yes\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	cfg := &config.Config{
+		Dir:              dir,
+		EmbeddingBackend: "cybertron",
+		AnalyzerBackend:  "claude",
+		ClaudePath:       scriptPath,
+		KimiPath:         "kimi-should-not-be-used",
+	}
+
+	r := newReconciler(cfg)
+	sr, ok := r.(*library.SemanticReconciler)
+	if !ok {
+		t.Fatalf("newReconciler(cybertron) = %#v (%T), want *library.SemanticReconciler", r, r)
+	}
+	same, err := sr.Decide(context.Background(), types.Topic{Name: "a"}, types.TopicRef{Name: "b", Slug: "b"})
+	if err != nil {
+		t.Fatalf("Decide error = %v, want nil (fake claude script always answers yes)", err)
+	}
+	if !same {
+		t.Error("Decide = false, want true (fake claude script answers yes, proving claude_path was used)")
+	}
+}
+
+// TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate is the runtime
+// harness for the reconciler-wiring gap: it exercises ProcessVideo end to
+// end with the real cybertron embedder and a real *vectors.Store rooted at
+// the exact path newReconciler constructs, proving lib.Reconciler is
+// genuinely wired (not left nil) and AddMeetingCtx (not the legacy
+// AddMeeting) is called.
+//
+// Per Unit 4's design (D10), the vector store is only ever populated by an
+// out-of-band Rebuild — never incrementally by the reconciler itself — and
+// that trigger belongs to Unit 7 (`patro reconcile` / serve-startup
+// integrity check), not this unit. So this test pre-seeds the store exactly
+// as a prior Rebuild would have, at the same path/backend/model_version
+// newReconciler uses, to prove the plumbing this unit owns is correct
+// without reimplementing Unit 7's rebuild trigger.
+func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Dir:               dir,
+		Library:           filepath.Join(dir, "library"),
+		EmbeddingBackend:  "cybertron",
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+		TopicPromptLimit:  50,
+		AnalyzerBackend:   "kimi",
+		KimiPath:          "kimi",
+	}
+
+	lib, err := library.NewLibrary(cfg.Library)
+	if err != nil {
+		t.Fatalf("NewLibrary error = %v", err)
+	}
+	const (
+		existingSlug = "product-roadmap"
+		existingName = "Product roadmap"
+		content      = "We discussed shipping the new dashboard feature next quarter."
+	)
+	if err := os.WriteFile(filepath.Join(lib.TopicsDir, existingSlug+".md"), []byte("# "+existingName+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		t.Fatalf("embed.New error = %v", err)
+	}
+	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+	if err != nil {
+		t.Fatalf("vectors.NewStore error = %v", err)
+	}
+	vec, err := embedder.Embed(context.Background(), existingName+"\n"+content)
+	if err != nil {
+		t.Fatalf("Embed error = %v", err)
+	}
+	if err := store.Upsert(existingSlug, vec); err != nil {
+		t.Fatalf("Upsert error = %v", err)
+	}
+
+	video := newTestVideo(t, dir, "meeting.mkv")
+	st := state.New(t.TempDir())
+	af := func(ctx context.Context, tr *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
+		return &types.AnalysisResult{
+			Title: "Follow-up",
+			Topics: []types.Topic{
+				{Slug: "roadmap-followup", Name: existingName, Content: content},
+			},
+		}, nil
+	}
+
+	if _, err := ProcessVideo(context.Background(), video, cfg, st, nil, MockTranscribe, af); err != nil {
+		t.Fatalf("ProcessVideo error = %v", err)
+	}
+
+	topics, err := filepath.Glob(filepath.Join(cfg.Library, "topics", "*.md"))
+	if err != nil {
+		t.Fatalf("Glob error = %v", err)
+	}
+	if len(topics) != 1 {
+		t.Fatalf("topics = %v, want exactly 1 (semantic merge into %q expected)", topics, existingSlug)
+	}
+	data, err := os.ReadFile(topics[0])
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	if !strings.Contains(string(data), "Merged from proposed slug `roadmap-followup`") {
+		t.Errorf("topic file missing merge annotation:\n%s", data)
+	}
+
+	ledgerData, err := os.ReadFile(filepath.Join(cfg.StateDir(), "reconciliation.json"))
+	if err != nil {
+		t.Fatalf("reconciliation ledger not written: %v", err)
+	}
+	if !strings.Contains(string(ledgerData), "roadmap-followup") {
+		t.Errorf("ledger missing merge entry:\n%s", ledgerData)
 	}
 }
 

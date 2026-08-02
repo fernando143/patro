@@ -9,11 +9,20 @@ import (
 )
 
 // Values are the setup wizard's answers.
+//
+// The threshold fields are pointers, unlike everything else here: the init
+// wizard never collects them, so WriteConfig must leave merge_threshold /
+// new_topic_threshold / topic_prompt_limit untouched (whatever is already in
+// the file, or config.Load's own defaults) rather than zeroing them out on
+// every `patro init` re-run. A nil pointer means "leave it alone".
 type Values struct {
-	Inbox      string
-	Library    string
-	Backend    string
-	BinaryPath string
+	Inbox             string
+	Library           string
+	Backend           string
+	BinaryPath        string
+	MergeThreshold    *float64
+	NewTopicThreshold *float64
+	TopicPromptLimit  *int
 }
 
 // WriteConfig writes the wizard answers as YAML. An existing file is updated
@@ -36,6 +45,37 @@ func WriteConfig(path string, v Values) error {
 		data["claude_path"] = v.BinaryPath
 		delete(data, "kimi_path")
 	}
+	if v.MergeThreshold != nil {
+		data["merge_threshold"] = *v.MergeThreshold
+	}
+	if v.NewTopicThreshold != nil {
+		data["new_topic_threshold"] = *v.NewTopicThreshold
+	}
+	if v.TopicPromptLimit != nil {
+		data["topic_prompt_limit"] = *v.TopicPromptLimit
+	}
+	return writeYAML(path, data)
+}
+
+// SetThresholds changes merge_threshold, new_topic_threshold and
+// topic_prompt_limit, mirroring SetBackend's partial-edit semantics: every
+// other key in the file is preserved, and a malformed existing file is an
+// error rather than something to silently overwrite.
+func SetThresholds(path string, merge, newTopic float64, promptLimit int) error {
+	data := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return fmt.Errorf("cannot parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["merge_threshold"] = merge
+	data["new_topic_threshold"] = newTopic
+	data["topic_prompt_limit"] = promptLimit
 	return writeYAML(path, data)
 }
 

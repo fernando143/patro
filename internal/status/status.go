@@ -56,18 +56,49 @@ type Recent struct {
 	At    time.Time `json:"at"`
 }
 
+// MaintenancePhase names a step of background maintenance work (index
+// rebuild or flagged-topic reconciliation — design D10/D12), distinct from
+// Stage, which names a step of the in-flight video pipeline.
+type MaintenancePhase string
+
+const (
+	PhaseRebuildingIndex MaintenancePhase = "rebuilding-index"
+	PhaseReconciling     MaintenancePhase = "reconciling"
+)
+
+// Maintenance reports the progress of a background maintenance run. It is a
+// sibling of Current, not a reuse of Job/Stage: a rebuild has no File, is
+// never queued, and — per design D10 — can run at the same time as an
+// in-flight video job, so the two must be representable simultaneously
+// rather than sharing one slot.
+type Maintenance struct {
+	Phase     MaintenancePhase `json:"phase"`
+	Done      int              `json:"done"`
+	Total     int              `json:"total"`
+	StartedAt time.Time        `json:"started_at"`
+}
+
 // Snapshot is the serializable live state written to status.json.
 type Snapshot struct {
-	PID              int       `json:"pid"`
-	StartedAt        time.Time `json:"started_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Queue            []string  `json:"queue"`
-	Current          *Job      `json:"current"`
-	ProcessedSession int       `json:"processed_session"`
-	FailedSession    int       `json:"failed_session"`
-	Failures         []Failure `json:"failures"`
-	Recent           []Recent  `json:"recent"`
+	PID              int          `json:"pid"`
+	StartedAt        time.Time    `json:"started_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
+	Queue            []string     `json:"queue"`
+	Current          *Job         `json:"current"`
+	ProcessedSession int          `json:"processed_session"`
+	FailedSession    int          `json:"failed_session"`
+	Failures         []Failure    `json:"failures"`
+	Recent           []Recent     `json:"recent"`
+	Maintenance      *Maintenance `json:"maintenance,omitempty"`
 }
+
+// maintFlushInterval and maintFlushPercentStep gate MaintenanceProgress's
+// flush: a write happens once at least one of the two thresholds is
+// crossed, whichever comes first (design D12).
+const (
+	maintFlushInterval    = 250 * time.Millisecond
+	maintFlushPercentStep = 0.01
+)
 
 // Tracker owns the live snapshot and persists every change to path.
 type Tracker struct {
@@ -75,6 +106,17 @@ type Tracker struct {
 	path string
 	snap Snapshot
 	now  func() time.Time // swappable in tests
+
+	// maintFlushAt/maintFlushDone track the last flushed MaintenanceProgress
+	// state, so successive calls can decide whether the throttle thresholds
+	// have been crossed since that write.
+	maintFlushAt   time.Time
+	maintFlushDone int
+
+	// flushCount counts flushLocked invocations. It exists purely so tests
+	// can assert the throttle actually reduces disk writes; production code
+	// never reads it.
+	flushCount int
 }
 
 // NewTracker creates a tracker writing to <stateDir>/status.json and flushes
@@ -189,9 +231,85 @@ func (t *Tracker) Fail(file, reason string) {
 	_ = t.flushLocked()
 }
 
+// MaintenanceStart begins a new maintenance run (replacing any prior one)
+// and flushes unconditionally, matching Start/Done's own unconditional
+// flush (design D12).
+func (t *Tracker) MaintenanceStart(phase MaintenancePhase, total int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	t.snap.Maintenance = &Maintenance{
+		Phase:     phase,
+		Total:     total,
+		StartedAt: now,
+	}
+	t.maintFlushAt = now
+	t.maintFlushDone = 0
+	_ = t.flushLocked()
+}
+
+// MaintenanceProgress updates the in-flight maintenance run's done count. It
+// is a no-op when no run is active (MaintenanceStart was never called, or
+// MaintenanceDone already cleared it).
+//
+// The write is throttled (design D12): a flush only happens once the
+// done/total ratio has moved by at least 1 percentage point since the last
+// flush, or at least 250ms have elapsed, whichever threshold is reached
+// first. The in-memory state (and any subsequent Read once a flush does
+// happen) always reflects the latest call regardless of throttling — only
+// the disk write is skipped, never the update itself.
+func (t *Tracker) MaintenanceProgress(done int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.snap.Maintenance == nil {
+		return
+	}
+	t.snap.Maintenance.Done = done
+
+	now := t.now()
+	shouldFlush := now.Sub(t.maintFlushAt) >= maintFlushInterval
+	if !shouldFlush {
+		if total := t.snap.Maintenance.Total; total > 0 {
+			prevPct := float64(t.maintFlushDone) / float64(total)
+			curPct := float64(done) / float64(total)
+			diff := curPct - prevPct
+			if diff < 0 {
+				diff = -diff
+			}
+			shouldFlush = diff >= maintFlushPercentStep
+		}
+	}
+	if !shouldFlush {
+		return
+	}
+
+	t.maintFlushAt = now
+	t.maintFlushDone = done
+	_ = t.flushLocked()
+}
+
+// MaintenanceDone clears the maintenance state and flushes unconditionally,
+// matching Done/Fail's own unconditional flush.
+func (t *Tracker) MaintenanceDone() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.snap.Maintenance = nil
+	_ = t.flushLocked()
+}
+
 // flushLocked writes the snapshot atomically (temp file + rename). The
 // caller must hold t.mu.
 func (t *Tracker) flushLocked() error {
+	t.flushCount++
 	t.snap.UpdatedAt = t.now()
 	if err := os.MkdirAll(filepath.Dir(t.path), 0o755); err != nil {
 		return err

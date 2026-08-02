@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -60,6 +61,7 @@ type settingsStep int
 const (
 	stepBackend settingsStep = iota
 	stepPath
+	stepThresholds
 	stepKey
 	stepSaving
 	stepResult
@@ -67,9 +69,10 @@ const (
 
 // stepNames label the steps of the flow for the header.
 var stepNames = map[settingsStep]string{
-	stepBackend: "backend",
-	stepPath:    "cli path",
-	stepKey:     "api key & save",
+	stepBackend:    "backend",
+	stepPath:       "cli path",
+	stepThresholds: "thresholds",
+	stepKey:        "api key & save",
 }
 
 // submitMsg fires when the current step's form is submitted; saveDoneMsg
@@ -95,6 +98,13 @@ type settingsValues struct {
 	customPath string
 	apiKey     string
 	confirm    bool
+
+	// Thresholds are global (design D7), not backend-specific — bound as
+	// strings like every other huh.Input in this package, parsed at save
+	// time once the form's own Validate has already accepted them.
+	mergeThreshold    string
+	newTopicThreshold string
+	topicPromptLimit  string
 }
 
 // settingsModel edits the analyzer backend and the AssemblyAI API key.
@@ -118,7 +128,12 @@ type settingsModel struct {
 // newSettings builds a fresh settings screen positioned at the first step.
 func newSettings(cfg *config.Config, flagConfig string, width, height int) (settingsModel, tea.Cmd) {
 	m := settingsModel{
-		vals:       &settingsValues{backend: cfg.AnalyzerBackend},
+		vals: &settingsValues{
+			backend:           cfg.AnalyzerBackend,
+			mergeThreshold:    formatThreshold(cfg.MergeThreshold),
+			newTopicThreshold: formatThreshold(cfg.NewTopicThreshold),
+			topicPromptLimit:  strconv.Itoa(cfg.TopicPromptLimit),
+		},
 		cfg:        cfg,
 		configPath: flagConfig,
 		width:      width,
@@ -141,9 +156,9 @@ func newSettings(cfg *config.Config, flagConfig string, width, height int) (sett
 // never disagree about it. A hosted backend has no CLI path to point at.
 func (m settingsModel) flow() []settingsStep {
 	if isHosted(m.vals.backend) {
-		return []settingsStep{stepBackend, stepKey}
+		return []settingsStep{stepBackend, stepThresholds, stepKey}
 	}
-	return []settingsStep{stepBackend, stepPath, stepKey}
+	return []settingsStep{stepBackend, stepPath, stepThresholds, stepKey}
 }
 
 // enter switches to step and builds the form that belongs to it.
@@ -154,6 +169,8 @@ func (m *settingsModel) enter(step settingsStep) tea.Cmd {
 		m.form = m.backendForm()
 	case stepPath:
 		m.form = m.pathForm()
+	case stepThresholds:
+		m.form = m.thresholdsForm()
 	case stepKey:
 		m.form = m.keyForm()
 	default:
@@ -214,6 +231,85 @@ func (m *settingsModel) pathForm() *huh.Form {
 			Validate(setup.ValidateExecutable)
 	}
 	return newForm(huh.NewGroup(input))
+}
+
+// thresholdsForm edits the global reconciliation thresholds (design D7).
+// Unlike backend/path, these apply regardless of the chosen analyzer
+// backend, so they sit in flow() right before stepKey for both the hosted
+// and CLI paths.
+func (m *settingsModel) thresholdsForm() *huh.Form {
+	return newForm(huh.NewGroup(
+		huh.NewInput().
+			Title("Merge threshold").
+			Description("Cosine similarity at or above this merges into an existing topic (0-1).").
+			Value(&m.vals.mergeThreshold).
+			Validate(validateThreshold),
+		huh.NewInput().
+			Title("New-topic threshold").
+			Description("Cosine similarity below this always creates a new topic (0-1).").
+			Value(&m.vals.newTopicThreshold).
+			Validate(validateThreshold),
+		huh.NewInput().
+			Title("Topic prompt limit").
+			Description("How many of the most recent topics are shown to the analyzer.").
+			Value(&m.vals.topicPromptLimit).
+			Validate(func(s string) error {
+				if err := validatePositiveInt(s); err != nil {
+					return err
+				}
+				// Cross-field check: by the time this, the last field in the
+				// group, is validated, the earlier two fields already hold
+				// their accepted answers.
+				return validateThresholdOrder(m.vals.mergeThreshold, m.vals.newTopicThreshold)
+			}),
+	))
+}
+
+// formatThreshold renders a threshold float the way the user will edit it:
+// no scientific notation, no trailing zeros.
+func formatThreshold(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// validateThreshold requires a number in [0, 1].
+func validateThreshold(s string) error {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return errors.New("must be a number")
+	}
+	if v < 0 || v > 1 {
+		return errors.New("must be between 0 and 1")
+	}
+	return nil
+}
+
+// validatePositiveInt requires a whole number greater than zero.
+func validatePositiveInt(s string) error {
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return errors.New("must be a whole number")
+	}
+	if v <= 0 {
+		return errors.New("must be greater than 0")
+	}
+	return nil
+}
+
+// validateThresholdOrder enforces the invariant the 3-band reconciler
+// depends on (design D7/spec three-band table): without merge > new-topic
+// there is no gray zone left, which silently turns every gray-zone decision
+// into an always-new-topic or always-merge rule. Both strings are assumed
+// already individually valid (validateThreshold ran on each first).
+func validateThresholdOrder(mergeStr, newTopicStr string) error {
+	merge, err1 := strconv.ParseFloat(strings.TrimSpace(mergeStr), 64)
+	newTopic, err2 := strconv.ParseFloat(strings.TrimSpace(newTopicStr), 64)
+	if err1 != nil || err2 != nil {
+		return nil // the individual field validators already reject this
+	}
+	if merge <= newTopic {
+		return errors.New("merge threshold must be greater than the new-topic threshold")
+	}
+	return nil
 }
 
 func (m *settingsModel) keyForm() *huh.Form {
@@ -344,6 +440,11 @@ func (m *settingsModel) advance() tea.Cmd {
 			m.vals.customPath = ""
 		}
 
+	case stepThresholds:
+		m.vals.mergeThreshold = strings.TrimSpace(m.vals.mergeThreshold)
+		m.vals.newTopicThreshold = strings.TrimSpace(m.vals.newTopicThreshold)
+		m.vals.topicPromptLimit = strings.TrimSpace(m.vals.topicPromptLimit)
+
 	case stepKey:
 		if !m.vals.confirm {
 			return func() tea.Msg { return backMsg{} }
@@ -398,6 +499,9 @@ func (m settingsModel) saveSummary() string {
 	if !isHosted(m.vals.backend) {
 		fmt.Fprintf(&b, "\ncli      %s", orDash(m.binaryPath()))
 	}
+	fmt.Fprintf(&b, "\nmerge     %s", m.vals.mergeThreshold)
+	fmt.Fprintf(&b, "\nnew topic %s", m.vals.newTopicThreshold)
+	fmt.Fprintf(&b, "\nprompt cap %s", m.vals.topicPromptLimit)
 	fmt.Fprintf(&b, "\nconfig   %s", m.target)
 	b.WriteString("\nThe background service is restarted so the change takes effect.")
 	return b.String()
@@ -410,6 +514,19 @@ func orDash(s string) string {
 	return s
 }
 
+// thresholdValues parses the thresholds step's answers and reports whether
+// they differ from cfg's current values. The form's own Validate already
+// accepted these strings before the confirm step could be reached, so a
+// parse error here is unreachable in practice; the zero fallback just avoids
+// a spurious "changed" result against a genuinely unparsable value.
+func thresholdValues(vals *settingsValues, cfg *config.Config) (merge, newTopic float64, promptLimit int, changed bool) {
+	merge, _ = strconv.ParseFloat(vals.mergeThreshold, 64)
+	newTopic, _ = strconv.ParseFloat(vals.newTopicThreshold, 64)
+	promptLimit, _ = strconv.Atoi(vals.topicPromptLimit)
+	changed = merge != cfg.MergeThreshold || newTopic != cfg.NewTopicThreshold || promptLimit != cfg.TopicPromptLimit
+	return merge, newTopic, promptLimit, changed
+}
+
 // saveCmd writes the config and updates the service off the UI thread.
 func (m settingsModel) saveCmd() tea.Cmd {
 	target, flagConfig := m.target, m.configPath
@@ -418,12 +535,19 @@ func (m settingsModel) saveCmd() tea.Cmd {
 	backendChanged := backend != m.cfg.AnalyzerBackend ||
 		(!isHosted(backend) && binary != currentBinary(m.cfg))
 
+	merge, newTopic, promptLimit, thresholdsChanged := thresholdValues(m.vals, m.cfg)
+
 	return func() tea.Msg {
 		if backendChanged {
 			if !isHosted(backend) && binary == "" {
 				return saveDoneMsg{err: fmt.Errorf("no %s executable found; enter its path", backend)}
 			}
 			if err := setup.SetBackend(target, backend, binary); err != nil {
+				return saveDoneMsg{err: err}
+			}
+		}
+		if thresholdsChanged {
+			if err := setup.SetThresholds(target, merge, newTopic, promptLimit); err != nil {
 				return saveDoneMsg{err: err}
 			}
 		}
@@ -437,9 +561,10 @@ func (m settingsModel) saveCmd() tea.Cmd {
 				return saveDoneMsg{err: err}
 			}
 			stored = true
-		case backendChanged:
-			// serve reads the config once at startup, so without this the
-			// backend change would not take effect until the next restart.
+		case backendChanged || thresholdsChanged:
+			// serve reads the config once at startup, so without this a
+			// backend or threshold change would not take effect until the
+			// next restart.
 			if err := setup.RestartService(); err != nil && !errors.Is(err, setup.ErrNoService) {
 				return saveDoneMsg{err: err}
 			}

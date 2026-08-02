@@ -6,17 +6,21 @@
 //	patro init [--config PATH]
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
+//	patro reconcile [--mock] [--config PATH]
 //	patro run web [--port N] [--config PATH]
 //	patro run tui [--config PATH]
 //	patro --version
 //
 // init runs the interactive setup wizard. serve watches the configured
-// inbox forever; process handles a single file. run web starts a local,
-// on-demand web viewer for the knowledge library; run tui opens the menu:
-// the live status dashboard and settings (q / Ctrl+C to quit). --mock skips
-// all AssemblyAI calls
+// inbox forever; process handles a single file. reconcile ensures the
+// vector/search indexes are up to date (rebuilding them if missing or
+// stale) and then re-attempts reconciliation for every topic flagged
+// during ingestion. run web starts a local, on-demand web viewer for the
+// knowledge library; run tui opens the menu: the live status dashboard and
+// settings (q / Ctrl+C to quit). --mock skips all AssemblyAI calls
 // and uses deterministic fakes so the whole pipeline can be verified
-// without an API key.
+// without an API key; for reconcile it additionally guarantees no
+// gray-zone-reconciliation subprocess is ever spawned.
 package main
 
 import (
@@ -26,18 +30,23 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/pipeline"
+	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/tui"
+	"github.com/fernando143/patro/internal/vectors"
 	"github.com/fernando143/patro/internal/watcher"
 	"github.com/fernando143/patro/internal/web"
 
@@ -54,6 +63,9 @@ Usage:
   patro serve [--mock] [--config PATH]    Watch the inbox and process new recordings forever
   patro process <file> [--mock] [--config PATH]
                                           Process a single video file
+  patro reconcile [--mock] [--config PATH]
+                                          Rebuild the vector/search indexes if needed, then
+                                          re-attempt reconciliation for flagged topics
   patro run web [--port N] [--config PATH]
                                           Serve the knowledge library locally (Ctrl+C to stop)
   patro run tui [--config PATH]           Menu: live status dashboard and settings
@@ -113,6 +125,8 @@ func run(args []string) int {
 		return runInit(opts.configPath)
 	case "serve", "process":
 		return runPipeline(opts)
+	case "reconcile":
+		return runReconcile(opts)
 	case "run":
 		return runSubcommand(opts)
 	default:
@@ -232,6 +246,19 @@ func runPipeline(opts *cliOptions) int {
 	if err != nil {
 		logging.Warnf("Cannot write status file (the tui dashboard will be unavailable): %v", err)
 	}
+
+	// Startup integrity check (design D10: "Triggers: serve startup + on
+	// demand. Never mid-pipeline."). Runs in its own goroutine so a
+	// first-run/large-library rebuild never blocks the watcher from coming
+	// up and queueing new recordings; reconciliation itself safely degrades
+	// (ErrRebuilding -> new+flagged) for the rebuild's duration, which is
+	// already-designed behavior (Unit 3/4), not new machinery here.
+	go func() {
+		if err := runMaintenance(ctx, cfg, tracker); err != nil {
+			logging.Warnf("startup maintenance: %v", err)
+		}
+	}()
+
 	w := watcher.New(cfg, func(path string) {
 		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, tracker, transcribeFn, analyzeFn); err != nil {
 			logging.Errorf("Failed to process %s: %v", path, err)
@@ -289,6 +316,164 @@ func runTUI(opts *cliOptions) int {
 	return 0
 }
 
+// runReconcile implements "patro reconcile" (design D8/D10, Unit 7): the
+// on-demand maintenance trigger, needed for first-run migration on an
+// existing library when no serve process is running, for corruption
+// recovery, and for the TUI's future maintenance key (Unit 8, which spawns
+// this exact subcommand detached — design D8's "one unified maintenance
+// action").
+func runReconcile(opts *cliOptions) int {
+	cfg, err := config.Load(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+		return 1
+	}
+	if err := logging.Init(cfg.LogFile()); err != nil {
+		fmt.Fprintf(os.Stderr, "patro: cannot open log file %s: %v\n", cfg.LogFile(), err)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	tracker, err := status.NewTracker(cfg.StateDir())
+	if err != nil {
+		logging.Warnf("Cannot write status file (the tui dashboard will be unavailable): %v", err)
+	}
+
+	if err := runMaintenance(ctx, cfg, tracker); err != nil {
+		logging.Errorf("reconcile: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// runMaintenance performs ensure-index (rebuild the vector store and/or the
+// BM25 search index when missing or, for the vector store, backend/dim/
+// model-version-mismatched — design D10) and then re-attempts reconciliation
+// for every flagged topic against the now-current store. Both "patro
+// reconcile" (on demand) and serve's own startup integrity check drive
+// through this one function, reporting progress through
+// tracker.Maintenance* — tracker may be nil (e.g. status.json could not be
+// opened), which every Tracker method already tolerates.
+//
+// The vector store's self-invalidating tag (design D10) is exactly
+// NeedsRebuild(); bleve's BM25 index has no equivalent backend/dim concept
+// to mismatch, so its ensure-index trigger is simply "the index directory
+// did not exist yet" (first run / pre-Unit-7 library) — Rebuild is
+// otherwise left alone rather than paying a full re-embed/reindex cost on
+// every single serve startup or reconcile call.
+func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tracker) error {
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		return fmt.Errorf("maintenance: embedding backend unavailable: %w", err)
+	}
+
+	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+	if err != nil {
+		return fmt.Errorf("maintenance: opening vector store: %w", err)
+	}
+
+	topicsDir := filepath.Join(cfg.Library, "topics")
+	if store.NeedsRebuild() {
+		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
+		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
+		rebuildErr := store.Rebuild(ctx, topicsDir, func(done, _ int) {
+			tracker.MaintenanceProgress(done)
+		})
+		tracker.MaintenanceDone()
+		if rebuildErr != nil {
+			return fmt.Errorf("maintenance: rebuilding vector store: %w", rebuildErr)
+		}
+	}
+
+	searchIndexPath := cfg.SearchIndexDir()
+	_, statErr := os.Stat(searchIndexPath)
+	searchIndexExisted := statErr == nil
+
+	searchIdx, err := searchindex.Open(searchIndexPath)
+	if err != nil {
+		return fmt.Errorf("maintenance: opening search index: %w", err)
+	}
+	defer func() {
+		if err := searchIdx.Close(); err != nil {
+			logging.Warnf("maintenance: closing search index: %v", err)
+		}
+	}()
+
+	if !searchIndexExisted {
+		if err := searchIdx.Rebuild(ctx, topicsDir, filepath.Join(cfg.Library, "meetings")); err != nil {
+			return fmt.Errorf("maintenance: rebuilding search index: %w", err)
+		}
+	}
+
+	lib, err := library.NewLibrary(cfg.Library)
+	if err != nil {
+		return fmt.Errorf("maintenance: opening library: %w", err)
+	}
+	lib.Reconciler = pipeline.NewReconciler(cfg)
+	if lib.Reconciler == nil {
+		return nil // reconciliation disabled (e.g. unknown embedding backend): nothing more to do
+	}
+
+	ledgerPath := filepath.Join(cfg.StateDir(), "reconciliation.json")
+	entries, err := library.ReadLedger(ledgerPath)
+	if err != nil {
+		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
+	}
+	if flaggedTotal := library.CountFlagged(entries); flaggedTotal > 0 {
+		tracker.MaintenanceStart(status.PhaseReconciling, flaggedTotal)
+		_, reconcileErr := lib.ReconcileFlagged(ctx, ledgerPath, func(done, _ int) {
+			tracker.MaintenanceProgress(done)
+		})
+		tracker.MaintenanceDone()
+		if reconcileErr != nil {
+			return fmt.Errorf("maintenance: reconciling flagged topics: %w", reconcileErr)
+		}
+	}
+	return nil
+}
+
+// wireSearch opens the BM25 index and vector store that power the web
+// viewer's read-only /search route and attaches whichever it manages to
+// open to srv. Neither is required to exist yet — a fresh install has no
+// index until "patro reconcile" or "patro serve" build one (Unit 7) — so a
+// failure here is only logged, never fatal: /search degrades gracefully
+// (design "Migration / Rollout") instead of stopping `patro run web` from
+// starting. It returns a cleanup func the caller should defer.
+func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
+	closeFn = func() {}
+
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		logging.Warnf("search index unavailable, /search will return no results: %v", err)
+	} else {
+		srv.SearchIndex = idx
+		closeFn = func() {
+			if err := idx.Close(); err != nil {
+				logging.Warnf("closing search index: %v", err)
+			}
+		}
+	}
+
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		logging.Warnf("embedding backend unavailable, /search will use text search only: %v", err)
+		return closeFn
+	}
+
+	store, err := vectors.NewStore(filepath.Join(cfg.StateDir(), "vectors", "topics.json"), embedder, embedder.Name())
+	if err != nil {
+		logging.Warnf("vector store unavailable, /search will use text search only: %v", err)
+		return closeFn
+	}
+	srv.Vectors = store
+	srv.Embedder = embedder
+
+	return closeFn
+}
+
 // runWeb starts the local knowledge-library web viewer and blocks until
 // SIGINT/SIGTERM, then shuts the server down gracefully.
 func runWeb(opts *cliOptions) int {
@@ -307,8 +492,12 @@ func runWeb(opts *cliOptions) int {
 		return 1
 	}
 
+	srv := web.NewServer(cfg.Library)
+	closeSearch := wireSearch(srv, cfg)
+	defer closeSearch()
+
 	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
-	server := &http.Server{Addr: addr, Handler: web.NewServer(cfg.Library)}
+	server := &http.Server{Addr: addr, Handler: srv}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
