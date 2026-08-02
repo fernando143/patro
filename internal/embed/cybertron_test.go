@@ -2,8 +2,12 @@ package embed
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sync"
 	"testing"
+	"testing/fstest"
 )
 
 // testCybertronEmbedder loads the real cybertron backend once and shares it
@@ -47,12 +51,54 @@ func TestCybertronName(t *testing.T) {
 	}
 }
 
-func TestCybertronDim(t *testing.T) {
+func TestCybertronEmbeddedModelLoads(t *testing.T) {
 	e := newTestCybertronEmbedder(t)
 	// all-MiniLM-L6-v2 (the embedded checkpoint) has hidden_size = 384.
 	if got := e.Dim(); got != 384 {
 		t.Errorf("Dim() = %d, want 384", got)
 	}
+}
+
+func TestCybertronEmbeddedWeightsMatchManifest(t *testing.T) {
+	if err := verifyCybertronWeights(cybertronWeights); err != nil {
+		t.Fatalf("verifyCybertronWeights() error: %v", err)
+	}
+}
+
+func TestVerifyCybertronWeightsRejectsLFSPointer(t *testing.T) {
+	weights := map[string][]byte{
+		"vocab.txt":             []byte("vocabulary"),
+		"tokenizer_config.json": []byte(`{"model_max_length": 256}`),
+		"spago_model.bin":       []byte("version https://git-lfs.github.com/spec/v1\noid sha256:123\nsize 456\n"),
+	}
+	manifest := cybertronManifest{
+		ModelID:      cybertronModelID,
+		ModelVersion: cybertronModelVersion,
+		Weights: map[string]string{
+			"vocab.txt":             sha256Hex(weights["vocab.txt"]),
+			"tokenizer_config.json": sha256Hex(weights["tokenizer_config.json"]),
+			"spago_model.bin":       sha256Hex([]byte("hydrated model bytes")),
+		},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("json.Marshal(manifest): %v", err)
+	}
+	files := fstest.MapFS{
+		cybertronManifestPath: {Data: manifestJSON},
+	}
+	for name, data := range weights {
+		files["weights/cybertron/"+name] = &fstest.MapFile{Data: data}
+	}
+
+	if err := verifyCybertronWeights(files); err == nil {
+		t.Fatal("verifyCybertronWeights() accepted an unhydrated Git LFS pointer")
+	}
+}
+
+func sha256Hex(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 func TestCybertronEmbedIsUnitNorm(t *testing.T) {

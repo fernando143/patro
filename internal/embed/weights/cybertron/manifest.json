@@ -1,0 +1,9 @@
+{
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "model_version": "cybertron-spago-v1",
+  "weights": {
+    "spago_model.bin": "ac0abfc1ae02b4f8e55b5c61c0b7d632931504035ec28488fb46c52019c46a6f",
+    "tokenizer_config.json": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b",
+    "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+  }
+}

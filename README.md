@@ -159,6 +159,9 @@ Requires Go 1.26 or newer.
 git clone https://github.com/fernando143/patro.git
 cd patro
 
+# Source builds require Git LFS to hydrate the embedded Cybertron model.
+git lfs pull
+
 go build ./...
 go vet ./...
 go test ./...
@@ -173,6 +176,10 @@ Build a local release snapshot with [GoReleaser](https://goreleaser.com/):
 ```bash
 goreleaser release --snapshot --clean
 ```
+
+Git LFS is only required for source/build contributors. Homebrew and direct
+release installs download an ordinary Patro binary with the Cybertron model
+already embedded, so they do not download a separate model at runtime.
 
 ## Security notes
 

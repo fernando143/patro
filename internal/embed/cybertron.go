@@ -2,8 +2,12 @@ package embed
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -25,12 +29,24 @@ const cybertronName = "cybertron"
 // performs zero network calls, satisfying the project's offline-runtime
 // invariant.
 //
-//go:embed weights/cybertron/vocab.txt weights/cybertron/tokenizer_config.json weights/cybertron/spago_model.bin
+//go:embed weights/cybertron/vocab.txt weights/cybertron/tokenizer_config.json weights/cybertron/spago_model.bin weights/cybertron/manifest.json
 var cybertronWeights embed.FS
+
+const (
+	cybertronManifestPath = "weights/cybertron/manifest.json"
+	cybertronModelID      = "sentence-transformers/all-MiniLM-L6-v2"
+	cybertronModelVersion = "cybertron-spago-v1"
+)
 
 // cybertronWeightFiles are the files LoadTextEncoding expects to find
 // together in one directory.
 var cybertronWeightFiles = []string{"vocab.txt", "tokenizer_config.json", "spago_model.bin"}
+
+type cybertronManifest struct {
+	ModelID      string            `json:"model_id"`
+	ModelVersion string            `json:"model_version"`
+	Weights      map[string]string `json:"weights"`
+}
 
 // cybertronEmbedder wraps a loaded cybertron/spaGO BERT text-encoding model.
 // Loading walks the model's real transformer stack (self-attention + feed
@@ -47,6 +63,10 @@ type cybertronEmbedder struct {
 // file-path based), loading the model, and discarding the temporary files —
 // the loaded model holds everything it needs in memory afterward.
 func newCybertronEmbedder() (Embedder, error) {
+	if err := verifyCybertronWeights(cybertronWeights); err != nil {
+		return nil, fmt.Errorf("cybertron: verify embedded weights: %w", err)
+	}
+
 	dir, err := os.MkdirTemp("", "patro-cybertron-weights-*")
 	if err != nil {
 		return nil, fmt.Errorf("cybertron: create temp weights dir: %w", err)
@@ -72,6 +92,43 @@ func newCybertronEmbedder() (Embedder, error) {
 		model: m,
 		dim:   m.Model.Bert.Config.HiddenSize,
 	}, nil
+}
+
+// verifyCybertronWeights validates the embedded model identity and every
+// loader input before the model is materialized. This rejects an unhydrated
+// Git LFS pointer even though it is valid text for go:embed.
+func verifyCybertronWeights(fsys fs.FS) error {
+	raw, err := fs.ReadFile(fsys, cybertronManifestPath)
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
+
+	var manifest cybertronManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+	if manifest.ModelID != cybertronModelID || manifest.ModelVersion != cybertronModelVersion {
+		return fmt.Errorf("unexpected model %q version %q", manifest.ModelID, manifest.ModelVersion)
+	}
+	if len(manifest.Weights) != len(cybertronWeightFiles) {
+		return fmt.Errorf("manifest lists %d weights, want %d", len(manifest.Weights), len(cybertronWeightFiles))
+	}
+
+	for _, name := range cybertronWeightFiles {
+		expected, ok := manifest.Weights[name]
+		if !ok {
+			return fmt.Errorf("manifest missing hash for %s", name)
+		}
+		data, err := fs.ReadFile(fsys, "weights/cybertron/"+name)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		got := sha256.Sum256(data)
+		if hex.EncodeToString(got[:]) != expected {
+			return fmt.Errorf("sha256 mismatch for %s", name)
+		}
+	}
+	return nil
 }
 
 // Embed returns the mean-pooled, L2-normalized sentence embedding for text.
