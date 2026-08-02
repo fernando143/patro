@@ -7,6 +7,7 @@
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
 //	patro reconcile [--mock] [--config PATH]
+//	patro reconcile --all --dry-run [--config PATH]
 //	patro run web [--port N] [--config PATH]
 //	patro run tui [--config PATH]
 //	patro --version
@@ -40,6 +41,7 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/migration"
 	"github.com/fernando143/patro/internal/pipeline"
 	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/setup"
@@ -64,8 +66,10 @@ Usage:
   patro process <file> [--mock] [--config PATH]
                                           Process a single video file
   patro reconcile [--mock] [--config PATH]
-                                          Rebuild the vector/search indexes if needed, then
-                                          re-attempt reconciliation for flagged topics
+                                           Rebuild the vector/search indexes if needed, then
+                                           re-attempt reconciliation for flagged topics
+  patro reconcile --all --dry-run [--config PATH]
+                                           Preview historical topic merge proposals (read-only)
   patro run web [--port N] [--config PATH]
                                           Serve the knowledge library locally (Ctrl+C to stop)
   patro run tui [--config PATH]           Menu: live status dashboard and settings
@@ -74,6 +78,8 @@ Usage:
 Options:
   --config PATH   Path to config.yaml (default: ./config.yaml or ~/.config/patro/config.yaml)
   --mock          Do not call AssemblyAI; use deterministic fake transcripts/analysis
+  --all           Inspect every historical topic (reconcile only)
+  --dry-run       Print the historical migration plan without changing files
   --port N        Port for 'run web' (default: 8765)
 `
 
@@ -86,6 +92,8 @@ type cliOptions struct {
 	mock        bool
 	showVersion bool
 	showHelp    bool
+	all         bool
+	dryRun      bool
 	command     string
 	// file holds the second positional argument: the video file for
 	// "process", or the subcommand name for "run".
@@ -111,6 +119,10 @@ func run(args []string) int {
 	if opts.showVersion {
 		fmt.Printf("patro %s\n", version)
 		return 0
+	}
+	if (opts.all || opts.dryRun) && opts.command != "reconcile" {
+		fmt.Fprintln(os.Stderr, "patro: --all and --dry-run are only valid with reconcile")
+		return 2
 	}
 
 	switch opts.command {
@@ -170,6 +182,10 @@ func parseArgs(args []string) (*cliOptions, error) {
 			opts.port = port
 		case arg == "--mock":
 			opts.mock = true
+		case arg == "--all":
+			opts.all = true
+		case arg == "--dry-run":
+			opts.dryRun = true
 		case arg == "--version":
 			opts.showVersion = true
 		case arg == "-h" || arg == "--help":
@@ -323,10 +339,28 @@ func runTUI(opts *cliOptions) int {
 // this exact subcommand detached — design D8's "one unified maintenance
 // action").
 func runReconcile(opts *cliOptions) int {
+	if err := validateReconcileOptions(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+		return 2
+	}
 	cfg, err := config.Load(opts.configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
 		return 1
+	}
+	if opts.all {
+		service, err := migration.ConfiguredService(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+			return 1
+		}
+		plan, err := service.BuildPlan(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "patro: historical migration preview: %v\n", err)
+			return 1
+		}
+		printMigrationPlan(plan)
+		return 0
 	}
 	if err := logging.Init(cfg.LogFile()); err != nil {
 		fmt.Fprintf(os.Stderr, "patro: cannot open log file %s: %v\n", cfg.LogFile(), err)
@@ -346,6 +380,31 @@ func runReconcile(opts *cliOptions) int {
 		return 1
 	}
 	return 0
+}
+
+func validateReconcileOptions(opts *cliOptions) error {
+	if opts.dryRun && !opts.all {
+		return errors.New("--dry-run requires --all; use 'patro reconcile --all --dry-run'")
+	}
+	if opts.all && !opts.dryRun {
+		return errors.New("noninteractive historical migration is disabled; use 'patro run tui', open Migrate, and approve merges individually")
+	}
+	return nil
+}
+
+func printMigrationPlan(plan migration.Plan) {
+	if len(plan.Proposals) == 0 {
+		fmt.Println("Historical migration plan: no topic merges proposed.")
+		return
+	}
+	fmt.Printf("Historical migration plan: %d proposal(s), review required for every merge.\n", len(plan.Proposals))
+	for i, p := range plan.Proposals {
+		fmt.Printf("\n%d. %s (%s) -> %s (%s)\n", i+1, p.SourceTitle, p.SourceSlug, p.TargetTitle, p.TargetSlug)
+		fmt.Printf("   cosine: %.4f\n", p.Score)
+		fmt.Printf("   source: %s [%d bytes, %d sections, sha256 %s]\n", p.SourcePath, p.SourceBytes, p.SourceSections, p.SourceHash)
+		fmt.Printf("   target: %s [%d bytes, %d sections, sha256 %s]\n", p.TargetPath, p.TargetBytes, p.TargetSections, p.TargetHash)
+	}
+	fmt.Println("\nDry run only: no knowledge, state, or index files were changed. Use 'patro run tui' -> Migrate to approve or reject each proposal.")
 }
 
 // runMaintenance performs ensure-index (rebuild the vector store and/or the

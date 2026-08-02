@@ -13,6 +13,7 @@ type screen int
 const (
 	screenMenu screen = iota
 	screenDashboard
+	screenMigrate
 	screenSettings
 )
 
@@ -36,6 +37,7 @@ type rootModel struct {
 
 	menu     menuModel
 	dash     model
+	migrate  migrateModel
 	settings settingsModel
 }
 
@@ -65,13 +67,16 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		// Every child stays sized so switching screens is instant.
 		m.width, m.height = msg.Width, msg.Height
-		return m, tea.Batch(m.updateDash(msg), m.updateMenu(msg), m.updateSettings(msg))
+		return m, tea.Batch(m.updateDash(msg), m.updateMenu(msg), m.updateMigrate(msg), m.updateSettings(msg))
 
 	case tea.KeyMsg:
 		// Quit from anywhere, before any child sees the key. huh binds
 		// ctrl+c to its own Quit, which would mark the settings form
 		// aborted and leave it permanently inert.
 		if msg.String() == "ctrl+c" {
+			if m.screen == screenMigrate && m.migrate.phase == migrateApplying {
+				return m, m.updateMigrate(msg)
+			}
 			return m, tea.Quit
 		}
 		return m.routeToActive(msg)
@@ -92,6 +97,11 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.settings, cmd = newSettings(m.dash.cfg, m.configPath, m.width, m.height)
 		return m, cmd
+
+	case openMigrateMsg:
+		m.screen = screenMigrate
+		m.migrate = newMigrate(m.dash.cfg, m.width, m.height)
+		return m, m.migrate.Init()
 
 	case cfgReloadedMsg:
 		m.dash.cfg = msg.cfg
@@ -122,6 +132,8 @@ func (m rootModel) View() string {
 		return m.dash.View()
 	case screenSettings:
 		return m.settings.View()
+	case screenMigrate:
+		return m.migrate.View()
 	default:
 		return m.menu.View()
 	}
@@ -134,6 +146,8 @@ func (m rootModel) routeToActive(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateDash(msg)
 	case screenSettings:
 		return m, m.updateSettings(msg)
+	case screenMigrate:
+		return m, m.updateMigrate(msg)
 	default:
 		return m, m.updateMenu(msg)
 	}
@@ -154,5 +168,11 @@ func (m *rootModel) updateMenu(msg tea.Msg) tea.Cmd {
 func (m *rootModel) updateSettings(msg tea.Msg) tea.Cmd {
 	nm, cmd := m.settings.Update(msg)
 	m.settings = nm.(settingsModel)
+	return cmd
+}
+
+func (m *rootModel) updateMigrate(msg tea.Msg) tea.Cmd {
+	nm, cmd := m.migrate.Update(msg)
+	m.migrate = nm.(migrateModel)
 	return cmd
 }

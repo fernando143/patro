@@ -6,9 +6,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// openDashboardMsg and openSettingsMsg ask the root model to switch screens.
+// The open messages ask the root model to switch screens.
 type (
 	openDashboardMsg struct{}
+	openMigrateMsg   struct{}
 	openSettingsMsg  struct{}
 )
 
@@ -31,6 +32,7 @@ func newMenu() menuModel {
 	return menuModel{
 		items: []menuItem{
 			{"Dashboard", "Live status: queue, in-flight job, failures, log"},
+			{"Migrate", "Review and selectively merge historical topics"},
 			{"Settings", "Analyzer backend and AssemblyAI API key"},
 			{"Quit", "Exit patro"},
 		},
@@ -72,6 +74,8 @@ func (m menuModel) selectCmd() tea.Cmd {
 	case 0:
 		return func() tea.Msg { return openDashboardMsg{} }
 	case 1:
+		return func() tea.Msg { return openMigrateMsg{} }
+	case 2:
 		return func() tea.Msg { return openSettingsMsg{} }
 	default:
 		return tea.Quit

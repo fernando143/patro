@@ -11,9 +11,10 @@ import (
 
 func testRoot(s screen) rootModel {
 	return rootModel{
-		screen: s,
-		menu:   newMenu(),
-		dash:   model{cfg: &config.Config{AnalyzerBackend: "kimi"}},
+		screen:  s,
+		menu:    newMenu(),
+		dash:    model{cfg: &config.Config{AnalyzerBackend: "kimi"}},
+		migrate: migrateModel{},
 	}
 }
 
@@ -86,7 +87,7 @@ func TestRootBackMsgReturnsToMenu(t *testing.T) {
 }
 
 func TestRootCtrlCQuitsFromEveryScreen(t *testing.T) {
-	for _, s := range []screen{screenMenu, screenDashboard, screenSettings} {
+	for _, s := range []screen{screenMenu, screenDashboard, screenMigrate, screenSettings} {
 		m := testRoot(s)
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 		if cmd == nil {
@@ -95,6 +96,20 @@ func TestRootCtrlCQuitsFromEveryScreen(t *testing.T) {
 		if _, ok := cmd().(tea.QuitMsg); !ok {
 			t.Errorf("screen %d: ctrl+c did not quit", s)
 		}
+	}
+}
+
+func TestRootCtrlCDoesNotInterruptMigrationApply(t *testing.T) {
+	m := testRoot(screenMigrate)
+	m.migrate.phase = migrateApplying
+
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	root := nm.(rootModel)
+	if cmd != nil {
+		t.Fatalf("ctrl+c returned a command during migration apply: %T", cmd())
+	}
+	if root.screen != screenMigrate || root.migrate.phase != migrateApplying {
+		t.Fatalf("ctrl+c changed migration apply state: screen=%d phase=%d", root.screen, root.migrate.phase)
 	}
 }
 
