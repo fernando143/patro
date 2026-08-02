@@ -324,6 +324,8 @@ func TestParseArgs(t *testing.T) {
 		wantPort    int
 		wantConfig  string
 		wantMock    bool
+		wantAll     bool
+		wantDryRun  bool
 		wantErr     bool
 	}{
 		{
@@ -331,6 +333,14 @@ func TestParseArgs(t *testing.T) {
 			args:        []string{"reconcile", "--config", "/etc/patro.yaml"},
 			wantCommand: "reconcile", wantPort: defaultWebPort,
 			wantConfig: "/etc/patro.yaml",
+		},
+		{
+			name: "historical dry run flags after command", args: []string{"reconcile", "--all", "--dry-run"},
+			wantCommand: "reconcile", wantPort: defaultWebPort, wantAll: true, wantDryRun: true,
+		},
+		{
+			name: "historical dry run flags before command", args: []string{"--dry-run", "--all", "reconcile"},
+			wantCommand: "reconcile", wantPort: defaultWebPort, wantAll: true, wantDryRun: true,
 		},
 		{
 			name:        "reconcile mock",
@@ -400,6 +410,33 @@ func TestParseArgs(t *testing.T) {
 			}
 			if opts.mock != tc.wantMock {
 				t.Errorf("mock = %v, want %v", opts.mock, tc.wantMock)
+			}
+			if opts.all != tc.wantAll || opts.dryRun != tc.wantDryRun {
+				t.Errorf("all/dryRun = %v/%v, want %v/%v", opts.all, opts.dryRun, tc.wantAll, tc.wantDryRun)
+			}
+		})
+	}
+}
+
+func TestValidateReconcileOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    cliOptions
+		wantErr string
+	}{
+		{name: "legacy maintenance", opts: cliOptions{}},
+		{name: "preview", opts: cliOptions{all: true, dryRun: true}},
+		{name: "dry run alone", opts: cliOptions{dryRun: true}, wantErr: "requires --all"},
+		{name: "noninteractive apply", opts: cliOptions{all: true}, wantErr: "use 'patro run tui'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateReconcileOptions(&tt.opts)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}

@@ -57,7 +57,8 @@ func TestMenuSelectEmitsScreenMessages(t *testing.T) {
 		want   tea.Msg
 	}{
 		{"dashboard", 0, openDashboardMsg{}},
-		{"settings", 1, openSettingsMsg{}},
+		{"migrate", 1, openMigrateMsg{}},
+		{"settings", 2, openSettingsMsg{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

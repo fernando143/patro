@@ -107,6 +107,12 @@ patro process /absolute/path/to/meeting.mkv
 # Watch the inbox forever
 patro serve
 
+# Preview merge candidates across every historical topic (never writes files)
+patro reconcile --all --dry-run
+
+# Review and selectively apply historical topic merges
+patro run tui  # open Migrate
+
 # Run the full pipeline with fake data, no API calls (great for testing)
 patro process --mock /absolute/path/to/any-video.mkv
 patro serve --mock
@@ -116,6 +122,12 @@ patro --version
 ```
 
 Already-processed files are tracked in `.state/processed.json` (next to the config file) by file name and size, so they are not reprocessed unless the file changes.
+
+### Migrating pre-v0.4.0 topic libraries
+
+`patro reconcile --all --dry-run` reads every `knowledge/topics/*.md`, computes a deterministic merge plan with the configured embedding backend, and prints titles, paths, cosine scores, impact counts, and content hashes. It does not modify the knowledge library, state, or indexes.
+
+Apply historical merges only through **Migrate** in `patro run tui`. Every proposal must be accepted or rejected independently (with an accept-all shortcut), followed by a final confirmation. Only accepted sources are merged and removed. Before writing, Patro verifies the preview hashes and creates a timestamped backup under `.state/backups/historical-topic-migration/`; stale previews are rejected without mutation. Vector and full-text indexes are rebuilt after a successful migration.
 
 ## How it works
 
