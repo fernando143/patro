@@ -105,7 +105,7 @@
 - [x] 8.6 One maintenance/flagged card beside (not replacing) the in-flight job card, transitioning `rebuilding index D/T` → `reconciling D/T flagged`.
 - [x] 8.7 RED→GREEN: dashboard test — flagged count + phase on one card, independent in-flight card unaffected.
 
-## Phase 10: Final gate
-- [ ] 10.1 CI matrix: `CGO_ENABLED=0` × darwin/linux × amd64/arm64, both backends linked (zerfoo, cybertron) — final confirmation once both adapters exist.
-- [ ] 10.2 `.goreleaser.yaml` builds only `./cmd/patro`; no embedbench in release artifacts.
-- [ ] 10.3 Full `go vet ./... && go test ./...` green, all units integrated.
+## Phase 10: Final gate — **DONE** (2026-08-02)
+- [x] 10.1 `CGO_ENABLED=0` cross-compile verified for all 4 release targets (darwin/linux × amd64/arm64) via direct `go build`, cybertron backend linked (sole backend, per the 1c/D9-amendment resolution — the "both backends" wording above is stale, only cybertron ships). All 4 binaries built successfully; ~109–111MB each with embedded weights (`-ldflags "-s -w"`, `-trimpath`) — this is the measured cost of decision 2 (embed-at-build-time, no post-install network), previously only estimated as "High -> accepted" risk in the proposal.
+- [x] 10.2 `.goreleaser.yaml` confirmed: `builds[0].main: ./cmd/patro` only, `CGO_ENABLED=0`, darwin/linux × amd64/arm64. `tools/embedbench` is a separate nested module never referenced by goreleaser — not shipped.
+- [x] 10.3 `go build ./... && go vet ./... && gofmt -l . && go test ./... -count=1` — all 16 packages green, zero regressions, working tree clean.
