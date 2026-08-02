@@ -143,6 +143,84 @@ func TestRunProcessWithoutMockRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestRunReconcileConfigLoadError(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("analyzer_backend: not-a-real-backend\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	if got := run([]string{"reconcile", "--config", cfgPath}); got != 1 {
+		t.Errorf("run(reconcile, bad config) = %d, want 1", got)
+	}
+}
+
+func TestRunReconcileLoggingInitError(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	dir := filepath.Dir(cfgPath)
+	// patro.log already exists as a directory, so logging.Init's OpenFile
+	// fails.
+	if err := os.MkdirAll(filepath.Join(dir, "patro.log"), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	if got := run([]string{"reconcile", "--config", cfgPath}); got != 1 {
+		t.Errorf("run(reconcile, log path is a dir) = %d, want 1", got)
+	}
+}
+
+func TestRunReconcileEmptyLibraryBuildsIndexesAndExitsClean(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	dir := filepath.Dir(cfgPath)
+	if err := os.MkdirAll(filepath.Join(dir, "library", "topics"), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+
+	if got := run([]string{"reconcile", "--mock", "--config", cfgPath}); got != 0 {
+		t.Fatalf("run(reconcile, empty library) = %d, want 0", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".state", "vectors", "topics.json")); err != nil {
+		t.Errorf("vector store not built: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".state", "search-index")); err != nil {
+		t.Errorf("search index not built: %v", err)
+	}
+}
+
+func TestRunReconcileFlaggedTopicNotYetAMatchStaysUntouched(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	dir := filepath.Dir(cfgPath)
+	topicsDir := filepath.Join(dir, "library", "topics")
+	if err := os.MkdirAll(topicsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(topicsDir, "target.md"), []byte("# Target\n\nCompletely unrelated content about gardening.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(topicsDir, "flagged-topic.md"), []byte("# Flagged Topic\n\nA totally different subject: rocket propulsion engineering.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	ledgerPath := filepath.Join(dir, ".state", "reconciliation.json")
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	ledger := `{"entries":[{"slug":"flagged-topic","name":"Flagged Topic","proposed_slug":"flagged-topic","score":0,"merged":false,"flagged":true,"timestamp":"2026-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(ledgerPath, []byte(ledger), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	if got := run([]string{"reconcile", "--mock", "--config", cfgPath}); got != 0 {
+		t.Fatalf("run(reconcile, flagged topic) = %d, want 0", got)
+	}
+
+	// Real cybertron embeddings for two unrelated pieces of text are never
+	// close to the 0.90 merge threshold, so the flagged topic must still
+	// exist as its own file (not merged away).
+	if _, err := os.Stat(filepath.Join(topicsDir, "flagged-topic.md")); err != nil {
+		t.Errorf("flagged-topic.md missing: %v (should stay untouched, unrelated content never merges)", err)
+	}
+}
+
 func TestRunTUIRequiresInteractiveTerminal(t *testing.T) {
 	// go test's stdout is not a TTY, so runTUI must bail out before ever
 	// launching the real Bubble Tea program.
@@ -248,6 +326,18 @@ func TestParseArgs(t *testing.T) {
 		wantMock    bool
 		wantErr     bool
 	}{
+		{
+			name:        "reconcile",
+			args:        []string{"reconcile", "--config", "/etc/patro.yaml"},
+			wantCommand: "reconcile", wantPort: defaultWebPort,
+			wantConfig: "/etc/patro.yaml",
+		},
+		{
+			name:        "reconcile mock",
+			args:        []string{"reconcile", "--mock"},
+			wantCommand: "reconcile", wantPort: defaultWebPort,
+			wantMock: true,
+		},
 		{
 			name:        "run tui",
 			args:        []string{"run", "tui"},

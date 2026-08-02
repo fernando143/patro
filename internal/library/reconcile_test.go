@@ -367,6 +367,157 @@ func TestGrayZoneCLITimeout(t *testing.T) {
 	}
 }
 
+// --- ReadLedger / ReconcileFlagged ("patro reconcile", Unit 7) ---
+
+func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
+	entries, err := ReadLedger(filepath.Join(t.TempDir(), "reconciliation.json"))
+	if err != nil {
+		t.Fatalf("ReadLedger: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("entries = %+v, want empty for a missing ledger", entries)
+	}
+}
+
+func TestReadLedgerRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reconciliation.json")
+	want := LedgerEntry{Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Score: 0.5, Flagged: true, Timestamp: time.Now().UTC()}
+	if err := appendLedger(path, want); err != nil {
+		t.Fatalf("appendLedger: %v", err)
+	}
+
+	got, err := ReadLedger(path)
+	if err != nil {
+		t.Fatalf("ReadLedger: %v", err)
+	}
+	if len(got) != 1 || got[0].Slug != want.Slug || !got[0].Flagged {
+		t.Fatalf("entries = %+v, want one flagged entry for %q", got, want.Slug)
+	}
+}
+
+func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reconciliation.json")
+	writeFile(t, path, "{not json")
+	if _, err := ReadLedger(path); err == nil {
+		t.Error("ReadLedger() error = nil, want an error for corrupt JSON")
+	}
+}
+
+func TestReconcileFlaggedNilReconcilerIsNoop(t *testing.T) {
+	l := newTestLibrary(t)
+	merged, err := l.ReconcileFlagged(context.Background(), filepath.Join(t.TempDir(), "reconciliation.json"), nil)
+	if err != nil {
+		t.Fatalf("ReconcileFlagged: %v", err)
+	}
+	if merged != 0 {
+		t.Errorf("merged = %d, want 0 (nil Reconciler)", merged)
+	}
+}
+
+func TestReconcileFlaggedMergesOnNowMatchingScore(t *testing.T) {
+	l := newTestLibrary(t)
+	writeFile(t, filepath.Join(l.TopicsDir, "react-hooks.md"), "# React Hooks\n")
+	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome flagged content\n")
+
+	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
+	if err := appendLedger(ledgerPath, LedgerEntry{
+		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("appendLedger: %v", err)
+	}
+
+	l.Reconciler = &SemanticReconciler{
+		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
+		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.95}}},
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+		LedgerPath:        ledgerPath,
+	}
+
+	var progress [][2]int
+	merged, err := l.ReconcileFlagged(context.Background(), ledgerPath, func(done, total int) {
+		progress = append(progress, [2]int{done, total})
+	})
+	if err != nil {
+		t.Fatalf("ReconcileFlagged: %v", err)
+	}
+	if merged != 1 {
+		t.Fatalf("merged = %d, want 1", merged)
+	}
+	if len(progress) == 0 {
+		t.Error("onProgress was never called")
+	}
+
+	if _, err := os.Stat(filepath.Join(l.TopicsDir, "x-y.md")); !os.IsNotExist(err) {
+		t.Error("expected x-y.md to be removed once merged into react-hooks.md")
+	}
+	got := readFile(t, filepath.Join(l.TopicsDir, "react-hooks.md"))
+	if !strings.Contains(got, "some flagged content") {
+		t.Errorf("react-hooks.md missing the merged content:\n%s", got)
+	}
+	if !strings.Contains(got, "Merged from proposed slug `x-y`") {
+		t.Errorf("react-hooks.md missing merge provenance:\n%s", got)
+	}
+}
+
+func TestReconcileFlaggedStillNoMatchLeavesTopicUntouched(t *testing.T) {
+	l := newTestLibrary(t)
+	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome content\n")
+
+	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
+	if err := appendLedger(ledgerPath, LedgerEntry{
+		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("appendLedger: %v", err)
+	}
+
+	l.Reconciler = &SemanticReconciler{
+		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
+		Store:             fakeStore{results: nil}, // still nothing to compare against
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+		LedgerPath:        ledgerPath,
+	}
+
+	merged, err := l.ReconcileFlagged(context.Background(), ledgerPath, nil)
+	if err != nil {
+		t.Fatalf("ReconcileFlagged: %v", err)
+	}
+	if merged != 0 {
+		t.Errorf("merged = %d, want 0 (still no match)", merged)
+	}
+	if _, err := os.Stat(filepath.Join(l.TopicsDir, "x-y.md")); err != nil {
+		t.Error("x-y.md must still exist: it was not merged")
+	}
+}
+
+func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
+	l := newTestLibrary(t)
+	// No x-y.md on disk: it was already merged/removed by an earlier pass.
+	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
+	if err := appendLedger(ledgerPath, LedgerEntry{
+		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("appendLedger: %v", err)
+	}
+
+	l.Reconciler = &SemanticReconciler{
+		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
+		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.95}}},
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+		LedgerPath:        ledgerPath,
+	}
+
+	merged, err := l.ReconcileFlagged(context.Background(), ledgerPath, nil)
+	if err != nil {
+		t.Fatalf("ReconcileFlagged: %v", err)
+	}
+	if merged != 0 {
+		t.Errorf("merged = %d, want 0: a missing flagged topic file must be skipped, not error", merged)
+	}
+}
+
 func TestGrayZoneCLIArgvNotShellInterpreted(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "prompt.txt")

@@ -250,6 +250,34 @@ func (r *SemanticReconciler) writeLedger(res Resolution) {
 	}
 }
 
+// ReadLedger reads every entry recorded in path, the derived, deletable
+// ledger written by writeLedger/appendLedger (design D4). A missing file
+// returns an empty, non-nil slice and a nil error — nothing has ever been
+// merged or flagged is not an error condition, matching appendLedger's own
+// create-on-first-write semantics. It is the reader half of Unit 7's
+// "patro reconcile", which re-attempts reconciliation for every flagged
+// entry (Library.ReconcileFlagged).
+func ReadLedger(path string) ([]LedgerEntry, error) {
+	ledgerMu.Lock()
+	defer ledgerMu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []LedgerEntry{}, nil
+		}
+		return nil, err
+	}
+	var lf ledgerFile
+	if err := json.Unmarshal(data, &lf); err != nil {
+		return nil, fmt.Errorf("library: parsing ledger %s: %w", path, err)
+	}
+	if lf.Entries == nil {
+		lf.Entries = []LedgerEntry{}
+	}
+	return lf.Entries, nil
+}
+
 // appendLedger reads path (if present), appends entry, and writes the
 // result back atomically (temp file + rename), mirroring internal/vectors'
 // flush pattern.

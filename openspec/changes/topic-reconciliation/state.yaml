@@ -40,18 +40,20 @@ phases:
     engram_topic_key: sdd/topic-reconciliation/tasks
     note: >
       Materialized to tasks.md (10 stacked units, 1a->1c->1d->2->3->4->5->6->7->8).
-      Units 1a, 1d, 2, 3, 4, 5, 6 are done and committed; 1c (zerfoo) is
-      blocked (see finding in Phase 2); units 7-8 not started.
+      Units 1a, 1d, 2, 3, 4, 5, 6, 7 are done and committed; 1c (zerfoo) is
+      blocked (see finding in Phase 2); unit 8 (TUI) not started.
 
   apply:
     status: in_progress
     note: >
       Units 4 (library reconciliation seam), 5 (analyzer prompt cap +
       the previously-unwired production reconciler wiring in
-      internal/pipeline/pipeline.go) and 6 (web /search — BM25+cosine RRF
-      fusion, internal/web + cmd/patro/main.go wiring) done and committed
-      on feature/topic-reconciliation-3-vectors-searchindex. Units 7-8
-      (status Maintenance + patro reconcile, TUI) remain.
+      internal/pipeline/pipeline.go), 6 (web /search — BM25+cosine RRF
+      fusion, internal/web + cmd/patro/main.go wiring) and 7 (status
+      Maintenance type/Tracker methods + `patro reconcile` subcommand +
+      serve-startup background rebuild trigger) done and committed on
+      feature/topic-reconciliation-3-vectors-searchindex. Unit 8 (TUI
+      maintenance card + `m` key + threshold settings step) remains.
 
   verify:
     status: not_started

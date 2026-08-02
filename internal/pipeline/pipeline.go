@@ -151,6 +151,13 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 // because an empty or stale store degrades to "nothing to compare against"
 // (new, unflagged topic) or vectors.ErrRebuilding (new, flagged topic) —
 // both already-designed safe-fail paths, never a wrong merge.
+// NewReconciler is the exported form of newReconciler, so cmd/patro can wire
+// the identical production Reconciler for "patro reconcile" (Unit 7) without
+// duplicating this construction logic.
+func NewReconciler(cfg *config.Config) library.Reconciler {
+	return newReconciler(cfg)
+}
+
 func newReconciler(cfg *config.Config) library.Reconciler {
 	embedder, err := embed.New(cfg.EmbeddingBackend)
 	if err != nil {

@@ -30,6 +30,7 @@ import (
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
 )
 
@@ -400,6 +401,147 @@ func (l *Library) AddMeetingCtx(ctx context.Context, t *types.TranscriptResult, 
 		return "", err
 	}
 	return notePath, nil
+}
+
+// ReconcileFlagged re-attempts reconciliation for every topic flagged in
+// ledgerPath's ledger (design D4/D8, "patro reconcile" — Unit 7), using the
+// library's current Reconciler and, by extension, its now-current vector
+// store — e.g. right after a rebuild fixed a mismatched or missing store, or
+// simply because more topics have accumulated since the candidate was first
+// flagged. Only the most recently flagged ledger record per slug is
+// retried; a flagged topic whose own file no longer exists (already merged
+// or removed by an earlier pass) is skipped, not an error.
+//
+// A safe-fail-flagged candidate was written to its own standalone topic
+// file at ingestion time (design D1's "new, flagged" path); merging it here
+// moves that file's content into the newly resolved target topic
+// (annotated with its provenance, mirroring AddMeetingCtx's own merge
+// annotation) and removes the now-redundant standalone file. The ledger
+// entry Reconciler.Reconcile itself writes remains the audit trail (design
+// D4) — no content is lost, only relocated within the library.
+//
+// onProgress, if non-nil, is called after each flagged slug is processed
+// with (done, total), mirroring vectors.Store.Rebuild's callback shape. It
+// returns the number of topics that were merged into an existing topic. A
+// nil Reconciler makes this a no-op (0, nil); a failure reconciling one
+// flagged topic is logged and does not abort the batch.
+func (l *Library) ReconcileFlagged(ctx context.Context, ledgerPath string, onProgress func(done, total int)) (int, error) {
+	if l.Reconciler == nil {
+		return 0, nil
+	}
+
+	entries, err := ReadLedger(ledgerPath)
+	if err != nil {
+		return 0, err
+	}
+
+	// Only the latest flagged record per slug matters: an older flagged
+	// record for a slug later resolved (merged, or reflagged again) is
+	// superseded.
+	latest := map[string]LedgerEntry{}
+	var order []string
+	for _, e := range entries {
+		if !e.Flagged {
+			continue
+		}
+		if _, ok := latest[e.Slug]; !ok {
+			order = append(order, e.Slug)
+		}
+		latest[e.Slug] = e
+	}
+
+	merged := 0
+	total := len(order)
+	for i, slug := range order {
+		entry := latest[slug]
+		wasMerged, mergeErr := l.tryMergeFlagged(ctx, entry)
+		if mergeErr != nil {
+			logging.Warnf("reconcile flagged topic %q: %v", entry.Slug, mergeErr)
+		} else if wasMerged {
+			merged++
+		}
+		if onProgress != nil {
+			onProgress(i+1, total)
+		}
+	}
+
+	if merged > 0 {
+		if _, err := l.RebuildIndex(); err != nil {
+			return merged, err
+		}
+	}
+	return merged, nil
+}
+
+// tryMergeFlagged re-embeds entry's own topic file content, asks the
+// Reconciler whether it now matches an existing topic, and — only on a
+// genuine merge into a *different* topic — moves the content over and
+// removes the redundant standalone file. It reports whether a merge
+// happened.
+func (l *Library) tryMergeFlagged(ctx context.Context, entry LedgerEntry) (bool, error) {
+	path := filepath.Join(l.TopicsDir, entry.Slug+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil // already merged/removed since being flagged
+		}
+		return false, err
+	}
+	content := strings.TrimPrefix(string(data), "# "+entry.Name+"\n")
+
+	existing := l.ExistingTopics()
+	filtered := make([]types.TopicRef, 0, len(existing))
+	for _, ref := range existing {
+		if ref.Slug != entry.Slug {
+			filtered = append(filtered, ref)
+		}
+	}
+
+	candidate := types.Topic{Slug: entry.Slug, Name: entry.Name, Content: content}
+	res, err := l.Reconciler.Reconcile(ctx, candidate, filtered)
+	if err != nil {
+		return false, err
+	}
+	if !res.Merged || res.Slug == entry.Slug {
+		return false, nil
+	}
+
+	annotation := fmt.Sprintf("*Merged from proposed slug `%s` — cosine %.2f*", entry.Slug, res.Score)
+	target := types.Topic{Slug: res.Slug, Name: res.Name, Content: content}
+	if _, err := l.appendReconciledSection(target, entry.Slug, annotation); err != nil {
+		return false, err
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// appendReconciledSection appends target's content as a dated section,
+// provenance-annotated, mirroring AppendTopicSectionAnnotated's markdown
+// shape but for a topic-to-topic merge (there is no meeting note to link
+// back to, unlike AddMeetingCtx's per-meeting candidates).
+func (l *Library) appendReconciledSection(target types.Topic, sourceSlug, annotation string) (string, error) {
+	path := filepath.Join(l.TopicsDir, target.Slug+".md")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.WriteFile(path, []byte("# "+target.Name+"\n"), 0o644); err != nil {
+			return "", err
+		}
+	}
+
+	date := time.Now().UTC().Format("2006-01-02")
+	section := fmt.Sprintf("\n## %s — Reconciled from `%s`\n\n%s\n\n%s\n",
+		date, sourceSlug, strings.TrimSpace(target.Content), annotation)
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(section); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // stem returns the file name without its final extension (Python's
