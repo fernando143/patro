@@ -180,6 +180,164 @@ func TestNilTrackerIsSafe(t *testing.T) {
 	tr.Fail("a", "r")
 }
 
+func TestSnapshotUnmarshalsOldFormatWithoutMaintenance(t *testing.T) {
+	old := `{
+		"pid": 123,
+		"started_at": "2026-01-01T00:00:00Z",
+		"updated_at": "2026-01-01T00:00:01Z",
+		"queue": ["a.mkv"],
+		"current": null,
+		"processed_session": 2,
+		"failed_session": 0,
+		"failures": [],
+		"recent": []
+	}`
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := Read(dir)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("snap is nil")
+	}
+	if snap.Maintenance != nil {
+		t.Fatalf("Maintenance = %+v, want nil for an old-format snapshot with no maintenance key", snap.Maintenance)
+	}
+	if snap.ProcessedSession != 2 {
+		t.Fatalf("processed = %d, want 2", snap.ProcessedSession)
+	}
+}
+
+func TestNilTrackerMaintenanceIsSafe(t *testing.T) {
+	var tr *Tracker
+	// None of these should panic.
+	tr.MaintenanceStart(PhaseRebuildingIndex, 10)
+	tr.MaintenanceProgress(5)
+	tr.MaintenanceDone()
+}
+
+func TestMaintenanceCoexistsWithCurrentJob(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := NewTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tr.Start("video.mkv")
+	tr.Stage(StageAnalyzing)
+	tr.MaintenanceStart(PhaseReconciling, 7)
+	tr.MaintenanceProgress(3)
+
+	snap, err := Read(dir)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if snap.Current == nil || snap.Current.File != "video.mkv" {
+		t.Fatalf("Current = %+v, want video.mkv still in flight", snap.Current)
+	}
+	if snap.Current.Stage != StageAnalyzing {
+		t.Fatalf("stage = %q, want %q", snap.Current.Stage, StageAnalyzing)
+	}
+	if snap.Maintenance == nil {
+		t.Fatal("Maintenance is nil, want it to coexist with Current")
+	}
+	if snap.Maintenance.Phase != PhaseReconciling || snap.Maintenance.Total != 7 || snap.Maintenance.Done != 3 {
+		t.Fatalf("Maintenance = %+v, want {reconciling, done 3, total 7}", snap.Maintenance)
+	}
+}
+
+func TestMaintenanceStartAndDoneFlushUnconditionally(t *testing.T) {
+	tr := newTestTracker(t)
+	base := time.Now()
+	tr.now = func() time.Time { return base }
+
+	before := tr.flushCount
+	tr.MaintenanceStart(PhaseRebuildingIndex, 100)
+	if tr.flushCount != before+1 {
+		t.Fatalf("flushCount = %d, want %d: MaintenanceStart must flush unconditionally", tr.flushCount, before+1)
+	}
+
+	before = tr.flushCount
+	tr.MaintenanceDone()
+	if tr.flushCount != before+1 {
+		t.Fatalf("flushCount = %d, want %d: MaintenanceDone must flush unconditionally", tr.flushCount, before+1)
+	}
+	if tr.snap.Maintenance != nil {
+		t.Fatalf("Maintenance = %+v, want nil after MaintenanceDone", tr.snap.Maintenance)
+	}
+}
+
+func TestMaintenanceProgressNoOpWithoutStart(t *testing.T) {
+	tr := newTestTracker(t)
+	before := tr.flushCount
+	tr.MaintenanceProgress(5) // no MaintenanceStart yet
+	if tr.flushCount != before {
+		t.Fatalf("flushCount = %d, want unchanged at %d: MaintenanceProgress must no-op with no active run", tr.flushCount, before)
+	}
+}
+
+func TestMaintenanceProgressFlushThresholds(t *testing.T) {
+	tr := newTestTracker(t)
+	base := time.Now()
+	tr.now = func() time.Time { return base }
+
+	tr.MaintenanceStart(PhaseRebuildingIndex, 1000)
+	afterStart := tr.flushCount
+
+	// Sub-1%, no time elapsed: must not flush.
+	for i := 1; i <= 5; i++ {
+		tr.MaintenanceProgress(i)
+	}
+	if tr.flushCount != afterStart {
+		t.Fatalf("flushCount = %d, want unchanged at %d after sub-threshold updates", tr.flushCount, afterStart)
+	}
+
+	// A >=1%% jump must flush immediately, even with no time elapsed.
+	tr.MaintenanceProgress(20) // 2% of total
+	if tr.flushCount != afterStart+1 {
+		t.Fatalf("flushCount = %d, want %d after a >=1%% jump", tr.flushCount, afterStart+1)
+	}
+
+	// Advance time past the 250ms floor with no meaningful percent change:
+	// must flush on elapsed time alone.
+	base = base.Add(300 * time.Millisecond)
+	tr.MaintenanceProgress(21)
+	if tr.flushCount != afterStart+2 {
+		t.Fatalf("flushCount = %d, want %d after the time-based flush", tr.flushCount, afterStart+2)
+	}
+
+	// In-memory state must always be current even when a write is skipped.
+	tr.MaintenanceProgress(999)
+	if tr.snap.Maintenance.Done != 999 {
+		t.Fatalf("Done = %d, want 999 (in-memory state must track every update)", tr.snap.Maintenance.Done)
+	}
+}
+
+func TestMaintenanceProgressManyUpdatesProduceFewWrites(t *testing.T) {
+	tr := newTestTracker(t)
+	base := time.Now()
+	tr.now = func() time.Time { return base }
+
+	tr.MaintenanceStart(PhaseRebuildingIndex, 1000)
+	before := tr.flushCount
+
+	n := 1000
+	for i := 1; i <= n; i++ {
+		tr.MaintenanceProgress(i) // 0.1% steps; no time advance
+	}
+	writes := tr.flushCount - before
+	if writes >= n/2 {
+		t.Fatalf("flushCount grew by %d for %d updates, want far fewer writes", writes, n)
+	}
+	if tr.snap.Maintenance.Done != n {
+		t.Fatalf("Done = %d, want %d: in-memory state must still be current", tr.snap.Maintenance.Done, n)
+	}
+}
+
 func TestCapsRecentAndFailures(t *testing.T) {
 	tr := newTestTracker(t)
 	base := time.Now()
