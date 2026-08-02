@@ -155,6 +155,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd()
 	case "w", "o":
 		return m, m.openWeb()
+	case "m":
+		return m, m.reconcileNow()
 	case "tab":
 		if m.focus == focusLog {
 			m.focus = focusFailures
@@ -206,6 +208,27 @@ func (m model) openWeb() tea.Cmd {
 			return toastMsg("Error al iniciar el visor web: " + err.Error())
 		}
 		return toastMsg("Visor web iniciado en http://127.0.0.1:8765 (PID " + fmt.Sprint(cmd.Process.Pid) + ")")
+	}
+}
+
+// reconcileNow launches `patro reconcile` as a detached subprocess (design
+// D8's `m` key), mirroring openWeb/retrySelected's exact spawn shape:
+// explicit argv via exec.Command, never a shell string.
+func (m model) reconcileNow() tea.Cmd {
+	exe, configPath := m.exePath, m.configPath
+	return func() tea.Msg {
+		if exe == "" {
+			return toastMsg("No puedo localizar el binario de patro")
+		}
+		args := []string{"reconcile"}
+		if configPath != "" {
+			args = append(args, "--config", configPath)
+		}
+		cmd := exec.Command(exe, args...)
+		if err := cmd.Start(); err != nil {
+			return toastMsg("Error al iniciar la reconciliación: " + err.Error())
+		}
+		return toastMsg("Reconciliación iniciada (PID " + fmt.Sprint(cmd.Process.Pid) + ")")
 	}
 }
 
@@ -277,4 +300,15 @@ func (d dashboardData) failures() []status.Failure {
 		return nil
 	}
 	return d.snap.Failures
+}
+
+// maintenance returns the current snapshot's in-progress background
+// maintenance run (nil-safe). loadData already clears it when the writing
+// process is gone, the same stale-PID policy applied to Current/Queue, so a
+// non-nil result here always describes work that is genuinely running.
+func (d dashboardData) maintenance() *status.Maintenance {
+	if d.snap == nil {
+		return nil
+	}
+	return d.snap.Maintenance
 }

@@ -16,6 +16,14 @@ import (
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
+// flattenWords collapses all whitespace (including line breaks introduced by
+// lipgloss word-wrap at narrower panel widths) to single spaces, so a
+// multi-word phrase can be found with strings.Contains regardless of exactly
+// where it wraps.
+func flattenWords(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func sampleModel(t *testing.T, w, h int) model {
 	t.Helper()
 	cfg := &config.Config{
@@ -93,13 +101,16 @@ func TestViewMissingStatusAlert(t *testing.T) {
 	m = nm.(model)
 
 	out := ansiRe.ReplaceAllString(m.View(), "")
-	if !strings.Contains(out, "no publica estado") {
+	flat := flattenWords(out)
+	if !strings.Contains(flat, "no publica estado") {
 		t.Error("missing-status alert not rendered for an active service")
 	}
 	if !strings.Contains(out, "en inbox") {
 		t.Error("queue card did not fall back to the inbox backlog")
 	}
-	if !strings.Contains(out, "estado en vivo no disponible") {
+	// The EN CURSO card now shares its column with MANTENIMIENTO
+	// (renderJobAndMaintenance), so this phrase may wrap at narrower widths.
+	if !strings.Contains(flat, "estado en vivo no disponible") {
 		t.Error("in-flight panel does not flag the missing live status")
 	}
 }
@@ -114,16 +125,17 @@ func TestViewStaleStatusAlert(t *testing.T) {
 	m = nm.(model)
 
 	out := ansiRe.ReplaceAllString(m.View(), "")
-	if !strings.Contains(out, "sesión anterior") {
+	flat := flattenWords(out)
+	if !strings.Contains(flat, "sesión anterior") {
 		t.Error("stale-status alert not rendered")
 	}
 	if !strings.Contains(out, "uptime —") {
 		t.Error("uptime not blanked for a stale snapshot")
 	}
-	if !strings.Contains(out, "estado en vivo no disponible") {
+	if !strings.Contains(flat, "estado en vivo no disponible") {
 		t.Error("in-flight panel did not switch to the no-live-status message")
 	}
-	if strings.Contains(out, "etapa analyzing") {
+	if strings.Contains(flat, "etapa analyzing") {
 		t.Error("phantom in-flight job rendered from a stale snapshot")
 	}
 }

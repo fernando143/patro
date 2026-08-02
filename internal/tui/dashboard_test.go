@@ -210,6 +210,71 @@ func TestOpenWebLaunchesSubprocess(t *testing.T) {
 	}
 }
 
+func TestHandleKeyMTriggersReconcile(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fake-patro")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	m := model{exePath: exe, configPath: "/tmp/config.yaml"}
+	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	if cmd == nil {
+		t.Fatal("handleKey(m) returned nil cmd, want the reconcile command")
+	}
+	msg := cmd()
+	toast, ok := msg.(toastMsg)
+	if !ok {
+		t.Fatalf("handleKey(m) produced %T, want toastMsg", msg)
+	}
+	if toast == "" {
+		t.Error("reconcile toast is empty")
+	}
+}
+
+func TestReconcileNowMissingExePath(t *testing.T) {
+	m := model{}
+	msg := m.reconcileNow()()
+	toast, ok := msg.(toastMsg)
+	if !ok {
+		t.Fatalf("reconcileNow() produced %T, want toastMsg", msg)
+	}
+	if toast == "" {
+		t.Error("toast message is empty for a missing exePath")
+	}
+}
+
+func TestReconcileNowLaunchesSubprocess(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fake-patro")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	m := model{exePath: exe, configPath: "/tmp/config.yaml"}
+	msg := m.reconcileNow()()
+	toast, ok := msg.(toastMsg)
+	if !ok {
+		t.Fatalf("reconcileNow() produced %T, want toastMsg", msg)
+	}
+	if toast == "" {
+		t.Error("toast message is empty after launching the subprocess")
+	}
+}
+
+func TestDashboardMaintenanceNilSnapshot(t *testing.T) {
+	d := dashboardData{}
+	if got := d.maintenance(); got != nil {
+		t.Errorf("maintenance() = %v, want nil for a nil snapshot", got)
+	}
+}
+
+func TestDashboardMaintenanceReadsSnapshot(t *testing.T) {
+	maint := &status.Maintenance{Phase: status.PhaseReconciling, Done: 2, Total: 5}
+	d := dashboardData{snap: &status.Snapshot{Maintenance: maint}}
+	if got := d.maintenance(); got != maint {
+		t.Errorf("maintenance() = %v, want %v", got, maint)
+	}
+}
+
 func TestRetrySelectedOutOfRangeIsNoop(t *testing.T) {
 	m := model{data: dashboardData{snap: &status.Snapshot{}}, failSel: 5}
 	if cmd := m.retrySelected(); cmd != nil {

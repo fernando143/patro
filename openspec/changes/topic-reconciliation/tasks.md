@@ -96,14 +96,14 @@
 - [x] 7.7 `patro reconcile [--mock] [--config]` in `cmd/patro/main.go` — `runReconcile` → shared `runMaintenance(ctx, cfg, tracker)`: ensure-index (vector store via `store.NeedsRebuild()`; BM25 index rebuilt only when its directory didn't exist yet, since bleve has no backend/dim tag to mismatch) → reconcile flagged topics via the new `internal/library` seam below. `pipeline.NewReconciler(cfg)` exported (thin wrapper over the existing unexported `newReconciler`) so `cmd/patro` reuses the exact production Reconciler construction (embedder + vector store + `GrayZoneCLI` — explicit argv via `exec.CommandContext`, no shell string, matching the established threat-matrix-safe subprocess pattern from Unit 4) without duplicating it. `internal/library/reconcile.go` gains `ReadLedger(path)` (reads `.state/reconciliation.json`, missing file ⇒ empty slice, not an error). `internal/library/library.go` gains `Library.ReconcileFlagged(ctx, ledgerPath, onProgress)`: dedupes to the latest ledger record per flagged slug, skips a slug whose topic file was already merged/removed, re-embeds its current file content and asks the (now possibly freshly-rebuilt) `Reconciler` the same 3-band question; on a genuine merge into a *different* topic it appends the content into the target file (`appendReconciledSection`, provenance-annotated, mirroring `AddMeetingCtx`'s own merge annotation) and removes the now-redundant standalone file — the ledger entry `Reconciler.Reconcile` itself writes remains the audit trail, so nothing is lost, only relocated.
 - [x] 7.8 Serve-startup integrity check → `runPipeline`'s `serve` branch launches `go func() { runMaintenance(ctx, cfg, tracker) }()` right after the tracker is created and before the watcher starts, so a first-run/large-library rebuild never blocks the inbox watcher from coming up (D10: startup + on-demand only, never mid-pipeline; `vectors.ErrRebuilding` — already enforced inside the store per Unit 3/4 — is what keeps reconciliation safely degraded for the rebuild's duration).
 
-## Phase 9 (Unit 8): TUI
-- [ ] 8.1 `settings.go` — new `stepThresholds` between `stepPath`/`stepKey`; pointer-bound `settingsValues` fields (preserve documented gotcha); own form per step.
-- [ ] 8.2 RED→GREEN: submitting thresholds updates `config.yaml`.
-- [ ] 8.3 `internal/setup/config.go` — `Values` gains threshold fields; confirm `WriteConfig` preserves unknown keys.
-- [ ] 8.4 `dashboard.go` — bind `m` (free vs. `q/ctrl+c/esc/f/r/w/o/tab/↑k/↓j/enter`) to spawn `patro reconcile` detached.
-- [ ] 8.5 `data.go` — surface `snap.Maintenance` (stale-PID-cleared) + flagged count from `.state/reconciliation.json`.
-- [ ] 8.6 One maintenance/flagged card beside (not replacing) the in-flight job card, transitioning `rebuilding index D/T` → `reconciling D/T flagged`.
-- [ ] 8.7 RED→GREEN: dashboard test — flagged count + phase on one card, independent in-flight card unaffected.
+## Phase 9 (Unit 8): TUI — **DONE**, verified (`go build/vet/test ./... && go build ./tools/embedbench/...` green)
+- [x] 8.1 `settings.go` — new `stepThresholds` between `stepPath`/`stepKey`; pointer-bound `settingsValues` fields (preserve documented gotcha); own form per step.
+- [x] 8.2 RED→GREEN: submitting thresholds updates `config.yaml`.
+- [x] 8.3 `internal/setup/config.go` — `Values` gains threshold fields; confirm `WriteConfig` preserves unknown keys.
+- [x] 8.4 `dashboard.go` — bind `m` (free vs. `q/ctrl+c/esc/f/r/w/o/tab/↑k/↓j/enter`) to spawn `patro reconcile` detached.
+- [x] 8.5 `data.go` — surface `snap.Maintenance` (stale-PID-cleared) + flagged count from `.state/reconciliation.json`.
+- [x] 8.6 One maintenance/flagged card beside (not replacing) the in-flight job card, transitioning `rebuilding index D/T` → `reconciling D/T flagged`.
+- [x] 8.7 RED→GREEN: dashboard test — flagged count + phase on one card, independent in-flight card unaffected.
 
 ## Phase 10: Final gate
 - [ ] 10.1 CI matrix: `CGO_ENABLED=0` × darwin/linux × amd64/arm64, both backends linked (zerfoo, cybertron) — final confirmation once both adapters exist.

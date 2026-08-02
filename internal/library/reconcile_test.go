@@ -403,6 +403,24 @@ func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
 	}
 }
 
+// TestCountFlagged proves the latest-per-slug dedupe: an older flagged
+// record superseded by a later merge (or a later reflag) must not be
+// double-counted or counted as still-pending.
+func TestCountFlagged(t *testing.T) {
+	entries := []LedgerEntry{
+		{Slug: "a", Flagged: true, Timestamp: time.Unix(1, 0)},
+		{Slug: "a", Flagged: false, Timestamp: time.Unix(2, 0)}, // later: merged, no longer flagged
+		{Slug: "b", Flagged: true, Timestamp: time.Unix(1, 0)},
+		{Slug: "c", Flagged: false, Timestamp: time.Unix(1, 0)},
+	}
+	if got := CountFlagged(entries); got != 1 {
+		t.Errorf("CountFlagged() = %d, want 1 (only slug b is still flagged)", got)
+	}
+	if got := CountFlagged(nil); got != 0 {
+		t.Errorf("CountFlagged(nil) = %d, want 0", got)
+	}
+}
+
 func TestReconcileFlaggedNilReconcilerIsNoop(t *testing.T) {
 	l := newTestLibrary(t)
 	merged, err := l.ReconcileFlagged(context.Background(), filepath.Join(t.TempDir(), "reconciliation.json"), nil)

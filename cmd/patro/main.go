@@ -422,7 +422,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	if err != nil {
 		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
 	}
-	if flaggedTotal := countFlagged(entries); flaggedTotal > 0 {
+	if flaggedTotal := library.CountFlagged(entries); flaggedTotal > 0 {
 		tracker.MaintenanceStart(status.PhaseReconciling, flaggedTotal)
 		_, reconcileErr := lib.ReconcileFlagged(ctx, ledgerPath, func(done, _ int) {
 			tracker.MaintenanceProgress(done)
@@ -433,23 +433,6 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 		}
 	}
 	return nil
-}
-
-// countFlagged returns the number of distinct slugs whose most recent
-// ledger record is flagged, matching library.ReconcileFlagged's own
-// latest-per-slug dedupe so the reported Maintenance.Total is accurate.
-func countFlagged(entries []library.LedgerEntry) int {
-	latest := map[string]bool{}
-	for _, e := range entries {
-		latest[e.Slug] = e.Flagged
-	}
-	total := 0
-	for _, flagged := range latest {
-		if flagged {
-			total++
-		}
-	}
-	return total
 }
 
 // wireSearch opens the BM25 index and vector store that power the web

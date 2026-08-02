@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 )
@@ -48,9 +49,13 @@ type dashboardData struct {
 	// computed when there is no live snapshot, as a fallback for the queue.
 	inboxBacklog   int
 	processedTotal int
-	log            []logLine
-	service        serviceHealth
-	err            error
+	// flaggedCount is the number of topics awaiting reconciliation, per the
+	// latest record for each slug in .state/reconciliation.json (design D4,
+	// mirroring cmd/patro's own Maintenance.Total accounting).
+	flaggedCount int
+	log          []logLine
+	service      serviceHealth
+	err          error
 }
 
 // loadData reads status.json, processed.json, the log tail and the service
@@ -66,22 +71,38 @@ func loadData(cfg *config.Config, logTailLines int) dashboardData {
 	d.snap = snap
 	d.statusMissing = snap == nil && err == nil
 	if snap != nil && !processAlive(snap.PID) {
-		// Leftover file from a previous serve run: the queue and in-flight
-		// job describe work that is no longer running, so drop them and keep
-		// only the historical counters and lists.
+		// Leftover file from a previous serve run: the queue, in-flight job
+		// and any in-progress maintenance run all describe work that is no
+		// longer running, so drop them and keep only the historical counters
+		// and lists.
 		d.statusStale = true
 		snap.Current = nil
 		snap.Queue = nil
+		snap.Maintenance = nil
 	}
 	if d.snap == nil || d.statusStale {
 		d.inboxBacklog = countInboxBacklog(cfg, stateDir)
 	}
 
 	d.processedTotal = countProcessed(filepath.Join(stateDir, "processed.json"))
+	d.flaggedCount = countFlaggedTopics(stateDir)
 	d.log = tailLog(cfg.LogFile(), logTailLines)
 	d.service = serviceStatus()
 
 	return d
+}
+
+// countFlaggedTopics reads the derived reconciliation ledger and reports how
+// many topics are currently flagged for review (design D4/D8). A missing or
+// unreadable ledger degrades to 0, matching every other best-effort read in
+// this file (countProcessed, countInboxBacklog) rather than surfacing as an
+// error the dashboard would need a new alert for.
+func countFlaggedTopics(stateDir string) int {
+	entries, err := library.ReadLedger(filepath.Join(stateDir, "reconciliation.json"))
+	if err != nil {
+		return 0
+	}
+	return library.CountFlagged(entries)
 }
 
 // processAlive reports whether a process with this PID currently exists. It

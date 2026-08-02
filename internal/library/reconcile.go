@@ -278,6 +278,27 @@ func ReadLedger(path string) ([]LedgerEntry, error) {
 	return lf.Entries, nil
 }
 
+// CountFlagged returns the number of distinct slugs whose most recent ledger
+// record is flagged, i.e. the number of topics genuinely awaiting
+// reconciliation right now. It dedupes to the latest record per slug — an
+// older flagged record superseded by a later merge or reflag does not count
+// — matching ReconcileFlagged's own dedupe, so callers (patro reconcile's
+// Maintenance.Total, the TUI dashboard's flagged-count card) agree with what
+// a reconcile pass will actually process.
+func CountFlagged(entries []LedgerEntry) int {
+	latest := map[string]bool{}
+	for _, e := range entries {
+		latest[e.Slug] = e.Flagged
+	}
+	total := 0
+	for _, flagged := range latest {
+		if flagged {
+			total++
+		}
+	}
+	return total
+}
+
 // appendLedger reads path (if present), appends entry, and writes the
 // result back atomically (temp file + rename), mirroring internal/vectors'
 // flush pattern.

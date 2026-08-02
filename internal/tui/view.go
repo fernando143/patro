@@ -133,8 +133,13 @@ func statCard(title, value, sub string, color lipgloss.Color, inner int) string 
 	return panelBox(title, color, inner, body)
 }
 
-// renderRow1 draws the in-flight job panel and the config/alerts panel,
-// side by side when splitCols allows it, stacked otherwise.
+// renderRow1 draws the in-flight job panel and the background maintenance
+// panel sharing the left half, and the config/alerts panel on the right —
+// the same top-level 2-column split (and the same CONFIGURACIÓN width) as
+// before maintenance existed, so narrow-terminal wrapping there is
+// unaffected. Maintenance sits beside the in-flight job card rather than
+// replacing it: design D10 lets a video job and a `patro reconcile` run
+// (design D8) be in progress at the same time, so both must stay visible.
 func (m model) renderRow1() string {
 	// In-flight job.
 	var jobBody string
@@ -148,6 +153,7 @@ func (m model) renderRow1() string {
 	} else {
 		jobBody = styleDim.Render("en reposo — sin videos en proceso")
 	}
+	maintBody := m.maintenanceBody()
 	configBody := m.configBody()
 
 	leftTotal, rightTotal := m.width, m.width
@@ -155,13 +161,57 @@ func (m model) renderRow1() string {
 	if cols != nil {
 		leftTotal, rightTotal = cols[0], cols[1]
 	}
-	left := panelBox("EN CURSO", colorSunset, innerWidth(leftTotal), padLines(jobBody, 2))
+	left := renderJobAndMaintenance(leftTotal, jobBody, maintBody)
 	right := panelBox("CONFIGURACIÓN", colorCyan, innerWidth(rightTotal), padLines(configBody, 2))
 
 	if cols == nil {
 		return lipgloss.JoinVertical(lipgloss.Left, left, right)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// renderJobAndMaintenance lays the EN CURSO and MANTENIMIENTO cards out
+// within totalWidth: side by side when there is room for two panel-width
+// columns, stacked vertically otherwise — either way staying inside
+// totalWidth, so CONFIGURACIÓN's own width (and wrapping) never changes.
+// minPanelInner (not the narrower minCardInner) keeps each card wide enough
+// that ordinary status phrases ("estado en vivo no disponible") never wrap.
+func renderJobAndMaintenance(totalWidth int, jobBody, maintBody string) string {
+	if cols := splitCols(totalWidth, 2, minPanelInner); cols != nil {
+		job := panelBox("EN CURSO", colorSunset, innerWidth(cols[0]), padLines(jobBody, 2))
+		maint := panelBox("MANTENIMIENTO", colorPurple, innerWidth(cols[1]), padLines(maintBody, 2))
+		return lipgloss.JoinHorizontal(lipgloss.Top, job, maint)
+	}
+	job := panelBox("EN CURSO", colorSunset, innerWidth(totalWidth), padLines(jobBody, 2))
+	maint := panelBox("MANTENIMIENTO", colorPurple, innerWidth(totalWidth), padLines(maintBody, 2))
+	return lipgloss.JoinVertical(lipgloss.Left, job, maint)
+}
+
+// maintenanceBody renders the background maintenance card (design D10/D12
+// data flow, TUI surface): live phase/progress while `patro reconcile` (`m`
+// key) is running, or the flagged-topic count when idle.
+func (m model) maintenanceBody() string {
+	maint := m.data.maintenance()
+	if maint == nil {
+		if m.data.flaggedCount == 0 {
+			return styleDim.Render("sin temas pendientes") + "\n" + styleDim.Render("m reconciliar")
+		}
+		return styleAlert.Render(fmt.Sprintf("%d tema(s) marcados", m.data.flaggedCount)) + "\n" +
+			styleDim.Render("m reconciliar")
+	}
+
+	var phaseLabel, suffix string
+	switch maint.Phase {
+	case status.PhaseRebuildingIndex:
+		phaseLabel = "reconstruyendo índice"
+	case status.PhaseReconciling:
+		phaseLabel = "reconciliando"
+		suffix = " marcados"
+	default:
+		phaseLabel = string(maint.Phase)
+	}
+	return m.spinner.View() + " " + styleAccent.Render(phaseLabel) + "\n" +
+		styleDim.Render(fmt.Sprintf("%d/%d%s", maint.Done, maint.Total, suffix))
 }
 
 // configBody renders inbox/library/backend and any alerts.
@@ -301,7 +351,7 @@ func (m model) renderLog(body string) string {
 // renderHelp draws the key hints and any transient toast, truncated to the
 // terminal width like every other line in the frame.
 func (m model) renderHelp() string {
-	keys := styleHelp.Render(truncate("esc menú · q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web", m.width))
+	keys := styleHelp.Render(truncate("esc menú · q salir · tab foco · ↑↓ mover · enter reintentar · f follow · r refrescar · o/w web · m reconciliar", m.width))
 	if m.toast != "" && time.Since(m.toastAt) < 6*time.Second {
 		return keys + "\n" + styleActive.Render(truncate("» "+m.toast, m.width))
 	}
