@@ -203,6 +203,7 @@ func TestCurrentBinary(t *testing.T) {
 	}{
 		{"kimi", &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", ClaudePath: "/bin/claude"}, "/bin/kimi"},
 		{"claude", &config.Config{AnalyzerBackend: "claude", KimiPath: "/bin/kimi", ClaudePath: "/bin/claude"}, "/bin/claude"},
+		{"codex", &config.Config{AnalyzerBackend: "codex", CodexPath: "/bin/codex"}, "/bin/codex"},
 		{"lemur is hosted", &config.Config{AnalyzerBackend: "lemur", KimiPath: "/bin/kimi"}, ""},
 	}
 	for _, tc := range cases {

@@ -29,6 +29,7 @@ type backendChoice struct {
 var backendChoices = []backendChoice{
 	{value: "kimi", label: "kimi   — local Kimi CLI"},
 	{value: "claude", label: "claude — local Claude CLI"},
+	{value: "codex", label: "codex  — local Codex CLI"},
 	{value: "lemur", label: "lemur  — hosted by AssemblyAI, no local CLI", hosted: true},
 }
 
@@ -374,6 +375,8 @@ func currentBinary(cfg *config.Config) string {
 		return cfg.KimiPath
 	case "claude":
 		return cfg.ClaudePath
+	case "codex":
+		return cfg.CodexPath
 	default:
 		return ""
 	}

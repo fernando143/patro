@@ -331,6 +331,18 @@ func TestGrayZoneCLIYes(t *testing.T) {
 	}
 }
 
+func TestGrayZoneCodexYes(t *testing.T) {
+	script := writeScript(t, t.TempDir(), `echo '{"type":"item.completed","item":{"type":"agent_message","text":"yes"}}'`)
+	decide := GrayZoneCodex(script, time.Second)
+	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if !same {
+		t.Error("same = false, want true for a Codex \"yes\" answer")
+	}
+}
+
 func TestGrayZoneCLINo(t *testing.T) {
 	script := writeScript(t, t.TempDir(), `echo "no"`)
 	decide := GrayZoneCLI(script, time.Second)

@@ -57,7 +57,7 @@ func RealTranscribe(ctx context.Context, videoPath string, cfg *config.Config) (
 
 // MakeAnalyzeFunc returns the real analyzer selected by
 // cfg.AnalyzerBackend: "lemur" calls AssemblyAI's hosted LLM with the API
-// key from the environment; "kimi"/"claude" shell out to the local CLI.
+// key from the environment; "kimi"/"claude"/"codex" shell out to a local CLI.
 func MakeAnalyzeFunc(cfg *config.Config) AnalyzeFunc {
 	if cfg.AnalyzerBackend == "lemur" {
 		return func(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
@@ -173,14 +173,21 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
-	// mirroring MakeAnalyzeFunc's own kimi/claude choice: kimi_path/
-	// claude_path are always populated with a default (internal/config),
+	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
+	// populated with a default (internal/config),
 	// so this never needs its own separate config key. lemur (hosted, no
 	// local CLI) falls back to kimi_path, matching kimi's status as the
 	// project's default local CLI.
 	binaryPath := cfg.KimiPath
 	if cfg.AnalyzerBackend == "claude" {
 		binaryPath = cfg.ClaudePath
+	} else if cfg.AnalyzerBackend == "codex" {
+		binaryPath = cfg.CodexPath
+	}
+
+	decide := library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second)
+	if cfg.AnalyzerBackend == "codex" {
+		decide = library.GrayZoneCodex(binaryPath, grayZoneTimeoutSeconds*time.Second)
 	}
 
 	return &library.SemanticReconciler{
@@ -188,7 +195,7 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 		Store:             store,
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,
-		Decide:            library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second),
+		Decide:            decide,
 		LedgerPath:        filepath.Join(cfg.StateDir(), "reconciliation.json"),
 	}
 }

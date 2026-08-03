@@ -38,12 +38,19 @@ func WriteConfig(path string, v Values) error {
 	data["inbox"] = v.Inbox
 	data["library"] = v.Library
 	data["analyzer_backend"] = v.Backend
-	if v.Backend == "kimi" {
+	switch v.Backend {
+	case "kimi":
 		data["kimi_path"] = v.BinaryPath
 		delete(data, "claude_path")
-	} else {
+		delete(data, "codex_path")
+	case "claude":
 		data["claude_path"] = v.BinaryPath
 		delete(data, "kimi_path")
+		delete(data, "codex_path")
+	case "codex":
+		data["codex_path"] = v.BinaryPath
+		delete(data, "kimi_path")
+		delete(data, "claude_path")
 	}
 	if v.MergeThreshold != nil {
 		data["merge_threshold"] = *v.MergeThreshold
@@ -105,6 +112,8 @@ func SetBackend(path, backend, binaryPath string) error {
 		data["kimi_path"] = binaryPath
 	case "claude":
 		data["claude_path"] = binaryPath
+	case "codex":
+		data["codex_path"] = binaryPath
 	case "lemur":
 		// Hosted: no local binary, and both *_path keys are left untouched.
 	default:

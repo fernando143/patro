@@ -26,6 +26,7 @@ const (
 	defaultAnalyzerBackend          = "kimi"
 	defaultKimiPath                 = "kimi"
 	defaultClaudePath               = "claude"
+	defaultCodexPath                = "codex"
 	// defaultEmbeddingBackend is provisional: cybertron is the only
 	// candidate with third-party adoption evidence as of design D9.
 	// tools/embedbench settles the final default once both backends
@@ -47,7 +48,7 @@ const (
 
 var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
-	validAnalyzerBackends  = []string{"kimi", "lemur", "claude"}
+	validAnalyzerBackends  = []string{"kimi", "lemur", "claude", "codex"}
 	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
 	// (design D9 amendment). It is a separate, explicit list here rather
 	// than a call into internal/embed so config validation has no
@@ -79,6 +80,7 @@ type Config struct {
 	TopicPromptLimit         int
 	KimiPath                 string
 	ClaudePath               string
+	CodexPath                string
 	Dir                      string // directory of the config file; base for relative paths
 	Path                     string // resolved config file, "" when none was found
 }
@@ -110,6 +112,7 @@ type yamlConfig struct {
 	TopicPromptLimit         *int     `yaml:"topic_prompt_limit"`
 	KimiPath                 *string  `yaml:"kimi_path"`
 	ClaudePath               *string  `yaml:"claude_path"`
+	CodexPath                *string  `yaml:"codex_path"`
 }
 
 // UserConfigPath returns ~/.config/patro/config.yaml, or "" when the home
@@ -206,6 +209,7 @@ func Load(flagPath string) (*Config, error) {
 		TopicPromptLimit:         intOr(raw.TopicPromptLimit, defaultTopicPromptLimit),
 		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
 		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
+		CodexPath:                binaryPathOr(raw.CodexPath, defaultCodexPath),
 		Dir:                      dir,
 		Path:                     configPath,
 	}, nil

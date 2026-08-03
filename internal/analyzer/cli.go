@@ -1,11 +1,12 @@
-// CLI analyzer backends: kimi and claude.
+// CLI analyzer backends: kimi, claude, and codex.
 //
-// Instead of calling a hosted LLM, these backends shell out to
-// `<binary> -p` (non-interactive, auto-approved permissions) with
-// `--output-format stream-json`. The prompt tells the CLI to READ the
-// transcript from a file on disk — embedding a long transcript in the
-// argument would risk ARG_MAX — and to answer with the same strict JSON
-// schema as the LeMUR backend (see BuildPrompt).
+// Instead of calling a hosted LLM, these backends shell out to their local
+// CLIs in non-interactive mode. Kimi and Claude use `<binary> -p` with
+// `--output-format stream-json`; Codex uses `codex exec --json` in a
+// read-only sandbox. The prompt tells the CLI to READ the transcript from a
+// file on disk — embedding a long transcript in the argument would risk
+// ARG_MAX — and to answer with the same strict JSON schema as the LeMUR
+// backend (see BuildPrompt).
 //
 // Stdout is JSONL: assistant messages (text and/or tool calls), tool
 // results and meta lines. The text of all assistant messages is
@@ -40,14 +41,18 @@ import (
 const cliTimeoutSeconds = 600
 
 // AnalyzeCLI runs the local CLI backend selected by cfg.AnalyzerBackend
-// ("kimi" -> cfg.KimiPath, "claude" -> cfg.ClaudePath) over the transcript
+// ("kimi" -> cfg.KimiPath, "claude" -> cfg.ClaudePath,
+// "codex" -> cfg.CodexPath) over the transcript
 // and parses its answer.
 func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef, cfg *config.Config) (*types.AnalysisResult, error) {
 	var binaryPath, lowerName, parseName, notFoundMsg string
-	var extraArgs []string
+	var args func(prompt string) []string
 	switch strings.ToLower(strings.TrimSpace(cfg.AnalyzerBackend)) {
 	case "kimi":
 		binaryPath, lowerName, parseName = cfg.KimiPath, "kimi", "Kimi"
+		args = func(prompt string) []string {
+			return []string{"-p", prompt, "--output-format", "stream-json"}
+		}
 		notFoundMsg = fmt.Sprintf(
 			"'%s' executable not found. Install Kimi Code CLI "+
 				"(https://www.kimi.com/code), adjust kimi_path in config.yaml, "+
@@ -58,10 +63,29 @@ func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types
 		binaryPath, lowerName, parseName = cfg.ClaudePath, "claude", "Claude"
 		// Claude Code CLI rejects `--print --output-format=stream-json`
 		// unless --verbose is also passed.
-		extraArgs = []string{"--verbose"}
+		args = func(prompt string) []string {
+			return []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+		}
 		notFoundMsg = fmt.Sprintf(
 			"'%s' executable not found. Install Claude Code CLI, "+
 				"adjust claude_path in config.yaml, or switch analyzer_backend to kimi/lemur.",
+			binaryPath,
+		)
+	case "codex":
+		binaryPath, lowerName, parseName = cfg.CodexPath, "codex", "Codex"
+		// Codex uses `exec` for non-interactive runs and emits JSONL events
+		// with the final assistant message in an item.completed event.
+		// The read-only sandbox and skipped repository check keep this
+		// provider safe and usable when cfg.Dir is not a Git checkout.
+		args = func(prompt string) []string {
+			return []string{
+				"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+				"--sandbox", "read-only", prompt,
+			}
+		}
+		notFoundMsg = fmt.Sprintf(
+			"'%s' executable not found. Install Codex CLI, "+
+				"adjust codex_path in config.yaml, or switch analyzer_backend to kimi/claude/lemur.",
 			binaryPath,
 		)
 	default:
@@ -77,7 +101,7 @@ func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types
 	prompt := BuildPrompt(existing, t.Language, transcriptFile)
 	logging.Infof("Running %s analysis over transcript %s (%s) ...", parseName, t.ID, transcriptFile)
 
-	stdout, err := runCLI(ctx, binaryPath, prompt, cfg.Dir, lowerName, notFoundMsg, extraArgs...)
+	stdout, err := runCLI(ctx, binaryPath, args(prompt), cfg.Dir, lowerName, notFoundMsg)
 	if err != nil {
 		return nil, err
 	}
@@ -114,16 +138,14 @@ func writeTranscriptFile(t *types.TranscriptResult, stateDir string) (string, er
 	return path, nil
 }
 
-// runCLI executes `<binary> -p <prompt> --output-format stream-json
-// [extraArgs...]` in workDir and returns its stdout. Mirrors
+// runCLI executes the provider-specific argv in workDir and returns stdout. Mirrors
 // kimi_analyzer._run_kimi and claude_analyzer._run_claude: missing binary,
 // timeout and non-zero exit (with stderr truncated to 1000 characters) each
 // raise a clear error.
-func runCLI(ctx context.Context, binaryPath, prompt, workDir, lowerName, notFoundMsg string, extraArgs ...string) (string, error) {
+func runCLI(ctx context.Context, binaryPath string, args []string, workDir, lowerName, notFoundMsg string) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, cliTimeoutSeconds*time.Second)
 	defer cancel()
 
-	args := append([]string{"-p", prompt, "--output-format", "stream-json"}, extraArgs...)
 	cmd := exec.CommandContext(runCtx, binaryPath, args...)
 	cmd.Dir = workDir
 	var stdout, stderr bytes.Buffer
@@ -172,6 +194,14 @@ func assistantText(streamJSONStdout string) string {
 		}
 		if msg, ok := obj["message"].(map[string]any); ok {
 			obj = msg
+		}
+		if item, ok := obj["item"].(map[string]any); ok {
+			if typ, _ := item["type"].(string); typ == "agent_message" {
+				if text, _ := item["text"].(string); text != "" {
+					chunks = append(chunks, text)
+				}
+			}
+			continue
 		}
 		if role, _ := obj["role"].(string); role != "assistant" {
 			continue
