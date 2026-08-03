@@ -38,6 +38,7 @@ library: /home/u/knowledge
 analyzer_backend: kimi
 kimi_path: /usr/local/bin/kimi
 claude_path: /usr/local/bin/claude
+codex_path: /usr/local/bin/codex
 video_extensions:
 - .mkv
 - .mp4
@@ -101,6 +102,19 @@ func TestSetBackendLemurLeavesBinaryPaths(t *testing.T) {
 	}
 	if _, ok := got["lemur_path"]; ok {
 		t.Error("lemur_path was written; lemur needs no binary")
+	}
+}
+
+func TestSetBackendCodexWritesCodexPath(t *testing.T) {
+	path := writeConfigFile(t, fullConfig)
+
+	if err := SetBackend(path, "codex", "/opt/codex"); err != nil {
+		t.Fatalf("SetBackend: %v", err)
+	}
+
+	got := readConfig(t, path)
+	if got["analyzer_backend"] != "codex" || got["codex_path"] != "/opt/codex" {
+		t.Errorf("got %v, want codex backend and path", got)
 	}
 }
 

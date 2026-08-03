@@ -67,6 +67,9 @@ func TestLoadDefaultsForMissingFile(t *testing.T) {
 	if cfg.ClaudePath != "claude" {
 		t.Errorf("ClaudePath = %q, want %q", cfg.ClaudePath, "claude")
 	}
+	if cfg.CodexPath != "codex" {
+		t.Errorf("CodexPath = %q, want %q", cfg.CodexPath, "codex")
+	}
 	if cfg.Dir != dir {
 		t.Errorf("Dir = %q, want %q", cfg.Dir, dir)
 	}
@@ -146,7 +149,7 @@ func TestLoadInvalidBackend(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() succeeded, want an invalid-backend error")
 	}
-	for _, want := range []string{"bogus", "kimi, lemur, claude"} {
+	for _, want := range []string{"bogus", "kimi, lemur, claude, codex"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}

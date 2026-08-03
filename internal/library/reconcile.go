@@ -383,3 +383,60 @@ func GrayZoneCLI(binaryPath string, timeout time.Duration) GrayZoneDecider {
 		return strings.HasPrefix(answer, "yes"), nil
 	}
 }
+
+// GrayZoneCodex builds a gray-zone decider for the Codex CLI. Codex's
+// non-interactive interface is `codex exec --json`, so its JSONL agent_message
+// events need to be decoded before the yes/no answer can be evaluated.
+func GrayZoneCodex(binaryPath string, timeout time.Duration) GrayZoneDecider {
+	return func(ctx context.Context, candidate types.Topic, nearest types.TopicRef) (bool, error) {
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		prompt := fmt.Sprintf(
+			"Existing topic: %q (slug %q).\n"+
+				"Candidate topic: %q.\n%s\n"+
+				"Is the candidate the SAME topic as the existing one? "+
+				"Answer with exactly one word: yes or no.",
+			nearest.Name, nearest.Slug, candidate.Name, strings.TrimSpace(candidate.Content),
+		)
+		cmd := exec.CommandContext(runCtx, binaryPath,
+			"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+			"--sandbox", "read-only", prompt,
+		)
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+
+		err := cmd.Run()
+		if runCtx.Err() == context.DeadlineExceeded {
+			return false, fmt.Errorf("library: reconciliation LLM call timed out after %s", timeout)
+		}
+		if err != nil {
+			return false, fmt.Errorf("library: reconciliation LLM call failed: %w", err)
+		}
+
+		answer := strings.ToLower(strings.TrimSpace(codexAgentText(out.String())))
+		return strings.HasPrefix(answer, "yes"), nil
+	}
+}
+
+func codexAgentText(streamJSON string) string {
+	var chunks []string
+	for _, line := range strings.Split(streamJSON, "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &event); err != nil {
+			continue
+		}
+		item, ok := event["item"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := item["type"].(string); typ != "agent_message" {
+			continue
+		}
+		if text, _ := item["text"].(string); text != "" {
+			chunks = append(chunks, text)
+		}
+	}
+	return strings.Join(chunks, "\n")
+}

@@ -57,6 +57,17 @@ func TestAssistantTextClaudeCodeEnvelope(t *testing.T) {
 	}
 }
 
+func TestAssistantTextCodexJSONLEnvelope(t *testing.T) {
+	stream := `{"type":"thread.started","thread_id":"s1"}
+{"type":"item.completed","item":{"type":"agent_message","text":"first"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"cat transcript.txt"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"second"}}
+{"type":"turn.completed"}`
+	if got := assistantText(stream); got != "first\nsecond" {
+		t.Errorf("assistantText = %q, want %q", got, "first\nsecond")
+	}
+}
+
 func TestAssistantTextEmpty(t *testing.T) {
 	if got := assistantText("\n \n\t\n"); got != "" {
 		t.Errorf("assistantText = %q, want empty", got)
@@ -227,6 +238,39 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCLICodexUsesExecJSON(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromCodex\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"codex-topic\\\"}]}\"}}'\n"
+	codexPath := writeFakeCLI(t, dir, "fake-codex", script)
+
+	cfg := &config.Config{Dir: dir, AnalyzerBackend: "codex", CodexPath: codexPath}
+	tr := &types.TranscriptResult{ID: "mtg-codex", Language: "en", Text: "transcript"}
+
+	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	if err != nil {
+		t.Fatalf("AnalyzeCLI: %v", err)
+	}
+	if result.Title != "FromCodex" {
+		t.Errorf("Title = %q, want %q", result.Title, "FromCodex")
+	}
+	if len(result.Topics) != 1 || result.Topics[0].Slug != "codex-topic" {
+		t.Errorf("Topics = %v", result.Topics)
+	}
+
+	invocation, err := os.ReadFile(filepath.Join(dir, "invocation.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(invocation)
+	for _, want := range []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only"} {
+		if !strings.Contains(text, "\n"+want+"\n") {
+			t.Errorf("Codex invocation missing argument %q: %q", want, text)
+		}
+	}
+}
+
 func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	dir := t.TempDir()
 	tr := &types.TranscriptResult{ID: "m1", Text: "text"}
@@ -250,6 +294,17 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	}
 	want = fmt.Sprintf("'%s' executable not found. Install Claude Code CLI, "+
 		"adjust claude_path in config.yaml, or switch analyzer_backend to kimi/lemur.", cfg.ClaudePath)
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+
+	cfg = &config.Config{Dir: dir, AnalyzerBackend: "codex", CodexPath: filepath.Join(dir, "no-such-codex")}
+	_, err = AnalyzeCLI(context.Background(), tr, nil, cfg)
+	if err == nil {
+		t.Fatal("expected error for missing codex binary")
+	}
+	want = fmt.Sprintf("'%s' executable not found. Install Codex CLI, "+
+		"adjust codex_path in config.yaml, or switch analyzer_backend to kimi/claude/lemur.", cfg.CodexPath)
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)
 	}
