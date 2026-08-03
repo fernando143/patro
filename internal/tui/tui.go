@@ -31,7 +31,7 @@ type (
 // screen is on display.
 type rootModel struct {
 	screen     screen
-	configPath string // the --config flag, "" when not given
+	configPath string // the resolved config path used by every subprocess
 
 	width, height int
 
@@ -41,9 +41,9 @@ type rootModel struct {
 	settings settingsModel
 }
 
-// Run opens patro's TUI menu against cfg. configPath is echoed to
-// subprocesses and used to reload the config after a settings change. It
-// blocks until the user quits.
+// Run opens patro's TUI menu against cfg. configPath is the resolved config
+// path echoed to subprocesses and used by the dashboard. It blocks until the
+// user quits.
 func Run(cfg *config.Config, configPath string) error {
 	r := rootModel{
 		screen:     screenMenu,

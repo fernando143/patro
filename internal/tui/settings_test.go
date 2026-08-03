@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -226,6 +227,16 @@ func TestNewSettingsTargetsResolvedConfigPath(t *testing.T) {
 	}
 	if m.vals.backend != "kimi" {
 		t.Errorf("backend = %q, want the current backend preselected", m.vals.backend)
+	}
+}
+
+func TestSettingsViewShowsResolvedConfigPath(t *testing.T) {
+	path := "/home/test/.config/patro/config.yaml"
+	cfg := &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", Path: path}
+	m := newTestSettings(t, cfg)
+
+	if got := m.View(); !strings.Contains(got, path) {
+		t.Errorf("settings view does not show resolved config path %q: %s", path, got)
 	}
 }
 

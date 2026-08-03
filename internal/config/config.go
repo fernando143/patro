@@ -1,6 +1,7 @@
 // Package config loads patro's YAML configuration.
 //
-// Configuration is read from config.yaml; all relative paths inside it are
+// The runtime configuration is read from ~/.config/patro/config.yaml unless
+// an explicit --config path is supplied; all relative paths inside it are
 // resolved against the directory containing the loaded file (Config.Dir).
 // The AssemblyAI API key is read exclusively from the ASSEMBLYAI_API_KEY
 // environment variable.
@@ -82,7 +83,7 @@ type Config struct {
 	ClaudePath               string
 	CodexPath                string
 	Dir                      string // directory of the config file; base for relative paths
-	Path                     string // resolved config file, "" when none was found
+	Path                     string // canonical or explicitly requested config file
 }
 
 // ValidAnalyzerBackends returns the accepted analyzer_backend values. The
@@ -125,59 +126,58 @@ func UserConfigPath() string {
 	return filepath.Join(home, ".config", "patro", "config.yaml")
 }
 
-// Load reads the config. Search order when flagPath == "":
-//  1. ./config.yaml (if it exists)
-//  2. UserConfigPath() (if it exists)
-//  3. built-in defaults with Dir = current working directory.
-//
-// When flagPath != "" that file is used (missing file = defaults for that
-// path). Missing keys in the YAML fall back to the built-in defaults.
-func Load(flagPath string) (*Config, error) {
-	configPath := ""
-	if flagPath != "" {
-		abs, err := filepath.Abs(flagPath)
-		if err != nil {
-			return nil, err
-		}
-		configPath = abs
-	} else {
-		if _, err := os.Stat("config.yaml"); err == nil {
-			abs, err := filepath.Abs("config.yaml")
-			if err != nil {
-				return nil, err
-			}
-			configPath = abs
-		} else if userPath := UserConfigPath(); userPath != "" {
-			if _, err := os.Stat(userPath); err == nil {
-				configPath = userPath
-			}
+// ResolvePath returns the single runtime config path. An explicit --config
+// value wins; otherwise the per-user config is canonical. A relative path is
+// resolved against the current working directory and a leading ~ is expanded.
+func ResolvePath(flagPath string) string {
+	path := strings.TrimSpace(flagPath)
+	if path == "" {
+		path = UserConfigPath()
+		if path == "" {
+			path = "config.yaml"
 		}
 	}
 
-	dir := ""
-	if configPath != "" {
-		dir = filepath.Dir(configPath)
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home
+		}
+	} else if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+// Load reads the canonical config, or the explicitly requested config when
+// flagPath is non-empty. Missing keys in the YAML fall back to built-in
+// defaults. When a legacy local ./config.yaml is found and the canonical file
+// does not exist yet, it is copied to the canonical path once before loading.
+func Load(flagPath string) (*Config, error) {
+	configPath := ResolvePath(flagPath)
+	if flagPath == "" {
+		if err := migrateLocalConfig(configPath); err != nil {
 			return nil, err
 		}
-		dir = cwd
 	}
+
+	dir := filepath.Dir(configPath)
 
 	raw := yamlConfig{}
-	if configPath != "" {
-		data, err := os.ReadFile(configPath)
-		switch {
-		case err == nil:
-			if err := yaml.Unmarshal(data, &raw); err != nil {
-				return nil, fmt.Errorf("patro: cannot parse %s: %w", configPath, err)
-			}
-		case flagPath != "" && os.IsNotExist(err):
-			// Explicitly requested but missing: use the defaults.
-		default:
-			return nil, err
+	data, err := os.ReadFile(configPath)
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("patro: cannot parse %s: %w", configPath, err)
 		}
+	case os.IsNotExist(err):
+		// A missing canonical or explicitly requested config uses defaults.
+	default:
+		return nil, err
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(stringOr(raw.AnalyzerBackend, defaultAnalyzerBackend)))
@@ -213,6 +213,36 @@ func Load(flagPath string) (*Config, error) {
 		Dir:                      dir,
 		Path:                     configPath,
 	}, nil
+}
+
+// migrateLocalConfig adopts a legacy repository-local config only when the
+// canonical user config has not been created yet. Existing canonical config
+// always wins, so two divergent files cannot silently overwrite each other.
+func migrateLocalConfig(canonicalPath string) error {
+	if _, err := os.Stat(canonicalPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	localPath, err := filepath.Abs("config.yaml")
+	if err != nil {
+		return err
+	}
+	if localPath == canonicalPath {
+		return nil
+	}
+	raw, err := os.ReadFile(localPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(canonicalPath, raw, 0o644)
 }
 
 // APIKey returns the AssemblyAI key from the environment or an error whose

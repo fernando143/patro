@@ -228,10 +228,17 @@ func TestLoadMalformedYAML(t *testing.T) {
 	}
 }
 
-func TestLoadEmptyFlagUsesLocalConfigYAML(t *testing.T) {
+func TestLoadEmptyFlagPrefersCanonicalUserConfigOverLocalConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userConfigDir := filepath.Join(home, ".config", "patro")
+	if err := os.MkdirAll(userConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userPath := writeConfig(t, userConfigDir, "stability_checks: 3\n")
+
 	dir := t.TempDir()
 	writeConfig(t, dir, "stability_checks: 9\n")
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -245,11 +252,11 @@ func TestLoadEmptyFlagUsesLocalConfigYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
-	if cfg.StabilityChecks != 9 {
-		t.Errorf("StabilityChecks = %d, want 9 (from ./config.yaml)", cfg.StabilityChecks)
+	if cfg.StabilityChecks != 3 {
+		t.Errorf("StabilityChecks = %d, want 3 (from the canonical user config)", cfg.StabilityChecks)
 	}
-	if cfg.Path != filepath.Join(dir, "config.yaml") {
-		t.Errorf("Path = %q, want the local config.yaml", cfg.Path)
+	if cfg.Path != userPath {
+		t.Errorf("Path = %q, want the canonical user config", cfg.Path)
 	}
 }
 
@@ -299,11 +306,46 @@ func TestLoadEmptyFlagNoConfigAnywhereUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
-	if cfg.Path != "" {
-		t.Errorf("Path = %q, want empty when no config file exists anywhere", cfg.Path)
+	wantPath := filepath.Join(home, ".config", "patro", "config.yaml")
+	if cfg.Path != wantPath {
+		t.Errorf("Path = %q, want the canonical user config %q", cfg.Path, wantPath)
 	}
-	if cfg.Dir != dir {
-		t.Errorf("Dir = %q, want the cwd %q", cfg.Dir, dir)
+	if cfg.Dir != filepath.Dir(wantPath) {
+		t.Errorf("Dir = %q, want %q", cfg.Dir, filepath.Dir(wantPath))
+	}
+}
+
+func TestLoadEmptyFlagMigratesLocalConfigWhenCanonicalConfigIsMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	localPath := writeConfig(t, dir, "stability_checks: 9\n")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	canonicalPath := filepath.Join(home, ".config", "patro", "config.yaml")
+	if cfg.Path != canonicalPath {
+		t.Errorf("Path = %q, want %q", cfg.Path, canonicalPath)
+	}
+	if cfg.StabilityChecks != 9 {
+		t.Errorf("StabilityChecks = %d, want migrated local value 9", cfg.StabilityChecks)
+	}
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Fatalf("canonical config was not created: %v", err)
+	}
+	if _, err := os.Stat(localPath); err != nil {
+		t.Fatalf("local config was unexpectedly removed: %v", err)
 	}
 }
 

@@ -532,7 +532,7 @@ func thresholdValues(vals *settingsValues, cfg *config.Config) (merge, newTopic 
 
 // saveCmd writes the config and updates the service off the UI thread.
 func (m settingsModel) saveCmd() tea.Cmd {
-	target, flagConfig := m.target, m.configPath
+	target := m.target
 	backend, binary := m.vals.backend, m.binaryPath()
 	apiKey := strings.TrimSpace(m.vals.apiKey)
 	backendChanged := backend != m.cfg.AnalyzerBackend ||
@@ -573,7 +573,7 @@ func (m settingsModel) saveCmd() tea.Cmd {
 			}
 		}
 
-		cfg, err := config.Load(flagConfig)
+		cfg, err := config.Load(target)
 		if err != nil {
 			return saveDoneMsg{err: err}
 		}
@@ -605,6 +605,9 @@ func (m settingsModel) View() string {
 // form.
 func (m settingsModel) frame(body string) string {
 	var panels []string
+	if panel := m.configPanel(innerWidth(m.width)); panel != "" {
+		panels = append(panels, panel)
+	}
 	if panel := m.detectionPanel(innerWidth(m.width)); panel != "" {
 		panels = append(panels, panel)
 	}
@@ -616,6 +619,16 @@ func (m settingsModel) frame(body string) string {
 		help:     m.helpLine(),
 	}
 	return chrome.render(body)
+}
+
+// configPanel makes the single source of truth visible while editing. This
+// avoids the exact class of failure where Settings updates a different file
+// from the one loaded by the background service.
+func (m settingsModel) configPanel(inner int) string {
+	if m.target == "" {
+		return ""
+	}
+	return panelBox("CONFIG", colorCyan, inner, styleDim.Render(truncate(m.target, inner-4)))
 }
 
 // stepLabel names the current step so the flow's length is never a surprise.

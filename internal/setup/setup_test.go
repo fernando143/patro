@@ -47,7 +47,7 @@ func TestConfigPathFlagTakesPriority(t *testing.T) {
 	}
 }
 
-func TestConfigPathUsesLocalConfigWhenPresent(t *testing.T) {
+func TestConfigPathUsesCanonicalUserConfigWhenLocalConfigIsPresent(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("inbox: x\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
@@ -60,11 +60,12 @@ func TestConfigPathUsesLocalConfigWhenPresent(t *testing.T) {
 		t.Fatalf("Chdir error = %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	t.Setenv("HOME", t.TempDir())
 
 	got := ConfigPath("")
-	want := filepath.Join(dir, "config.yaml")
+	want := filepath.Join(os.Getenv("HOME"), ".config", "patro", "config.yaml")
 	if got != want {
-		t.Errorf("ConfigPath(\"\") = %q, want %q (local config.yaml)", got, want)
+		t.Errorf("ConfigPath(\"\") = %q, want %q (canonical user config)", got, want)
 	}
 }
 

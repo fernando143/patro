@@ -76,7 +76,7 @@ Usage:
   patro --version                         Print the version and exit
 
 Options:
-  --config PATH   Path to config.yaml (default: ./config.yaml or ~/.config/patro/config.yaml)
+  --config PATH   Path to config.yaml (default: ~/.config/patro/config.yaml)
   --mock          Do not call AssemblyAI; use deterministic fake transcripts/analysis
   --all           Inspect every historical topic (reconcile only)
   --dry-run       Print the historical migration plan without changing files
@@ -224,6 +224,7 @@ func runPipeline(opts *cliOptions) int {
 		fmt.Fprintf(os.Stderr, "patro: cannot open log file %s: %v\n", cfg.LogFile(), err)
 		return 1
 	}
+	logging.Infof("Loaded config %s (analyzer backend: %s)", cfg.Path, cfg.AnalyzerBackend)
 
 	var transcribeFn pipeline.TranscribeFunc
 	var analyzeFn pipeline.AnalyzeFunc
@@ -325,7 +326,7 @@ func runTUI(opts *cliOptions) int {
 		fmt.Fprintln(os.Stderr, "patro: run tui requires an interactive terminal")
 		return 1
 	}
-	if err := tui.Run(cfg, opts.configPath); err != nil {
+	if err := tui.Run(cfg, cfg.Path); err != nil {
 		fmt.Fprintf(os.Stderr, "patro: tui error: %v\n", err)
 		return 1
 	}

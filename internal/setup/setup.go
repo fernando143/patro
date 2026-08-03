@@ -34,21 +34,11 @@ func ExpandPath(path string) string {
 	return path
 }
 
-// ConfigPath picks the config file to write: the --config value when given,
-// else ./config.yaml when it exists (update in place), else
-// ~/.config/patro/config.yaml.
+// ConfigPath returns the same canonical or explicitly requested path used by
+// config.Load. Keeping this resolver shared prevents the TUI and service from
+// editing and reading different files.
 func ConfigPath(flagConfig string) string {
-	path := flagConfig
-	if path == "" {
-		if _, err := os.Stat("config.yaml"); err == nil {
-			path = "config.yaml"
-		} else if userPath := config.UserConfigPath(); userPath != "" {
-			path = userPath
-		} else {
-			path = "config.yaml"
-		}
-	}
-	return ExpandPath(path)
+	return config.ResolvePath(flagConfig)
 }
 
 // ResolveBinary locates the named CLI on PATH and returns its absolute path.

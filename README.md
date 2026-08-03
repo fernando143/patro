@@ -71,11 +71,14 @@ Note that the `brew services` environment does not include your API key. The key
 
 ## Manual setup
 
-If you prefer not to use the wizard, create a config file yourself. `patro` looks for configuration in this order:
+If you prefer not to use the wizard, create the canonical config file at `~/.config/patro/config.yaml`. `patro` uses this same file for the service and TUI:
 
-1. `--config PATH` flag
-2. `./config.yaml` (current directory)
-3. `~/.config/patro/config.yaml`
+1. `--config PATH` flag (explicit override)
+2. `~/.config/patro/config.yaml`
+
+An existing repository-local `./config.yaml` is migrated to the canonical path
+only when the canonical file does not exist yet. Once the canonical file
+exists, `./config.yaml` is not read implicitly.
 
 Everything relative (`inbox`, `library`, `.state/`, `patro.log`) resolves against the directory containing the config file.
 
