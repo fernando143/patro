@@ -113,9 +113,15 @@ type Server struct {
 	// yet; when only Vectors/Embedder are nil, results degrade to BM25-only
 	// (design "Migration / Rollout") — /search never fails with a 500
 	// because these are unset.
-	SearchIndex *searchindex.Index
-	Vectors     *vectors.Store
-	Embedder    embed.Embedder
+	SearchIndex  *searchindex.Index
+	Vectors      *vectors.Store
+	Embedder     embed.Embedder
+	MultiVectors interface {
+		NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
+	}
+	Representer interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}
 }
 
 // NewServer returns a Server that serves the library under root. Root is
@@ -273,7 +279,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case q == "":
 		// No query yet: just the form.
-	case s.SearchIndex == nil && s.Vectors == nil:
+	case s.SearchIndex == nil && s.Vectors == nil && s.MultiVectors == nil:
 		b.WriteString(`<p>Search index is not available yet. Run "patro reconcile" (or start ` +
 			`"patro serve") to build it.</p>`)
 	default:
@@ -313,7 +319,25 @@ func (s *Server) rankedResults(ctx context.Context, q string) []searchResult {
 		}
 	}
 
-	if s.Vectors != nil && s.Embedder != nil {
+	if s.MultiVectors != nil && s.Representer != nil {
+		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
+		if err != nil {
+			logging.Warnf("web: representation search query failed: %v", err)
+		} else {
+			hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, searchResultLimit)
+			if err != nil {
+				logging.Warnf("web: multi-vector search failed: %v", err)
+			} else {
+				for _, h := range hits {
+					id := searchindex.KindTopic + ":" + h.ID
+					vecIDs = append(vecIDs, id)
+					if _, ok := meta[id]; !ok {
+						meta[id] = searchResult{ID: id, Kind: searchindex.KindTopic, Title: s.topicTitle(h.ID), URL: urlFor(searchindex.KindTopic, id)}
+					}
+				}
+			}
+		}
+	} else if s.Vectors != nil && s.Embedder != nil {
 		if vec, err := s.Embedder.Embed(ctx, q); err != nil {
 			logging.Warnf("web: embedding search query failed: %v", err)
 		} else {

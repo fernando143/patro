@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nlpodyssey/cybertron/pkg/models/bert"
 	bertenc "github.com/nlpodyssey/cybertron/pkg/tasks/textencoding/bert"
@@ -54,8 +55,15 @@ type cybertronManifest struct {
 // token-embedding average — this is the property that disqualified the
 // zerfoo candidate (Unit 1c).
 type cybertronEmbedder struct {
-	model *bertenc.TextEncoding
-	dim   int
+	model             *bertenc.TextEncoding
+	dim               int
+	lowercase         bool
+	tokenizerIdentity TokenizerIdentity
+	modelIdentity     ModelIdentity
+}
+
+type cybertronTokenizerConfig struct {
+	DoLowerCase bool `json:"do_lower_case"`
 }
 
 // newCybertronEmbedder constructs the cybertron backend by materializing the
@@ -88,10 +96,45 @@ func newCybertronEmbedder() (Embedder, error) {
 		return nil, fmt.Errorf("cybertron: load model: %w", err)
 	}
 
+	configRaw, err := cybertronWeights.ReadFile("weights/cybertron/tokenizer_config.json")
+	if err != nil {
+		return nil, fmt.Errorf("cybertron: read tokenizer config: %w", err)
+	}
+	var tokenizerConfig cybertronTokenizerConfig
+	if err := json.Unmarshal(configRaw, &tokenizerConfig); err != nil {
+		return nil, fmt.Errorf("cybertron: parse tokenizer config: %w", err)
+	}
+	manifestRaw, err := cybertronWeights.ReadFile(cybertronManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("cybertron: read manifest: %w", err)
+	}
+	var manifest cybertronManifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		return nil, fmt.Errorf("cybertron: parse manifest: %w", err)
+	}
+	vocabRaw, err := cybertronWeights.ReadFile("weights/cybertron/vocab.txt")
+	if err != nil {
+		return nil, fmt.Errorf("cybertron: read vocabulary: %w", err)
+	}
+	dim := m.Model.Bert.Config.HiddenSize
 	return &cybertronEmbedder{
-		model: m,
-		dim:   m.Model.Bert.Config.HiddenSize,
+		model:             m,
+		dim:               dim,
+		lowercase:         tokenizerConfig.DoLowerCase,
+		tokenizerIdentity: TokenizerIdentity{ConfigSHA256: hashBytes(configRaw), VocabSHA256: hashBytes(vocabRaw)},
+		modelIdentity: ModelIdentity{
+			Backend:            cybertronName,
+			ModelID:            cybertronModelID,
+			ModelVersion:       cybertronModelVersion,
+			ModelWeightsSHA256: manifest.Weights["spago_model.bin"],
+			Dimension:          dim,
+		},
 	}, nil
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // verifyCybertronWeights validates the embedded model identity and every
@@ -138,6 +181,14 @@ func verifyCybertronWeights(fsys fs.FS) error {
 // dense vector, so normalization to unit length happens here to satisfy the
 // Embedder contract.
 func (c *cybertronEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	vec, err := c.EncodeWindow(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeVector(vec), nil
+}
+
+func (c *cybertronEmbedder) EncodeWindow(ctx context.Context, text string) ([]float32, error) {
 	resp, err := c.model.Encode(ctx, text, int(bert.MeanPooling))
 	if err != nil {
 		return nil, fmt.Errorf("cybertron: encode: %w", err)
@@ -145,18 +196,52 @@ func (c *cybertronEmbedder) Embed(ctx context.Context, text string) ([]float32, 
 
 	data := resp.Vector.Data().F32()
 	vec := make([]float32, len(data))
+	copy(vec, data)
+	return vec, nil
+}
+
+func normalizeVector(vector []float32) []float32 {
 	var sumSquares float64
-	for i, v := range data {
-		vec[i] = v
-		sumSquares += float64(v) * float64(v)
+	for _, value := range vector {
+		sumSquares += float64(value) * float64(value)
 	}
-	norm := math.Sqrt(sumSquares)
-	if norm > 0 {
-		for i := range vec {
-			vec[i] = float32(float64(vec[i]) / norm)
+	if norm := math.Sqrt(sumSquares); norm > 0 {
+		for i := range vector {
+			vector[i] = float32(float64(vector[i]) / norm)
 		}
 	}
-	return vec, nil
+	return vector
+}
+
+type cybertronTokenizer struct{ embedder *cybertronEmbedder }
+
+func (t cybertronTokenizer) Tokenize(ctx context.Context, text string) ([]TokenSpan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if t.embedder.lowercase {
+		text = strings.ToLower(text)
+	}
+	raw := t.embedder.model.Tokenizer.Tokenize(text)
+	tokens := make([]TokenSpan, len(raw))
+	for i, token := range raw {
+		tokens[i] = TokenSpan{String: token.String, Start: token.Offsets.Start, End: token.Offsets.End}
+	}
+	return tokens, nil
+}
+
+func (t cybertronTokenizer) Identity() TokenizerIdentity {
+	return t.embedder.tokenizerIdentity
+}
+
+func (t cybertronTokenizer) MaxPositions() uint32 {
+	return uint32(t.embedder.model.Model.Bert.Config.MaxPositionEmbeddings)
+}
+
+func (c *cybertronEmbedder) Identity() ModelIdentity { return c.modelIdentity }
+
+func (c *cybertronEmbedder) Represent(ctx context.Context, document Document) (*Representation, error) {
+	return NewRepresenter(cybertronTokenizer{embedder: c}, c).Represent(ctx, document)
 }
 
 // Dim returns the hidden size of the loaded model (384 for all-MiniLM-L6-v2).

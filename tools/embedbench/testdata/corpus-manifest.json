@@ -1,0 +1,12 @@
+{
+  "id": "cybertron-long-609-v1",
+  "dimension": 384,
+  "seed": 609,
+  "cases": [
+    {
+      "id": "observed-609",
+      "a_path": "../../internal/embed/testdata/cybertron-609.md",
+      "b_path": "../../internal/embed/testdata/cybertron-609.md"
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,28 @@ import (
 	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/vectors"
 )
+
+type fakeWebRepresenter struct {
+	err  error
+	text string
+}
+
+func (f *fakeWebRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
+	f.text = doc.Text
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &embed.Representation{DocumentID: doc.ID}, nil
+}
+
+type fakeWebMultiStore struct {
+	results []embed.RankedResult
+	err     error
+}
+
+func (f fakeWebMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
+	return f.results, f.err
+}
 
 // setupLibrary creates a temporary knowledge library with an index, a
 // topic, a meeting note and a transcript, and returns its root.
@@ -310,6 +333,39 @@ func TestSearchVectorOnlyFallbackWhenBM25Unavailable(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `href="/topics/roadmap.md"`) || !strings.Contains(body, "Roadmap") {
 		t.Errorf("results missing vector-only topic hit with resolved title\n%s", body)
+	}
+}
+
+func TestSearchUsesCompleteMultiVectorQuery(t *testing.T) {
+	root := setupLibrary(t)
+	representer := &fakeWebRepresenter{}
+	srv := NewServer(root)
+	srv.Representer = representer
+	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "roadmap", Score: .9}}}
+	query := strings.Repeat("long-context ", 200)
+	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(query), nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="/topics/roadmap.md"`) {
+		t.Fatalf("multi-vector search response = %d/%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(representer.text, "# Query\n\n"+strings.TrimSpace(query)) {
+		t.Fatalf("semantic search did not represent the complete query: got len=%d want len=%d suffix=%q", len(representer.text), len("# Query\n\n"+query), representer.text[len(representer.text)-40:])
+	}
+}
+
+func TestSearchFallsBackToAllBM25WhenMultiVectorQueryFails(t *testing.T) {
+	root, idx, _, _ := setupSearchLibrary(t)
+	representer := &fakeWebRepresenter{err: errors.New("query representation failed")}
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+	srv.Representer = representer
+	srv.MultiVectors = fakeWebMultiStore{}
+	req := httptest.NewRequest(http.MethodGet, "/search?q=zephyr", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="/topics/roadmap.md"`) {
+		t.Fatalf("BM25 fallback response = %d/%s", rec.Code, rec.Body.String())
 	}
 }
 

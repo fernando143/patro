@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
@@ -79,11 +80,19 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+type DocumentRepresenter interface {
+	Represent(context.Context, embed.Document) (*embed.Representation, error)
+}
+
 // NearestFinder is the narrow subset of *vectors.Store this package needs,
 // narrowed for testability: fakes can synchronously return
 // vectors.ErrRebuilding without spinning a real concurrent rebuild.
 type NearestFinder interface {
 	Nearest(vec []float32, k int) ([]vectors.Result, error)
+}
+
+type MultiVectorFinder interface {
+	NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
 }
 
 // GrayZoneDecider answers "is candidate the same topic as nearest?" for a
@@ -99,6 +108,8 @@ type GrayZoneDecider func(ctx context.Context, candidate types.Topic, nearest ty
 type SemanticReconciler struct {
 	Embedder          Embedder
 	Store             NearestFinder
+	Representer       DocumentRepresenter
+	MultiStore        MultiVectorFinder
 	MergeThreshold    float64
 	NewTopicThreshold float64
 	// Decide resolves the gray zone. A nil Decide always safe-fails a
@@ -116,14 +127,30 @@ type SemanticReconciler struct {
 func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error) {
 	proposed := Resolution{Slug: candidate.Slug, Name: candidate.Name, ProposedSlug: candidate.Slug}
 
-	vec, err := r.Embedder.Embed(ctx, candidate.Name+"\n"+candidate.Content)
-	if err != nil {
-		res := r.failSafe(candidate, 0)
-		r.writeLedger(res)
-		return res, nil
+	var topID string
+	var topScore float64
+	var err error
+	if r.Representer != nil && r.MultiStore != nil {
+		var representation *embed.Representation
+		representation, err = r.Representer.Represent(ctx, embed.Document{ID: candidate.Slug, Text: "# " + candidate.Name + "\n\n" + candidate.Content})
+		if err == nil {
+			var results []embed.RankedResult
+			results, err = r.MultiStore.NearestRepresentations(ctx, *representation, embed.DirectedMode, 1)
+			if err == nil && len(results) > 0 {
+				topID, topScore = results[0].ID, results[0].Score
+			}
+		}
+	} else {
+		var vec []float32
+		vec, err = r.Embedder.Embed(ctx, candidate.Name+"\n"+candidate.Content)
+		if err == nil {
+			var results []vectors.Result
+			results, err = r.Store.Nearest(vec, 1)
+			if err == nil && len(results) > 0 {
+				topID, topScore = results[0].ID, results[0].Score
+			}
+		}
 	}
-
-	results, err := r.Store.Nearest(vec, 1)
 	if err != nil {
 		// vectors.ErrRebuilding (or any other store error) must never risk
 		// a wrong merge answered from a half-rebuilt/unavailable store —
@@ -133,21 +160,20 @@ func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topi
 		r.writeLedger(res)
 		return res, nil
 	}
-	if len(results) == 0 {
+	if topID == "" {
 		return proposed, nil // nothing to compare against: new topic, unflagged
 	}
 
-	top := results[0]
-	nearest := types.TopicRef{Slug: top.ID, Name: nameFor(existing, top.ID)}
+	nearest := types.TopicRef{Slug: topID, Name: nameFor(existing, topID)}
 
 	switch {
-	case top.Score >= r.MergeThreshold:
-		res := r.merged(candidate, nearest, top.Score)
+	case topScore >= r.MergeThreshold:
+		res := r.merged(candidate, nearest, topScore)
 		r.writeLedger(res)
 		return res, nil
 
-	case top.Score < r.NewTopicThreshold:
-		proposed.Score = top.Score
+	case topScore < r.NewTopicThreshold:
+		proposed.Score = topScore
 		return proposed, nil
 
 	default:
@@ -159,16 +185,16 @@ func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topi
 			err = errors.New("library: gray-zone score with no GrayZoneDecider configured")
 		}
 		if err != nil {
-			res := r.failSafe(candidate, top.Score)
+			res := r.failSafe(candidate, topScore)
 			r.writeLedger(res)
 			return res, nil
 		}
 		if same {
-			res := r.merged(candidate, nearest, top.Score)
+			res := r.merged(candidate, nearest, topScore)
 			r.writeLedger(res)
 			return res, nil
 		}
-		proposed.Score = top.Score
+		proposed.Score = topScore
 		return proposed, nil
 	}
 }

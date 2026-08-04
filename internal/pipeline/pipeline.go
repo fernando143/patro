@@ -166,10 +166,38 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-	if err != nil {
-		logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, err)
+	legacyStore, legacyErr := vectors.NewStore(storePath, embedder, embedder.Name())
+	if legacyErr != nil {
+		logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, legacyErr)
 		return nil
+	}
+	var store library.NearestFinder = legacyStore
+	var representer library.DocumentRepresenter
+	var multiStore library.MultiVectorFinder
+	if candidate, ok := embedder.(interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}); ok {
+		sample, sampleErr := candidate.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		if sampleErr != nil {
+			logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", sampleErr)
+			return nil
+		}
+		v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+		// A legacy store remains the safe compatibility path until the
+		// maintenance command has produced a current v2 snapshot.  Never
+		// query a dirty v2 store: it is intentionally unavailable while a
+		// rebuild is pending.
+		if !v2.NeedsSync() {
+			representer = candidate
+			multiStore = v2
+		}
+	} else {
+		legacy, storeErr := vectors.NewStore(storePath, embedder, embedder.Name())
+		if storeErr != nil {
+			logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, storeErr)
+			return nil
+		}
+		store = legacy
 	}
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
@@ -193,6 +221,8 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	return &library.SemanticReconciler{
 		Embedder:          embedder,
 		Store:             store,
+		Representer:       representer,
+		MultiStore:        multiStore,
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,
 		Decide:            decide,

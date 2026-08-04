@@ -430,21 +430,39 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	}
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-	if err != nil {
-		return fmt.Errorf("maintenance: opening vector store: %w", err)
-	}
-
 	topicsDir := filepath.Join(cfg.Library, "topics")
-	if store.NeedsRebuild() {
-		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
-		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
-		rebuildErr := store.Rebuild(ctx, topicsDir, func(done, _ int) {
-			tracker.MaintenanceProgress(done)
-		})
-		tracker.MaintenanceDone()
-		if rebuildErr != nil {
-			return fmt.Errorf("maintenance: rebuilding vector store: %w", rebuildErr)
+	if representer, ok := embedder.(interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}); ok {
+		sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		if err != nil {
+			return fmt.Errorf("maintenance: initializing representation identity: %w", err)
+		}
+		store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+		if store.NeedsSync() {
+			files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
+			tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
+			rebuildErr := store.Sync(ctx, topicsDir, representer)
+			tracker.MaintenanceDone()
+			if rebuildErr != nil {
+				return fmt.Errorf("maintenance: rebuilding vector representations: %w", rebuildErr)
+			}
+		}
+	} else {
+		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+		if err != nil {
+			return fmt.Errorf("maintenance: opening vector store: %w", err)
+		}
+		if store.NeedsRebuild() {
+			files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
+			tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
+			rebuildErr := store.Rebuild(ctx, topicsDir, func(done, _ int) {
+				tracker.MaintenanceProgress(done)
+			})
+			tracker.MaintenanceDone()
+			if rebuildErr != nil {
+				return fmt.Errorf("maintenance: rebuilding vector store: %w", rebuildErr)
+			}
 		}
 	}
 
@@ -523,12 +541,25 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 		return closeFn
 	}
 
-	store, err := vectors.NewStore(filepath.Join(cfg.StateDir(), "vectors", "topics.json"), embedder, embedder.Name())
-	if err != nil {
-		logging.Warnf("vector store unavailable, /search will use text search only: %v", err)
-		return closeFn
+	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	if representer, ok := embedder.(interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}); ok {
+		sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		if err != nil {
+			logging.Warnf("representation backend unavailable, /search will use text search only: %v", err)
+			return closeFn
+		}
+		srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+		srv.Representer = representer
+	} else {
+		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+		if err != nil {
+			logging.Warnf("vector store unavailable, /search will use text search only: %v", err)
+			return closeFn
+		}
+		srv.Vectors = store
 	}
-	srv.Vectors = store
 	srv.Embedder = embedder
 
 	return closeFn

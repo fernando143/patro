@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -186,6 +189,46 @@ func TestCybertronEmbedIsDeterministic(t *testing.T) {
 	for i := range v1 {
 		if v1[i] != v2[i] {
 			t.Fatalf("Embed() is not deterministic: v1[%d]=%v v2[%d]=%v", i, v1[i], i, v2[i])
+		}
+	}
+}
+
+func TestCybertron609Positions(t *testing.T) {
+	e := newTestCybertronEmbedder(t)
+	backend, ok := e.(*cybertronEmbedder)
+	if !ok {
+		t.Fatalf("production cybertron embedder has type %T, want *cybertronEmbedder", e)
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "cybertron-609.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	representation, err := backend.Represent(context.Background(), Document{ID: "cybertron-609", Text: string(data)})
+	if err != nil {
+		t.Fatalf("Represent(609-position fixture) error: %v", err)
+	}
+	if len(representation.Chunks) < 2 {
+		t.Fatalf("chunks = %d, want multiple chunks", len(representation.Chunks))
+	}
+	runes := []rune(string(data))
+	var joined string
+	contentIndex := 0
+	for _, chunk := range representation.Chunks {
+		if chunk.Kind != "content" {
+			continue
+		}
+		if chunk.TokenCount > 510 {
+			t.Errorf("content chunk %d token_count = %d, want <= 510", contentIndex, chunk.TokenCount)
+		}
+		if contentIndex > 0 && chunk.Overlap != 32 {
+			t.Errorf("content chunk %d overlap = %d, want 32", contentIndex, chunk.Overlap)
+		}
+		joined += string(runes[chunk.SourceStartRune:chunk.SourceEndRune]) + " "
+		contentIndex++
+	}
+	for _, marker := range []string{"BEGIN", "MIDDLE", "END"} {
+		if !strings.Contains(joined, marker) {
+			t.Errorf("chunk spans do not contain marker %q", marker)
 		}
 	}
 }

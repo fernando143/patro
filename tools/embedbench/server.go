@@ -55,8 +55,8 @@ th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; }
 {{if .Err}}<p class="err">{{.Err}}</p>{{end}}
 {{if .Rows}}
 <table>
-<tr><th>Backend</th><th>Dim</th><th>Embed A time</th><th>Embed B time</th><th>cos(A,B)</th></tr>
-{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Dim}}</td><td>{{.TimeA}}</td><td>{{.TimeB}}</td><td>{{.Cosine}}</td></tr>{{end}}
+<tr><th>Backend</th><th>Dim</th><th>A chunks (title/content)</th><th>B chunks (title/content)</th><th>A→B</th><th>B→A</th><th>Symmetric</th><th>Fingerprint</th></tr>
+{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Dim}}</td><td>{{.ATitleChunks}}/{{.AContentChunks}}</td><td>{{.BTitleChunks}}/{{.BContentChunks}}</td><td>{{.DirectedAB}}</td><td>{{.DirectedBA}}</td><td>{{.Symmetric}}</td><td><code>{{.Fingerprint}}</code></td></tr>{{end}}
 </table>
 {{end}}
 </body>
@@ -73,11 +73,11 @@ type pageData struct {
 
 // reportRow is one backend's result line in the report table.
 type reportRow struct {
-	Name   string
-	Dim    int
-	TimeA  string
-	TimeB  string
-	Cosine string
+	Name, Fingerprint                 string
+	Dim, ATitleChunks, AContentChunks int
+	BTitleChunks, BContentChunks      int
+	TimeA, TimeB, Cosine              string
+	DirectedAB, DirectedBA, Symmetric string
 }
 
 // Server serves the embedbench form and report. It carries no state: every
@@ -140,25 +140,65 @@ func report(ctx context.Context, a, b string) ([]reportRow, error) {
 		}
 
 		start := time.Now()
-		va, err := e.Embed(ctx, a)
+		va, err := represent(e, ctx, "a", a)
 		if err != nil {
-			return nil, fmt.Errorf("backend %q: embed A: %w", name, err)
+			return nil, fmt.Errorf("backend %q: represent A: %w", name, err)
 		}
-		row := reportRow{Name: e.Name(), Dim: e.Dim(), TimeA: time.Since(start).String()}
+		row := reportRow{Name: e.Name(), Dim: e.Dim(), TimeA: time.Since(start).String(), Fingerprint: va.RepresentationFingerprint}
+		row.ATitleChunks, row.AContentChunks = chunkCounts(*va)
 
 		if withB {
 			start = time.Now()
-			vb, err := e.Embed(ctx, b)
+			vb, err := represent(e, ctx, "b", b)
 			if err != nil {
-				return nil, fmt.Errorf("backend %q: embed B: %w", name, err)
+				return nil, fmt.Errorf("backend %q: represent B: %w", name, err)
 			}
 			row.TimeB = time.Since(start).String()
-			row.Cosine = fmt.Sprintf("%.4f", cosine(va, vb))
+			row.BTitleChunks, row.BContentChunks = chunkCounts(*vb)
+			ab, err := embed.DirectedScore(ctx, *va, *vb)
+			if err != nil {
+				return nil, fmt.Errorf("backend %q: score A→B: %w", name, err)
+			}
+			ba, err := embed.DirectedScore(ctx, *vb, *va)
+			if err != nil {
+				return nil, fmt.Errorf("backend %q: score B→A: %w", name, err)
+			}
+			row.DirectedAB, row.DirectedBA = fmt.Sprintf("%.4f", ab), fmt.Sprintf("%.4f", ba)
+			row.Symmetric = fmt.Sprintf("%.4f", minFloat(ab, ba))
+			row.Cosine = row.Symmetric // retained for callers of the original report shape.
 		}
 
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func represent(e embed.Embedder, ctx context.Context, side, text string) (*embed.Representation, error) {
+	representer, ok := e.(interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("backend does not provide document representations for %s", side)
+	}
+	return representer.Represent(ctx, embed.Document{ID: side, Text: text})
+}
+
+func chunkCounts(r embed.Representation) (title, content int) {
+	for _, chunk := range r.Chunks {
+		if chunk.Kind == "title" {
+			title++
+		} else if chunk.Kind == "content" {
+			content++
+		}
+	}
+	return title, content
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // cosine returns the cosine similarity of two vectors. Embedder

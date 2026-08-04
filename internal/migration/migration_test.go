@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fernando143/patro/internal/embed"
 )
 
 type fakeEmbedder map[string][]float32
@@ -19,6 +21,21 @@ func (f fakeEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 		}
 	}
 	return []float32{0, 1}, nil
+}
+
+type fakeRepresenter struct{}
+
+func (fakeRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
+	vec := []float32{0, 1}
+	if strings.Contains(doc.Text, "PAIR_A") {
+		vec = []float32{1, 0}
+	} else if strings.Contains(doc.Text, "PAIR_B") {
+		vec = []float32{0.99, 0.14106736}
+	}
+	return &embed.Representation{
+		DocumentID: doc.ID,
+		Chunks:     []embed.Chunk{{Kind: "content", Ordinal: 0, TokenCount: 1, Vector: vec}},
+	}, nil
 }
 
 func fixtureService(t *testing.T) (*Service, string) {
@@ -81,6 +98,20 @@ func TestBuildPlanIsDeterministicFilteredAndDisjoint(t *testing.T) {
 	}
 	if _, err := os.Stat(s.StateDir); !os.IsNotExist(err) {
 		t.Fatal("planning created state")
+	}
+}
+
+func TestBuildPlanUsesCompleteRepresentationsInsteadOfLegacyEmbedder(t *testing.T) {
+	s, _ := fixtureService(t)
+	s.Embedder = fakeEmbedder{"PAIR_A": {0, 1}}
+	s.Representer = fakeRepresenter{}
+
+	plan, err := s.BuildPlan(context.Background())
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Proposals) != 1 || plan.Proposals[0].SourceSlug != "alpha" {
+		t.Fatalf("plan = %+v, want one representation-scored proposal", plan)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
 )
@@ -30,6 +31,21 @@ func (f fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
 type fakeStore struct {
 	results []vectors.Result
 	err     error
+}
+
+type fakeMultiStore struct {
+	results []embed.RankedResult
+	err     error
+}
+
+func (f fakeMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
+	return f.results, f.err
+}
+
+type fakeRepresenter struct{}
+
+func (fakeRepresenter) Represent(context.Context, embed.Document) (*embed.Representation, error) {
+	return &embed.Representation{Chunks: []embed.Chunk{{Kind: "content", Ordinal: 0, TokenCount: 1, Vector: []float32{1, 0}}}}, nil
 }
 
 func (f fakeStore) Nearest(_ []float32, _ int) ([]vectors.Result, error) {
@@ -145,6 +161,24 @@ func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 	}
 	if res.Slug != "x-y" {
 		t.Errorf("Slug = %q, want %q", res.Slug, "x-y")
+	}
+}
+
+func TestSemanticReconcilerUsesMultiVectorStoreWhenAvailable(t *testing.T) {
+	r := &SemanticReconciler{
+		Embedder:          fakeEmbedder{err: fmt.Errorf("legacy one-vector path must not run")},
+		Store:             fakeStore{err: fmt.Errorf("legacy store must not run")},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		MergeThreshold:    0.90,
+		NewTopicThreshold: 0.70,
+	}
+	res, err := r.Reconcile(context.Background(), types.Topic{Slug: "x-y", Name: "X Y", Content: "content"}, []types.TopicRef{{Slug: "react-hooks", Name: "React Hooks"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !res.Merged || res.Slug != "react-hooks" || res.Score != 0.95 {
+		t.Fatalf("resolution = %+v, want multi-vector merge", res)
 	}
 }
 

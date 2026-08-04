@@ -58,8 +58,17 @@ func main() {
 func run(args []string) int {
 	fs := flag.NewFlagSet("embedbench", flag.ContinueOnError)
 	port := fs.Int("port", defaultPort, "loopback port to serve the embedbench form on")
+	acceptance := fs.Bool("acceptance", false, "run the deterministic 5 warmup + 30 run acceptance gate")
+	manifest := fs.String("manifest", "testdata/corpus-manifest.json", "authoritative corpus manifest")
+	calibration := fs.Bool("calibration", false, "emit separate directed and symmetric calibration profiles")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *acceptance {
+		return runAcceptance(*manifest)
+	}
+	if *calibration {
+		return runCalibration(*manifest)
 	}
 
 	addr := listenAddr(*port)
