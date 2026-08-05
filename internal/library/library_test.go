@@ -456,3 +456,170 @@ func TestExistingTopics(t *testing.T) {
 		t.Errorf("ExistingTopics() = %+v, want %+v", got, want)
 	}
 }
+
+func TestResolveTranscriptID(t *testing.T) {
+	l := newTestLibrary(t)
+
+	inLibraryPath := filepath.Join(l.TranscriptsDir, "abc123.txt")
+	writeFile(t, inLibraryPath, "Speaker A: hello.\n")
+
+	extDir := t.TempDir()
+	extPath := filepath.Join(extDir, "some-recording.txt")
+	writeFile(t, extPath, "Speaker A: hello there, this is external.\n")
+
+	id1, external1, err := l.ResolveTranscriptID(inLibraryPath)
+	if err != nil {
+		t.Fatalf("ResolveTranscriptID(in-library) error = %v", err)
+	}
+	if external1 {
+		t.Error("ResolveTranscriptID(in-library) external = true, want false")
+	}
+	if id1 != "abc123" {
+		t.Errorf("ResolveTranscriptID(in-library) id = %q, want %q", id1, "abc123")
+	}
+
+	id2, external2, err := l.ResolveTranscriptID(extPath)
+	if err != nil {
+		t.Fatalf("ResolveTranscriptID(external) error = %v", err)
+	}
+	if !external2 {
+		t.Error("ResolveTranscriptID(external) external = false, want true")
+	}
+	if !strings.HasPrefix(id2, "ext-") || len(id2) != len("ext-")+12 {
+		t.Errorf("ResolveTranscriptID(external) id = %q, want \"ext-\"+12 hex chars", id2)
+	}
+
+	// Stable: re-resolving the same external file yields the same ID.
+	id2Again, _, err := l.ResolveTranscriptID(extPath)
+	if err != nil {
+		t.Fatalf("ResolveTranscriptID(external, second call) error = %v", err)
+	}
+	if id2Again != id2 {
+		t.Errorf("ResolveTranscriptID(external) id = %q on second call, want stable %q", id2Again, id2)
+	}
+
+	// A different external file's content yields a different ID.
+	extPath2 := filepath.Join(extDir, "other-recording.txt")
+	writeFile(t, extPath2, "Speaker B: totally different content.\n")
+	id3, _, err := l.ResolveTranscriptID(extPath2)
+	if err != nil {
+		t.Fatalf("ResolveTranscriptID(external 2) error = %v", err)
+	}
+	if id3 == id2 {
+		t.Errorf("ResolveTranscriptID for different content produced the same id %q", id3)
+	}
+}
+
+func TestFindMeetingNoteByTranscriptID(t *testing.T) {
+	l := newTestLibrary(t)
+
+	found := &types.TranscriptResult{ID: "abc123", Language: "en"}
+	analysis := &types.AnalysisResult{Title: "Weekly Sync"}
+	notePath, err := l.WriteMeetingNote(found, analysis, "meeting.mkv", "2026-01-05")
+	if err != nil {
+		t.Fatalf("WriteMeetingNote setup error = %v", err)
+	}
+
+	// A note whose "- **Date:** " line is missing entirely (simulating a
+	// malformed/missing date), so lookup must still find it via the
+	// transcript link and report an empty Date, never an error.
+	malformedPath := filepath.Join(l.MeetingsDir, "2026-01-06-malformed.md")
+	writeFile(t, malformedPath, strings.Join([]string{
+		"# Malformed",
+		"",
+		"- **Raw transcript:** [transcript](../transcripts/xyz789.txt)",
+		"",
+	}, "\n"))
+
+	unreadablePath := filepath.Join(l.MeetingsDir, "2026-01-07-unreadable.md")
+	writeFile(t, unreadablePath, "[transcript](../transcripts/unreadable-id.txt)\n")
+	if err := os.Chmod(unreadablePath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o644) })
+
+	t.Run("found", func(t *testing.T) {
+		got, err := l.FindMeetingNoteByTranscriptID("abc123")
+		if err != nil {
+			t.Fatalf("FindMeetingNoteByTranscriptID: %v", err)
+		}
+		if got == nil {
+			t.Fatal("FindMeetingNoteByTranscriptID = nil, want a match")
+		}
+		if got.Path != notePath {
+			t.Errorf("Path = %q, want %q", got.Path, notePath)
+		}
+		if got.Date != "2026-01-05" {
+			t.Errorf("Date = %q, want %q", got.Date, "2026-01-05")
+		}
+		if got.SourceVideo != "meeting.mkv" {
+			t.Errorf("SourceVideo = %q, want %q", got.SourceVideo, "meeting.mkv")
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		got, err := l.FindMeetingNoteByTranscriptID("does-not-exist")
+		if err != nil {
+			t.Fatalf("FindMeetingNoteByTranscriptID: %v", err)
+		}
+		if got != nil {
+			t.Errorf("FindMeetingNoteByTranscriptID = %+v, want nil", got)
+		}
+	})
+
+	t.Run("malformed Date line yields empty Date, no error", func(t *testing.T) {
+		got, err := l.FindMeetingNoteByTranscriptID("xyz789")
+		if err != nil {
+			t.Fatalf("FindMeetingNoteByTranscriptID: %v", err)
+		}
+		if got == nil {
+			t.Fatal("FindMeetingNoteByTranscriptID = nil, want a match (link present)")
+		}
+		if got.Date != "" {
+			t.Errorf("Date = %q, want empty for a missing Date line", got.Date)
+		}
+	})
+
+	t.Run("unreadable file is skipped, not fatal", func(t *testing.T) {
+		got, err := l.FindMeetingNoteByTranscriptID("unreadable-id")
+		if err != nil {
+			t.Fatalf("FindMeetingNoteByTranscriptID: %v, want nil error (skip unreadable)", err)
+		}
+		if got != nil {
+			t.Errorf("FindMeetingNoteByTranscriptID = %+v, want nil (file was unreadable)", got)
+		}
+	})
+}
+
+func TestWriteMeetingNoteAtOverwritesExactPath(t *testing.T) {
+	l := newTestLibrary(t)
+
+	transcript := &types.TranscriptResult{ID: "abc123", Language: "en"}
+	analysis := &types.AnalysisResult{Title: "Old Title"}
+	priorPath, err := l.WriteMeetingNote(transcript, analysis, "meeting.mkv", "2026-01-05")
+	if err != nil {
+		t.Fatalf("WriteMeetingNote setup error = %v", err)
+	}
+
+	// The new title's slug differs from the file's own slug ("old-title"),
+	// but WriteMeetingNoteAt must still overwrite the exact given path.
+	newAnalysis := &types.AnalysisResult{Title: "Completely New Title", Summary: "Updated."}
+	gotPath, err := l.WriteMeetingNoteAt(priorPath, transcript, newAnalysis, "meeting.mkv", "2026-01-05")
+	if err != nil {
+		t.Fatalf("WriteMeetingNoteAt: %v", err)
+	}
+	if gotPath != priorPath {
+		t.Errorf("WriteMeetingNoteAt path = %q, want exact prior path %q", gotPath, priorPath)
+	}
+
+	// No second file was created alongside it.
+	matches, _ := filepath.Glob(filepath.Join(l.MeetingsDir, "*.md"))
+	if len(matches) != 1 {
+		t.Errorf("meeting notes = %v, want exactly one file", matches)
+	}
+
+	content := readFile(t, priorPath)
+	if !strings.Contains(content, "# Completely New Title") {
+		t.Errorf("content = %q, want the overwritten title", content)
+	}
+}

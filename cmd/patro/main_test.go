@@ -7,6 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/fernando143/patro/internal/library"
+	"github.com/fernando143/patro/internal/state"
+	"github.com/fernando143/patro/internal/types"
 )
 
 // newTmpConfig writes a config.yaml resolving inbox/library/state under a
@@ -326,6 +330,7 @@ func TestParseArgs(t *testing.T) {
 		wantMock    bool
 		wantAll     bool
 		wantDryRun  bool
+		wantDate    string
 		wantErr     bool
 	}{
 		{
@@ -382,6 +387,22 @@ func TestParseArgs(t *testing.T) {
 		{name: "port without a value", args: []string{"--port"}, wantErr: true},
 		{name: "unknown flag", args: []string{"--nope"}, wantErr: true},
 		{name: "too many positionals", args: []string{"run", "web", "extra"}, wantErr: true},
+		{
+			name:        "regenerate with date and mock",
+			args:        []string{"regenerate", "notes.txt", "--date", "2026-01-01", "--mock"},
+			wantCommand: "regenerate", wantFile: "notes.txt", wantPort: defaultWebPort,
+			wantDate: "2026-01-01", wantMock: true,
+		},
+		{
+			name:        "regenerate with --date=",
+			args:        []string{"regenerate", "notes.txt", "--date=2026-01-01"},
+			wantCommand: "regenerate", wantFile: "notes.txt", wantPort: defaultWebPort,
+			wantDate: "2026-01-01",
+		},
+		{name: "date without a value", args: []string{"regenerate", "notes.txt", "--date"}, wantErr: true},
+		{name: "invalid date, single-digit month/day", args: []string{"regenerate", "notes.txt", "--date", "2026-8-4"}, wantErr: true},
+		{name: "invalid date, day out of range", args: []string{"regenerate", "notes.txt", "--date", "2026-02-31"}, wantErr: true},
+		{name: "invalid date, wrong layout", args: []string{"regenerate", "notes.txt", "--date", "04/08/2026"}, wantErr: true},
 	}
 
 	for _, tc := range cases {
@@ -414,7 +435,194 @@ func TestParseArgs(t *testing.T) {
 			if opts.all != tc.wantAll || opts.dryRun != tc.wantDryRun {
 				t.Errorf("all/dryRun = %v/%v, want %v/%v", opts.all, opts.dryRun, tc.wantAll, tc.wantDryRun)
 			}
+			if opts.date != tc.wantDate {
+				t.Errorf("date = %q, want %q", opts.date, tc.wantDate)
+			}
 		})
+	}
+}
+
+func TestRunRejectsDateOnNonRegenerateCommands(t *testing.T) {
+	// Mirrors the --all/--dry-run-only-valid-with-reconcile guard (D6): the
+	// rejection must happen before any config load or file I/O.
+	if got := run([]string{"process", "file.mkv", "--date", "2026-01-01"}); got != 2 {
+		t.Errorf("run(process --date ...) = %d, want 2", got)
+	}
+	if got := run([]string{"serve", "--date", "2026-01-01"}); got != 2 {
+		t.Errorf("run(serve --date ...) = %d, want 2", got)
+	}
+}
+
+func TestRunRegenerateRequiresFile(t *testing.T) {
+	if got := run([]string{"regenerate", "--mock"}); got != 2 {
+		t.Errorf("run(regenerate --mock, no file) = %d, want 2", got)
+	}
+}
+
+func TestRunRegenerateMockOverwritesPriorNote(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
+	lib, err := library.NewLibrary(libDir)
+	if err != nil {
+		t.Fatalf("NewLibrary: %v", err)
+	}
+
+	transcriptPath := filepath.Join(lib.TranscriptsDir, "abc123.txt")
+	if err := os.WriteFile(transcriptPath, []byte("Speaker A: hello.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	priorPath, err := lib.WriteMeetingNote(
+		&types.TranscriptResult{ID: "abc123"},
+		&types.AnalysisResult{Title: "Old Title"},
+		"orig.mkv", "2026-01-05",
+	)
+	if err != nil {
+		t.Fatalf("WriteMeetingNote setup: %v", err)
+	}
+
+	if got := run([]string{"regenerate", "--mock", "--config", cfgPath, transcriptPath}); got != 0 {
+		t.Errorf("run(regenerate --mock, overwrite) = %d, want 0", got)
+	}
+
+	notes, _ := filepath.Glob(filepath.Join(lib.MeetingsDir, "*.md"))
+	if len(notes) != 1 {
+		t.Errorf("meeting notes = %v, want exactly one (overwrite, not a new file)", notes)
+	}
+	content, err := os.ReadFile(priorPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(content), "- **Date:** 2026-01-05") {
+		t.Errorf("content = %q, want prior date preserved", content)
+	}
+	if !strings.Contains(string(content), "- **Source video:** `orig.mkv`") {
+		t.Errorf("content = %q, want prior source video preserved", content)
+	}
+}
+
+func TestRunRegenerateMockNewNoteRequiresDate(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	extPath := filepath.Join(filepath.Dir(cfgPath), "external-recording.txt")
+	if err := os.WriteFile(extPath, []byte("Speaker A: brand new recording.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if got := run([]string{"regenerate", "--mock", "--date", "2026-05-01", "--config", cfgPath, extPath}); got != 0 {
+		t.Errorf("run(regenerate --mock --date, new note) = %d, want 0", got)
+	}
+
+	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
+	notes, _ := filepath.Glob(filepath.Join(libDir, "meetings", "2026-05-01-*.md"))
+	if len(notes) != 1 {
+		t.Errorf("meeting notes = %v, want exactly one 2026-05-01-*.md", notes)
+	}
+	copies, _ := filepath.Glob(filepath.Join(libDir, "transcripts", "ext-*.txt"))
+	if len(copies) != 1 {
+		t.Errorf("transcript copies = %v, want exactly one ext-*.txt", copies)
+	}
+}
+
+func TestRunRegenerateMissingFileExitsOne(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	missing := filepath.Join(filepath.Dir(cfgPath), "no-such-transcript.txt")
+	if got := run([]string{"regenerate", "--mock", "--config", cfgPath, missing}); got != 1 {
+		t.Errorf("run(regenerate, missing file) = %d, want 1", got)
+	}
+}
+
+func TestRunRegenerateMissingDateNoPriorNoteFailsWithNoFile(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	extPath := filepath.Join(filepath.Dir(cfgPath), "no-date-recording.txt")
+	if err := os.WriteFile(extPath, []byte("Speaker A: needs a date.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if got := run([]string{"regenerate", "--mock", "--config", cfgPath, extPath}); got != 1 {
+		t.Errorf("run(regenerate, no --date, no prior note) = %d, want 1", got)
+	}
+
+	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
+	notes, _ := filepath.Glob(filepath.Join(libDir, "meetings", "*"))
+	if len(notes) != 0 {
+		t.Errorf("meetings dir = %v, want empty (no note written on failure)", notes)
+	}
+	transcripts, _ := filepath.Glob(filepath.Join(libDir, "transcripts", "*"))
+	if len(transcripts) != 0 {
+		t.Errorf("transcripts dir = %v, want empty (no copy on date-resolution failure)", transcripts)
+	}
+}
+
+func TestRunRegenerateLemurRequiresAPIKey(t *testing.T) {
+	t.Setenv("ASSEMBLYAI_API_KEY", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	contents := "inbox: " + filepath.Join(dir, "inbox") + "\n" +
+		"library: " + filepath.Join(dir, "library") + "\n" +
+		"analyzer_backend: lemur\n"
+	if err := os.WriteFile(cfgPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	transcriptPath := filepath.Join(dir, "transcript.txt")
+	if err := os.WriteFile(transcriptPath, []byte("Speaker A: needs lemur.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if got := run([]string{"regenerate", "--date", "2026-01-01", "--config", cfgPath, transcriptPath}); got != 2 {
+		t.Errorf("run(regenerate, lemur, no API key) = %d, want 2", got)
+	}
+}
+
+func TestRunRegenerateTopicsIndexAndProcessedStateUntouched(t *testing.T) {
+	cfgPath := newTmpConfig(t)
+	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
+	lib, err := library.NewLibrary(libDir)
+	if err != nil {
+		t.Fatalf("NewLibrary: %v", err)
+	}
+
+	topicPath := filepath.Join(lib.TopicsDir, "existing-topic.md")
+	topicContent := "# Existing Topic\n\n## 2026-01-01 — Old Meeting\n\nOld content.\n"
+	if err := os.WriteFile(topicPath, []byte(topicContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	indexPath := filepath.Join(lib.Root, "index.md")
+	indexContent := "# Knowledge library\n\nstale, never rebuilt by regenerate\n"
+	if err := os.WriteFile(indexPath, []byte(indexContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	stateDir := filepath.Join(filepath.Dir(cfgPath), ".state")
+	otherVideo := filepath.Join(filepath.Dir(cfgPath), "other-video.mkv")
+	if err := os.WriteFile(otherVideo, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	st := state.New(stateDir)
+	if err := st.MarkProcessed(otherVideo, "unrelated-id"); err != nil {
+		t.Fatalf("MarkProcessed setup: %v", err)
+	}
+	processedPath := filepath.Join(stateDir, "processed.json")
+	processedBefore, err := os.ReadFile(processedPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	extPath := filepath.Join(filepath.Dir(cfgPath), "isolation-check.txt")
+	if err := os.WriteFile(extPath, []byte("Speaker A: isolation check.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if got := run([]string{"regenerate", "--mock", "--date", "2026-04-01", "--config", cfgPath, extPath}); got != 0 {
+		t.Fatalf("run(regenerate --mock --date) = %d, want 0", got)
+	}
+
+	if got, err := os.ReadFile(topicPath); err != nil || string(got) != topicContent {
+		t.Errorf("topic file changed or unreadable: err=%v got=%q want=%q", err, got, topicContent)
+	}
+	if got, err := os.ReadFile(indexPath); err != nil || string(got) != indexContent {
+		t.Errorf("index.md changed or unreadable: err=%v got=%q want=%q", err, got, indexContent)
+	}
+	if got, err := os.ReadFile(processedPath); err != nil || string(got) != string(processedBefore) {
+		t.Errorf("processed.json changed or unreadable: err=%v got=%q want=%q", err, got, processedBefore)
 	}
 }
 
