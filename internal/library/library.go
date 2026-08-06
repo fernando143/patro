@@ -16,6 +16,8 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -179,11 +181,28 @@ func (l *Library) WriteTranscript(t *types.TranscriptResult) (string, error) {
 	return path, nil
 }
 
+// transcriptLink renders the "[transcript](../transcripts/<id>.txt)" link
+// text used both in a meeting note's "Raw transcript" line and as the exact
+// substring FindMeetingNoteByTranscriptID scans for, so the two can never
+// drift apart.
+func transcriptLink(id string) string {
+	return "[transcript](../transcripts/" + id + ".txt)"
+}
+
 // WriteMeetingNote writes the full meeting note and returns the path of
-// the created file.
+// the created file. The path is computed from date and the title's slug;
+// use WriteMeetingNoteAt to overwrite a specific existing path instead.
 func (l *Library) WriteMeetingNote(t *types.TranscriptResult, a *types.AnalysisResult, videoPath, date string) (string, error) {
 	path := filepath.Join(l.MeetingsDir, date+"-"+Slugify(a.Title)+".md")
+	return l.WriteMeetingNoteAt(path, t, a, videoPath, date)
+}
 
+// WriteMeetingNoteAt writes the full meeting note to the exact given path,
+// overwriting anything already there, and returns that same path. It is the
+// building block WriteMeetingNote delegates to after computing its own
+// date+slug path; regeneration (design D4) calls it directly to overwrite a
+// prior note in place even when the new title's slug differs.
+func (l *Library) WriteMeetingNoteAt(path string, t *types.TranscriptResult, a *types.AnalysisResult, videoPath, date string) (string, error) {
 	summary := a.Summary
 	if summary == "" {
 		summary = "(no summary)"
@@ -195,7 +214,7 @@ func (l *Library) WriteMeetingNote(t *types.TranscriptResult, a *types.AnalysisR
 		"- **Date:** " + date,
 		"- **Source video:** `" + filepath.Base(videoPath) + "`",
 		"- **Language:** " + t.Language,
-		"- **Raw transcript:** [transcript](../transcripts/" + t.ID + ".txt)",
+		"- **Raw transcript:** " + transcriptLink(t.ID),
 		"",
 		"## Summary",
 		"",
@@ -246,6 +265,83 @@ func (l *Library) WriteMeetingNote(t *types.TranscriptResult, a *types.AnalysisR
 		return "", err
 	}
 	return path, nil
+}
+
+// PriorNote is an existing meeting note found by
+// FindMeetingNoteByTranscriptID. Date is "" when the note's
+// "- **Date:** " line is missing or malformed — never an error, since the
+// note itself was still found by its transcript link (design D3 edge case).
+type PriorNote struct {
+	Path        string
+	Date        string
+	SourceVideo string
+}
+
+// ResolveTranscriptID derives the transcript ID for a regenerate run. When
+// path already lives directly under l.TranscriptsDir, its filename stem is
+// reused as-is (external is false) — no copy is needed since the transcript
+// is already in the library. Otherwise a stable, content-addressed ID is
+// generated ("ext-" + the first 12 hex characters of the file's sha256),
+// so re-running on byte-identical content always yields the same ID
+// (design D1), and external is true so the caller knows to copy the file in.
+func (l *Library) ResolveTranscriptID(path string) (id string, external bool, err error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", false, err
+	}
+	absTranscriptsDir, err := filepath.Abs(l.TranscriptsDir)
+	if err != nil {
+		return "", false, err
+	}
+	if filepath.Dir(absPath) == absTranscriptsDir {
+		return stem(absPath), false, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	sum := sha256.Sum256(data)
+	return "ext-" + hex.EncodeToString(sum[:])[:12], true, nil
+}
+
+// FindMeetingNoteByTranscriptID scans knowledge/meetings/*.md (sorted, first
+// match wins) for the one note whose "Raw transcript" line links to id,
+// matching the exact substring transcriptLink(id) produces — shared with
+// WriteMeetingNoteAt so the two formats cannot drift apart (design D3). A
+// file that cannot be read is skipped, not fatal (e.g. permission
+// restrictions on one note must not abort regenerating another). Returns
+// (nil, nil) when no note links to id.
+func (l *Library) FindMeetingNoteByTranscriptID(id string) (*PriorNote, error) {
+	files, err := filepath.Glob(filepath.Join(l.MeetingsDir, "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+
+	link := transcriptLink(id)
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		if !strings.Contains(text, link) {
+			continue
+		}
+
+		note := &PriorNote{Path: path}
+		for _, line := range strings.Split(text, "\n") {
+			if v, ok := strings.CutPrefix(line, "- **Date:** "); ok {
+				note.Date = strings.TrimSpace(v)
+			}
+			if v, ok := strings.CutPrefix(line, "- **Source video:** "); ok {
+				note.SourceVideo = strings.Trim(strings.TrimSpace(v), "`")
+			}
+		}
+		return note, nil
+	}
+	return nil, nil
 }
 
 // AppendTopicSection appends a dated section to a topic file, creating the

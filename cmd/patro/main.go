@@ -6,6 +6,7 @@
 //	patro init [--config PATH]
 //	patro serve [--mock] [--config PATH]
 //	patro process <file> [--mock] [--config PATH]
+//	patro regenerate <transcript-file> [--date YYYY-MM-DD] [--mock] [--config PATH]
 //	patro reconcile [--mock] [--config PATH]
 //	patro reconcile --all --dry-run [--config PATH]
 //	patro run web [--port N] [--config PATH]
@@ -13,13 +14,16 @@
 //	patro --version
 //
 // init runs the interactive setup wizard. serve watches the configured
-// inbox forever; process handles a single file. reconcile ensures the
-// vector/search indexes are up to date (rebuilding them if missing or
-// stale) and then re-attempts reconciliation for every topic flagged
-// during ingestion. run web starts a local, on-demand web viewer for the
-// knowledge library; run tui opens the menu: the live status dashboard and
-// settings (q / Ctrl+C to quit). --mock skips all AssemblyAI calls
-// and uses deterministic fakes so the whole pipeline can be verified
+// inbox forever; process handles a single file. regenerate re-runs only the
+// analyzer over an already-transcribed file and rewrites its meeting note
+// in place (or writes a new one, given --date, when no note exists yet for
+// that transcript) — it never touches topics, the index, or dedup state.
+// reconcile ensures the vector/search indexes are up to date (rebuilding
+// them if missing or stale) and then re-attempts reconciliation for every
+// topic flagged during ingestion. run web starts a local, on-demand web
+// viewer for the knowledge library; run tui opens the menu: the live status
+// dashboard and settings (q / Ctrl+C to quit). --mock skips all AssemblyAI
+// calls and uses deterministic fakes so the whole pipeline can be verified
 // without an API key; for reconcile it additionally guarantees no
 // gray-zone-reconciliation subprocess is ever spawned.
 package main
@@ -65,6 +69,9 @@ Usage:
   patro serve [--mock] [--config PATH]    Watch the inbox and process new recordings forever
   patro process <file> [--mock] [--config PATH]
                                           Process a single video file
+  patro regenerate <transcript-file> [--date YYYY-MM-DD] [--mock] [--config PATH]
+                                          Re-analyze an existing transcript and rewrite
+                                          its meeting note, without touching topics/index
   patro reconcile [--mock] [--config PATH]
                                            Rebuild the vector/search indexes if needed, then
                                            re-attempt reconciliation for flagged topics
@@ -81,6 +88,9 @@ Options:
   --all           Inspect every historical topic (reconcile only)
   --dry-run       Print the historical migration plan without changing files
   --port N        Port for 'run web' (default: 8765)
+  --date YYYY-MM-DD
+                  Date for a new meeting note (regenerate only; required unless a prior
+                  note for the transcript already exists)
 `
 
 // defaultWebPort is the localhost port used by 'patro run web'.
@@ -96,9 +106,13 @@ type cliOptions struct {
 	dryRun      bool
 	command     string
 	// file holds the second positional argument: the video file for
-	// "process", or the subcommand name for "run".
+	// "process", the transcript file for "regenerate", or the subcommand
+	// name for "run".
 	file string
 	port int
+	// date is --date's validated YYYY-MM-DD value, only meaningful for
+	// "regenerate" (D6: rejected on every other command).
+	date string
 }
 
 func main() {
@@ -124,6 +138,10 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "patro: --all and --dry-run are only valid with reconcile")
 		return 2
 	}
+	if opts.date != "" && opts.command != "regenerate" {
+		fmt.Fprintln(os.Stderr, "patro: --date is only valid with regenerate")
+		return 2
+	}
 
 	switch opts.command {
 	case "":
@@ -131,12 +149,14 @@ func run(args []string) int {
 		return 2
 	case "init":
 		if opts.mock {
-			fmt.Fprintln(os.Stderr, "patro: --mock is only valid with serve or process")
+			fmt.Fprintln(os.Stderr, "patro: --mock is only valid with serve, process or regenerate")
 			return 2
 		}
 		return runInit(opts.configPath)
 	case "serve", "process":
 		return runPipeline(opts)
+	case "regenerate":
+		return runRegenerate(opts)
 	case "reconcile":
 		return runReconcile(opts)
 	case "run":
@@ -180,6 +200,22 @@ func parseArgs(args []string) (*cliOptions, error) {
 				return nil, err
 			}
 			opts.port = port
+		case arg == "--date":
+			i++
+			if i >= len(args) {
+				return nil, errors.New("--date requires a value")
+			}
+			date, err := parseDate(args[i])
+			if err != nil {
+				return nil, err
+			}
+			opts.date = date
+		case strings.HasPrefix(arg, "--date="):
+			date, err := parseDate(strings.TrimPrefix(arg, "--date="))
+			if err != nil {
+				return nil, err
+			}
+			opts.date = date
 		case arg == "--mock":
 			opts.mock = true
 		case arg == "--all":
@@ -290,6 +326,63 @@ func runPipeline(opts *cliOptions) int {
 	return 0
 }
 
+// runRegenerate implements "patro regenerate <transcript-file>": it
+// re-analyzes an already-transcribed file and (re)writes exactly one
+// meeting note, deliberately bypassing topics/index/state (design
+// invariants — see pipeline.Regenerate). It mirrors runPipeline's
+// structure and exit codes.
+func runRegenerate(opts *cliOptions) int {
+	if opts.file == "" {
+		fmt.Fprintln(os.Stderr, "patro: regenerate requires a transcript file")
+		return 2
+	}
+
+	cfg, err := config.Load(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "patro: %v\n", err)
+		return 1
+	}
+	if err := logging.Init(cfg.LogFile()); err != nil {
+		fmt.Fprintf(os.Stderr, "patro: cannot open log file %s: %v\n", cfg.LogFile(), err)
+		return 1
+	}
+	logging.Infof("Loaded config %s (analyzer backend: %s)", cfg.Path, cfg.AnalyzerBackend)
+
+	var analyzeFn pipeline.AnalyzeFunc
+	if opts.mock {
+		analyzeFn = pipeline.MockAnalyze
+		logging.Infof("Mock mode: AssemblyAI will NOT be called")
+	} else {
+		// regenerate never uploads to AssemblyAI, so the API key is only
+		// required for lemur, which calls AssemblyAI's hosted LLM (design
+		// D8) — unlike runPipeline's unconditional check.
+		if cfg.AnalyzerBackend == "lemur" {
+			if _, err := cfg.APIKey(); err != nil {
+				logging.Errorf("%v", err)
+				return 2
+			}
+		}
+		analyzeFn = pipeline.MakeAnalyzeFunc(cfg)
+	}
+
+	transcriptPath := setup.ExpandPath(opts.file)
+	if info, err := os.Stat(transcriptPath); err != nil || info.IsDir() {
+		logging.Errorf("File not found: %s", transcriptPath)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	notePath, err := pipeline.Regenerate(ctx, transcriptPath, opts.date, cfg, analyzeFn)
+	if err != nil {
+		logging.Errorf("Failed to regenerate %s: %v", transcriptPath, err)
+		return 1
+	}
+	logging.Infof("Done: %s -> %s", transcriptPath, notePath)
+	return 0
+}
+
 // parsePort validates a --port value.
 func parsePort(value string) (int, error) {
 	port, err := strconv.Atoi(strings.TrimSpace(value))
@@ -297,6 +390,19 @@ func parsePort(value string) (int, error) {
 		return 0, fmt.Errorf("invalid --port %q: must be a number between 1 and 65535", value)
 	}
 	return port, nil
+}
+
+// parseDate validates a --date value against YYYY-MM-DD (design D2). The
+// round-trip re-format check rejects inputs time.Parse would otherwise
+// silently accept in a non-canonical shape, e.g. "2026-8-4" or "2026-02-31"
+// (which time.Parse normalizes forward into March).
+func parseDate(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	t, err := time.Parse("2006-01-02", trimmed)
+	if err != nil || t.Format("2006-01-02") != trimmed {
+		return "", fmt.Errorf("invalid --date %q: must be in YYYY-MM-DD format", value)
+	}
+	return trimmed, nil
 }
 
 // runSubcommand dispatches the "run <target>" commands.
