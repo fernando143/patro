@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Package e2e runs patro's analyzer against real LLM CLIs (Suite 1:
 // Transcript -> Meeting Summary). See README.md for the suite design.
 //
@@ -5,6 +7,12 @@
 // no skip-on-missing-binary, no env-var gate. Any failure (missing binary,
 // timeout, non-zero exit, unparseable response, or a missing checklist
 // fact) fails the test immediately.
+//
+// Gated behind the "e2e" build tag (not run by plain `go test ./...`, so
+// CI — which has neither CLI installed — never touches it) because that
+// fail-fast policy is the point: these tests must not degrade into a
+// silent skip just because a binary or credential is missing. Run with
+// `go test -tags e2e ./test/e2e/...`.
 package e2e
 
 import (
