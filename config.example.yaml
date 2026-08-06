@@ -1,0 +1,11 @@
+inbox: ~/Videos/obs
+library: ~/Documents/knowledge
+video_extensions:
+  - .mkv
+  - .mp4
+  - .mov
+  - .webm
+stability_checks: 2
+stability_interval_seconds: 5
+analyzer_backend: kimi
+kimi_path: /path/to/kimi
