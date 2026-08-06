@@ -12,6 +12,10 @@ __pycache__/
 patro.log
 scribe.log
 
+# Generated e2e report and raw LLM output (see test/e2e/report_test.go, test/e2e/summary_test.go)
+test/e2e/summary_report.md
+test/e2e/output/
+
 # Generated knowledge library (user content)
 knowledge/
 

@@ -1,0 +1,19 @@
+Nico: Hey, quick sync sobre el tema de latency que vimos ayer.
+
+Carla: Sí, el P95 se fue a las nubes después del último deploy, estamos en 800ms cuando el SLO es 200ms.
+
+Nico: ¿Ya viste si es el rate limiting o es un tema de connection pooling con la db?
+
+Carla: Es rate limiting. Está mal configurado, está aplicando el limit por pod en vez de por usuario, entonces cuando el autoscaler levanta más pods en Kubernetes, el limit efectivo se multiplica y deja pasar demasiado tráfico junto.
+
+Nico: Ok, eso explica el spike. ¿Cómo lo resolvemos?
+
+Carla: Tenemos que mover el rate limiting a nivel de gateway, así es global y no depende de cuántos pods tengamos corriendo.
+
+Nico: De acuerdo, movemos el rate limiting al gateway esta semana.
+
+Carla: Yo me encargo de implementar el cambio en el gateway.
+
+Nico: Perfecto, y yo actualizo el dashboard de latency para que alertemos si el P95 pasa los 200ms otra vez.
+
+Carla: Buenísimo, avisame cuando esté el PR.

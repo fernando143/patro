@@ -1,0 +1,41 @@
+# Golden reference for "multi-topic-long": 3 distinct subjects in one
+# meeting (release status, hiring, CI migration). The point of this case
+# is that facts don't bleed across topics — each decision/action/key_fact
+# below anchors to its own subject via its keyword groups.
+
+expected_topic_keywords:
+  - ["release"]
+
+decisions:
+  - text: "el release 2.5 sale el jueves"
+    keywords:
+      - ["jueves"]
+      - ["release", "2.5"]
+  - text: "migran el CI de Jenkins a GitHub Actions el próximo sprint"
+    keywords:
+      - ["migrar", "migra", "migró", "migramos"]
+      - ["jenkins"]
+      - ["actions"]
+
+action_items:
+  - text: "armar el plan de migración de CI"
+    owner: "Sofía"
+    keywords:
+      - ["plan"]
+      - ["migración", "migrar", "ci"]
+  - text: "publicar la búsqueda de backend developer antes del viernes"
+    owner: "Lucía"
+    keywords:
+      - ["publicar", "publica", "publicó", "publiqué"]
+      - ["backend"]
+
+key_facts:
+  - text: "Jenkins salió carísimo este mes por los runners levantados 24/7"
+    keywords:
+      - ["costo", "costos", "caro", "carísimo"]
+  - text: "hubo dos caídas de Jenkins la semana pasada"
+    keywords:
+      - ["caída", "caídas", "cayó"]
+  - text: "la vacante de backend developer está abierta hace un mes y el equipo está sobrecargado"
+    keywords:
+      - ["vacante"]

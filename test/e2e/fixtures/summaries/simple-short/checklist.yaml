@@ -1,0 +1,27 @@
+# Golden reference for the "simple-short" case. Keywords are hand-curated:
+# each fact lists concept groups (AND across groups); each group lists
+# interchangeable word forms for that one concept (OR within a group).
+
+expected_topic_keywords:
+  - ["release"]
+
+decisions:
+  - text: "el equipo postergó el release 2.4 a la próxima semana por un bug bloqueante de pagos"
+    keywords:
+      - ["postergar", "posterga", "postergó", "postergamos", "postergaron"]
+      - ["pagos", "pago"]
+
+action_items:
+  - text: "actualizar el changelog con el motivo del retraso"
+    owner: "Martín"
+    keywords:
+      - ["changelog"]
+
+key_facts:
+  - text: "el release estaba planeado para el viernes originalmente"
+    keywords:
+      - ["viernes"]
+  - text: "el bug es bloqueante para pagos con tarjeta"
+    keywords:
+      - ["tarjeta"]
+      - ["bloqueante", "bloquea", "bloqueó"]
