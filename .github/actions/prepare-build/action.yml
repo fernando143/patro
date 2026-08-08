@@ -1,0 +1,40 @@
+name: Prepare build
+description: Checkout, set up Go, verify the embedded Cybertron model, and sync analyzer prompts from Langfuse
+
+inputs:
+  fetch-depth:
+    description: Number of commits to fetch (0 = all history, needed by GoReleaser)
+    required: false
+    default: "1"
+  langfuse-base-url:
+    required: true
+  langfuse-public-key:
+    required: true
+  langfuse-secret-key:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+        lfs: true
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.5"
+
+    - name: Verify embedded Cybertron model
+      shell: bash
+      run: go test ./internal/embed -run '^(TestCybertronEmbeddedWeightsMatchManifest|TestCybertronEmbeddedModelLoads)$' -count=1
+
+    - name: Sync analyzer prompts from Langfuse
+      shell: bash
+      run: go run ./tools/promptsync
+      env:
+        LANGFUSE_BASE_URL: ${{ inputs.langfuse-base-url }}
+        LANGFUSE_PUBLIC_KEY: ${{ inputs.langfuse-public-key }}
+        LANGFUSE_SECRET_KEY: ${{ inputs.langfuse-secret-key }}

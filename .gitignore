@@ -47,3 +47,11 @@ coverage.out
 # Local tooling metadata (gentle-ai, CodeGraph)
 .atl/
 .codegraph/
+
+# Analyzer prompts, authored and versioned in Langfuse — fetched by
+# tools/promptsync before any build (see .github/workflows/ci.yml and
+# release.yml). Required by internal/analyzer's go:embed directives, so a
+# fresh checkout cannot `go build` until promptsync has run.
+/internal/analyzer/prompt_template.txt
+/internal/analyzer/response_schema.json
+/internal/analyzer/prompt_fragments/*.txt
