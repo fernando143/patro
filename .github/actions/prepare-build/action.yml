@@ -1,11 +1,7 @@
 name: Prepare build
-description: Checkout, set up Go, verify the embedded Cybertron model, and sync analyzer prompts from Langfuse
+description: Set up Go, verify the embedded Cybertron model, and sync analyzer prompts from Langfuse. Requires actions/checkout to have already run — a local composite action can't check out the repo that contains it.
 
 inputs:
-  fetch-depth:
-    description: Number of commits to fetch (0 = all history, needed by GoReleaser)
-    required: false
-    default: "1"
   langfuse-base-url:
     required: true
   langfuse-public-key:
@@ -16,12 +12,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: ${{ inputs.fetch-depth }}
-        lfs: true
-
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
