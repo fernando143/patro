@@ -1,0 +1,17 @@
+Lucía: Bueno, arrancamos. El tema de hoy es el estado del release 2.4.
+
+Martín: El build está listo, pero anoche encontramos un bug bloqueante en el módulo de pagos.
+
+Lucía: ¿Qué tan grave es?
+
+Martín: Bloqueante en serio. Si lo lanzamos así, los pagos con tarjeta fallan para casi todos los usuarios.
+
+Lucía: Entonces no podemos lanzar el viernes como estaba planeado.
+
+Martín: No. Yo diría que postergamos el release a la próxima semana, así tenemos tiempo de arreglarlo y testearlo bien.
+
+Lucía: De acuerdo, postergamos el release 2.4 a la próxima semana.
+
+Martín: Yo me encargo de actualizar el changelog con el motivo del retraso.
+
+Lucía: Perfecto. Cualquier cosa avisame.

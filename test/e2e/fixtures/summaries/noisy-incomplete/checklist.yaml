@@ -1,0 +1,27 @@
+# Golden reference for "noisy-incomplete": the discount percentage is
+# garbled ([inaudible]) in the transcript on purpose. This checklist only
+# asserts facts that ARE clearly stated — it deliberately has no entry for
+# the discount number, since the analyzer must not invent one. (Whether
+# the real LLM output fabricates a number for the missing part is a
+# manual-read concern this automated checklist can't detect by itself.)
+
+expected_topic_keywords:
+  - ["contrato"]
+
+decisions:
+  - text: "renuevan el contrato por doce meses"
+    keywords:
+      - ["renovar", "renueva", "renovamos", "renovaron", "renovación"]
+      - ["doce", "12"]
+
+action_items:
+  - text: "mandar el contrato firmado antes del viernes"
+    owner: "Ana"
+    keywords:
+      - ["contrato"]
+      - ["viernes"]
+
+key_facts:
+  - text: "el contrato actual vence el 30 de este mes"
+    keywords:
+      - ["30"]

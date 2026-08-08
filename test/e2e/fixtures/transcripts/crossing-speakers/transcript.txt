@@ -1,0 +1,21 @@
+Diego: Bueno, tenemos el incidente de—
+
+Valentina: —el 500 en checkout, sí, ya lo estoy viendo.
+
+Diego: Perdón, seguí.
+
+Valentina: Empezó hace veinte minutos, coincide con el deploy de las tres.
+
+Diego: ¿Hacemos rollback entonces?
+
+Valentina: Yo digo que sí, no perdamos más tiempo debugueando en caliente.
+
+Diego: —pero si esperamos cinco minutos capaz identificamos la causa y evitamos el rollback.
+
+Valentina: No, Diego, cada minuto son usuarios que no pueden pagar. Hacemos rollback ahora.
+
+Diego: Está bien, tenés razón. Hacemos rollback del deploy de las tres.
+
+Valentina: Yo ejecuto el rollback ahora mismo.
+
+Diego: Y yo me encargo de armar el postmortem después.

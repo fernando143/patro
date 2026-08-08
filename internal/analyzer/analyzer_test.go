@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -416,6 +417,82 @@ func TestPyStr(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := pyStr(tt.value); got != tt.want {
 				t.Errorf("pyStr(%#v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResponseSchemaMatchesParser is the build-time contract check: it
+// fails if internal/analyzer/response_schema.json (authored in Langfuse,
+// synced by tools/promptsync) drifts from the exact keys parseResponse
+// reads. parseResponse degrades gracefully on missing keys instead of
+// erroring, so a schema edit that renames or drops a field would otherwise
+// only surface as silently empty output at runtime — this test is what
+// turns that into a build failure instead.
+func TestResponseSchemaMatchesParser(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(responseSchema), &schema); err != nil {
+		t.Fatalf("response_schema.json is not valid JSON: %v", err)
+	}
+
+	meeting, ok := schema["meeting"].(map[string]any)
+	if !ok {
+		t.Fatal(`schema is missing a "meeting" object — parseResponse reads payload["meeting"]`)
+	}
+	for _, key := range []string{"title", "summary", "key_points", "decisions", "action_items"} {
+		if _, ok := meeting[key]; !ok {
+			t.Errorf("schema.meeting is missing %q — parseResponse reads meeting[%q]", key, key)
+		}
+	}
+
+	actionItems, ok := meeting["action_items"].([]any)
+	if !ok || len(actionItems) == 0 {
+		t.Fatal("schema.meeting.action_items must be a non-empty example array")
+	}
+	actionItem, ok := actionItems[0].(map[string]any)
+	if !ok {
+		t.Fatal("schema.meeting.action_items[0] must be an object")
+	}
+	for _, key := range []string{"owner", "task"} {
+		if _, ok := actionItem[key]; !ok {
+			t.Errorf("schema.meeting.action_items[0] is missing %q — parseResponse reads it", key)
+		}
+	}
+
+	topics, ok := schema["topics"].([]any)
+	if !ok || len(topics) == 0 {
+		t.Fatal(`schema is missing a non-empty "topics" example array — parseResponse reads payload["topics"]`)
+	}
+	topic, ok := topics[0].(map[string]any)
+	if !ok {
+		t.Fatal("schema.topics[0] must be an object")
+	}
+	for _, key := range []string{"slug", "name", "content"} {
+		if _, ok := topic[key]; !ok {
+			t.Errorf("schema.topics[0] is missing %q — parseResponse reads it", key)
+		}
+	}
+}
+
+// TestPromptFragmentsRetainPlaceholders guards the same failure mode as
+// TestResponseSchemaMatchesParser but for the conditional fragments: since
+// strings.Replace silently no-ops when its old string isn't found, an
+// Langfuse edit that drops {{transcript_path}} (or similar) would silently
+// omit real data from the prompt instead of failing anywhere.
+func TestPromptFragmentsRetainPlaceholders(t *testing.T) {
+	tests := []struct {
+		name        string
+		fragment    string
+		placeholder string
+	}{
+		{"topics_with_existing.txt", topicsWithExistingFragment, "{{topics_list}}"},
+		{"source_with_path.txt", sourceWithPathFragment, "{{transcript_path}}"},
+		{"language_known.txt", languageKnownFragment, "{{language}}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(tt.fragment, tt.placeholder) {
+				t.Errorf("%s is missing placeholder %q — BuildPrompt substitutes real data there", tt.name, tt.placeholder)
 			}
 		})
 	}

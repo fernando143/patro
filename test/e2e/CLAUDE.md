@@ -1,0 +1,1 @@
+- Always use table driven tests

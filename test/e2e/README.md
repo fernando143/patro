@@ -1,6 +1,16 @@
 # E2E test suite — brief
 
-High-level design for evaluating patro's generated output quality. Scope: **design only**, no test logic implemented yet.
+High-level design for evaluating patro's generated output quality. Suite 1 is implemented; Suite 2 is still design-only.
+
+## Running
+
+Suite 1 calls the real `claude`/`codex` CLIs — no mocks — and is gated behind the `e2e` build tag so plain `go test ./...` (and CI, which has neither CLI installed) never touches it:
+
+```bash
+go test -tags e2e ./test/e2e/... -run TestSummaryGeneration -v
+```
+
+This makes real, billable API calls and can take several minutes. After it runs, see `test/e2e/summary_report.md` (expected vs. got per check, plus a 0-1 score) and `test/e2e/output/<case-id>/<backend>.json` (the full raw analyzer output) — both generated, gitignored.
 
 ## Tooling
 
@@ -40,8 +50,9 @@ test/e2e/
 │   ├── summaries/<case-id>/checklist.yaml
 │   ├── meetings/<case-id>/*.md
 │   └── topics/<case-id>/expected.yaml
-├── summary_test.go   (TBD — Suite 1 table-driven runner)
+├── summary_test.go   (Suite 1 table-driven runner, "e2e" build tag)
+├── report_test.go    (TestMain — writes summary_report.md, "e2e" build tag)
 └── topics_test.go    (TBD — Suite 2 table-driven runner)
 ```
 
-Fixture cases and the two `_test.go` runners are the next step, not yet implemented.
+Suite 2's fixtures and runner are the next step, not yet implemented.

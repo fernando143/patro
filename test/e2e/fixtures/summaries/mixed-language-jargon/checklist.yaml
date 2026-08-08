@@ -1,0 +1,33 @@
+# Golden reference for "mixed-language-jargon": Spanish/English
+# code-switching plus technical jargon (P95, SLO, rate limiting,
+# Kubernetes, gateway). Jargon terms are the anchor keywords since a real
+# LLM is likely to preserve them verbatim regardless of which language it
+# picks for the surrounding prose.
+
+expected_topic_keywords:
+  - ["rate"]
+
+decisions:
+  - text: "mueven el rate limiting a nivel de gateway"
+    keywords:
+      - ["gateway"]
+      - ["rate"]
+
+action_items:
+  - text: "implementar el cambio en el gateway"
+    owner: "Carla"
+    keywords:
+      - ["gateway"]
+  - text: "actualizar el dashboard de latency"
+    owner: "Nico"
+    keywords:
+      - ["dashboard"]
+
+key_facts:
+  - text: "el P95 subió a 800ms cuando el SLO es 200ms"
+    keywords:
+      - ["800"]
+      - ["200"]
+  - text: "el rate limiting está mal configurado por pod en vez de por usuario"
+    keywords:
+      - ["pod"]

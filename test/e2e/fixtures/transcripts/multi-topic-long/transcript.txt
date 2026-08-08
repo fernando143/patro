@@ -1,0 +1,33 @@
+Lucía: Arrancamos. Tenemos tres temas hoy: el release 2.5, la búsqueda de un backend developer, y la migración de CI.
+
+Lucía: Empecemos con el release. Martín, ¿cómo viene?
+
+Martín: Feature complete desde ayer. QA ya corrió la regresión completa y no encontraron nada crítico, solo dos bugs menores de UI que no bloquean.
+
+Lucía: Entonces, ¿damos el visto bueno para el jueves?
+
+Martín: Por mi parte sí, está listo para el jueves.
+
+Lucía: Perfecto, confirmamos: el release 2.5 sale el jueves.
+
+Lucía: Segundo tema, la búsqueda de backend developer. Sofía, ¿cómo estamos de headcount?
+
+Sofía: Seguimos con una vacante abierta desde hace un mes, necesitamos cerrar esto pronto porque el equipo está sobrecargado.
+
+Lucía: De acuerdo, yo publico la búsqueda del puesto de backend developer antes del viernes.
+
+Sofía: Buenísimo, avisame si necesitás que revise el job description antes de publicarlo.
+
+Lucía: Tercer tema, la migración de CI. Sofía, contanos.
+
+Sofía: Estuve viendo los costos de Jenkins, y este mes nos salió carísimo por los runners que tenemos levantados 24/7. Además tuvimos dos caídas la semana pasada.
+
+Martín: ¿Y la alternativa es GitHub Actions?
+
+Sofía: Sí, ya hice una prueba de concepto y anda bien, y nos ahorraríamos bastante en infra.
+
+Lucía: Entonces decidimos migrar el CI de Jenkins a GitHub Actions el próximo sprint.
+
+Sofía: Yo me encargo de armar el plan de migración.
+
+Lucía: Genial, cerramos ahí. Gracias a los tres.

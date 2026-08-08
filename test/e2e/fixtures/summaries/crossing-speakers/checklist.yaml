@@ -1,0 +1,29 @@
+# Golden reference for "crossing-speakers": interrupted/overlapping turns.
+# The point is correct attribution despite the crosstalk — who decided,
+# who executes the rollback, who owns the postmortem.
+
+expected_topic_keywords:
+  - ["rollback"]
+
+decisions:
+  - text: "hacen rollback del deploy de las tres"
+    keywords:
+      - ["rollback"]
+
+action_items:
+  - text: "ejecutar el rollback ahora mismo"
+    owner: "Valentina"
+    keywords:
+      - ["rollback"]
+  - text: "armar el postmortem del incidente"
+    owner: "Diego"
+    keywords:
+      - ["postmortem"]
+
+key_facts:
+  - text: "el incidente empezó hace veinte minutos y coincide con el deploy de las tres"
+    keywords:
+      - ["20", "veinte"]
+  - text: "es un error 500 en checkout"
+    keywords:
+      - ["checkout"]

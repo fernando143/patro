@@ -15,6 +15,7 @@
 package analyzer
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -24,24 +25,59 @@ import (
 	"github.com/fernando143/patro/internal/types"
 )
 
-// jsonSchemaExample is embedded verbatim in the prompt; the backends are
-// instructed to match it exactly.
-const jsonSchemaExample = `{
-  "meeting": {
-    "title": "short descriptive title",
-    "summary": "2-4 sentence summary of the meeting",
-    "key_points": ["point 1", "point 2"],
-    "decisions": ["decision 1"],
-    "action_items": [{"owner": "person name or 'unassigned'", "task": "what must be done"}]
-  },
-  "topics": [
-    {
-      "slug": "kebab-case-slug",
-      "name": "Human readable name",
-      "content": "Markdown with what was newly learned about this topic in this meeting"
-    }
-  ]
-}`
+// promptTemplate is the versioned prompt skeleton. It is authored and
+// versioned in Langfuse Prompt Management; tools/promptsync fetches the
+// "production"-labeled version and overwrites this file at release time
+// (see .github/workflows/release.yml), so the built binary never talks to
+// Langfuse itself. The {{source}}/{{topics}}/{{schema}}/{{language_rule}}
+// placeholders are filled in by BuildPrompt below.
+//
+//go:embed prompt_template.txt
+var promptTemplate string
+
+// rawResponseSchema is the JSON schema example embedded verbatim in the
+// prompt; the backends are instructed to match it exactly. Like
+// promptTemplate, it is authored and versioned in Langfuse (as a separate
+// prompt, so it can be validated on its own — see
+// TestResponseSchemaMatchesParser) and synced by tools/promptsync.
+//
+//go:embed response_schema.json
+var rawResponseSchema string
+
+// responseSchema drops the file's trailing newline so substituting it into
+// promptTemplate reproduces the exact prompt text the analyzer contract
+// tests were pinned against.
+var responseSchema = strings.TrimRight(rawResponseSchema, "\n")
+
+// promptFragments holds the copy for BuildPrompt's conditional blocks —
+// each is a separate Langfuse prompt (see tools/promptsync) because each
+// condition (existing topics or not, transcript path or not, known
+// language or not) needs its own independent wording, not one template
+// with branches. Go still decides WHICH fragment applies; Langfuse only
+// controls what each one says.
+//
+//go:embed prompt_fragments
+var promptFragments embed.FS
+
+// fragment reads and trims one file from promptFragments. Failure here
+// means a fragment file is missing from the embedded build — a build-time
+// defect, not a runtime condition, hence the panic.
+func fragment(name string) string {
+	data, err := promptFragments.ReadFile("prompt_fragments/" + name)
+	if err != nil {
+		panic("analyzer: missing embedded prompt fragment " + name + ": " + err.Error())
+	}
+	return strings.TrimRight(string(data), "\n")
+}
+
+var (
+	topicsWithExistingFragment = fragment("topics_with_existing.txt")
+	topicsEmptyFragment        = fragment("topics_empty.txt")
+	sourceWithPathFragment     = fragment("source_with_path.txt")
+	sourceWithoutPathFragment  = fragment("source_without_path.txt")
+	languageKnownFragment      = fragment("language_known.txt")
+	languageUnknownFragment    = fragment("language_unknown.txt")
+)
 
 // fencePattern matches a wrapping ```json ... ``` (or plain ``` ... ```)
 // fence, capturing its body.
@@ -57,58 +93,35 @@ var fencePattern = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)```")
 // The output is byte-for-byte identical to scribe/analyzer.py's
 // build_prompt.
 func BuildPrompt(existing []types.TopicRef, language, transcriptPath string) string {
-	var topicsBlock string
+	topicsBlock := topicsEmptyFragment
 	if len(existing) > 0 {
 		lines := make([]string, len(existing))
 		for i, t := range existing {
 			lines[i] = fmt.Sprintf("- %s: %s", t.Slug, t.Name)
 		}
-		topicsBlock = "The knowledge library already contains these topics (slug: name):\n" +
-			strings.Join(lines, "\n") + "\n" +
-			"REUSE an existing slug whenever the subject of a topic matches. " +
-			"Only create a new slug for genuinely new subjects."
-	} else {
-		topicsBlock = "The knowledge library is empty yet. Create slugs for every subject discussed."
+		topicsBlock = strings.NewReplacer("{{topics_list}}", strings.Join(lines, "\n")).
+			Replace(topicsWithExistingFragment)
 	}
 
-	var sourceBlock string
+	sourceBlock := sourceWithoutPathFragment
 	if transcriptPath != "" {
-		sourceBlock = "First, read the meeting transcript from this file using your file reading tool: " +
-			transcriptPath + "\n" +
-			"Base your entire analysis on its contents."
-	} else {
-		sourceBlock = "Analyze the meeting transcript provided with this request."
+		sourceBlock = strings.NewReplacer("{{transcript_path}}", transcriptPath).
+			Replace(sourceWithPathFragment)
 	}
 
-	var languageRule string
+	languageRule := languageUnknownFragment
 	if language != "" && language != "unknown" {
-		languageRule = fmt.Sprintf(
-			"Write ALL output (title, summary, key points, decisions, action items, topic names "+
-				"and content) in the same language as the transcript (%q).",
-			language,
-		)
-	} else {
-		languageRule = "Write ALL output (title, summary, key points, decisions, action items, topic " +
-			"names and content) in the same language the transcript is written in."
+		languageRule = strings.NewReplacer("{{language}}", fmt.Sprintf("%q", language)).
+			Replace(languageKnownFragment)
 	}
 
-	return fmt.Sprintf(`You are analyzing a meeting transcript to distill it into a personal knowledge library.
-
-%s
-
-%s
-
-Respond with ONLY a valid JSON object (no prose, no markdown fences) matching exactly this schema:
-%s
-
-Rules:
-- Slugs must be lowercase kebab-case, ASCII, no accents.
-- "content" of each topic is Markdown: what was newly learned about that topic in THIS meeting (facts, decisions, context), not a meeting summary.
-- 1 to 5 topics, each focused on a single subject.
-- %s
-- If a list would be empty, use an empty array.
-- Your final message must contain ONLY the JSON object, nothing else.
-`, sourceBlock, topicsBlock, jsonSchemaExample, languageRule)
+	replacer := strings.NewReplacer(
+		"{{source}}", sourceBlock,
+		"{{topics}}", topicsBlock,
+		"{{schema}}", responseSchema,
+		"{{language_rule}}", languageRule,
+	)
+	return replacer.Replace(promptTemplate)
 }
 
 // ParseAnalysis parses a raw analyzer text response into an AnalysisResult.
