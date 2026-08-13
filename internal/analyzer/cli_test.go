@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/types"
@@ -124,6 +125,22 @@ func writeFakeCLI(t *testing.T, dir, name, script string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestRunCLITimeout(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := writeFakeCLI(t, dir, "slow-cli", "#!/bin/sh\nexec sleep 1\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := runCLI(ctx, binaryPath, nil, dir, "kimi", "")
+	if err == nil {
+		t.Fatal("runCLI returned nil error after the context deadline")
+	}
+	want := fmt.Sprintf("kimi did not finish within %ds; aborting analysis", cliTimeoutSeconds)
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
 }
 
 func TestAnalyzeCLISuccess(t *testing.T) {
