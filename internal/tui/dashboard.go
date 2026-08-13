@@ -172,7 +172,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.followLog = false
-		m.log.LineUp(1)
+		m.log.ScrollUp(1)
 		return m, nil
 	case "down", "j":
 		if m.focus == focusFailures {
@@ -182,7 +182,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.followLog = false
-		m.log.LineDown(1)
+		m.log.ScrollDown(1)
 		return m, nil
 	case "enter":
 		if m.focus == focusFailures {

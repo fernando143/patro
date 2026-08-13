@@ -50,7 +50,7 @@ func Transcribe(ctx context.Context, videoPath, apiKey string) (*types.Transcrip
 	}
 
 	if transcript.Status == assemblyai.TranscriptStatusError {
-		return nil, fmt.Errorf("Transcription failed: %s", derefStr(transcript.Error))
+		return nil, fmt.Errorf("transcription failed: %s", derefStr(transcript.Error))
 	}
 
 	chapters := make([]types.Chapter, 0, len(transcript.Chapters))

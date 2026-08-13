@@ -137,11 +137,34 @@ func TestHandleKeyUpDownOnFailures(t *testing.T) {
 }
 
 func TestHandleKeyUpDownOnLogUnfollows(t *testing.T) {
-	m := model{focus: focusLog, followLog: true, ready: true}
-	m.log = viewport.New(80, 24)
-	nm, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	if nm.(model).followLog {
-		t.Error("followLog still true after moving the log manually")
+	tests := []struct {
+		name     string
+		key      tea.KeyType
+		atBottom bool
+		wantY    int
+	}{
+		{name: "up", key: tea.KeyUp, atBottom: true, wantY: 1},
+		{name: "down", key: tea.KeyDown, wantY: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{focus: focusLog, followLog: true, ready: true}
+			m.log = viewport.New(80, 2)
+			m.log.SetContent("one\ntwo\nthree\nfour")
+			if tt.atBottom {
+				m.log.GotoBottom()
+			}
+
+			nm, _ := m.handleKey(tea.KeyMsg{Type: tt.key})
+			got := nm.(model)
+			if got.followLog {
+				t.Error("followLog still true after moving the log manually")
+			}
+			if got.log.YOffset != tt.wantY {
+				t.Errorf("log YOffset = %d, want %d", got.log.YOffset, tt.wantY)
+			}
+		})
 	}
 }
 

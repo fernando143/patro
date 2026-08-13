@@ -251,9 +251,9 @@ func (c *Config) APIKey() (string, error) {
 	key := strings.TrimSpace(os.Getenv(APIKeyEnvVar))
 	if key == "" {
 		return "", fmt.Errorf(
-			"%s is not set. Export your AssemblyAI API key, "+
+			"%s is not set; export your AssemblyAI API key, "+
 				"e.g.: export %s=<your-key> "+
-				"(or use --mock to run without the API).",
+				"(or use --mock to run without the API)",
 			APIKeyEnvVar, APIKeyEnvVar,
 		)
 	}

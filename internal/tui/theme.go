@@ -10,7 +10,6 @@ import "github.com/charmbracelet/lipgloss"
 // terminals and degrade gracefully elsewhere.
 var (
 	colorBg      = lipgloss.Color("#1a0b2e") // deep indigo background
-	colorPanel   = lipgloss.Color("#2a1a4a") // slightly lighter panel fill
 	colorMagenta = lipgloss.Color("#ff2e97") // hot neon pink
 	colorCyan    = lipgloss.Color("#05d9e8") // neon cyan
 	colorPurple  = lipgloss.Color("#b967ff") // neon purple
@@ -36,11 +35,9 @@ var (
 			BorderForeground(colorPurple).
 			Padding(0, 1)
 
-	statTitle = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
 	statValue = lipgloss.NewStyle().Foreground(colorText).Bold(true)
 
 	styleActive   = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
-	styleInactive = lipgloss.NewStyle().Foreground(colorDim)
 	styleAlert    = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 	styleFail     = lipgloss.NewStyle().Foreground(colorRed)
 	styleAccent   = lipgloss.NewStyle().Foreground(colorSunset).Bold(true)

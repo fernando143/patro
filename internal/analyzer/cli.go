@@ -157,7 +157,7 @@ func runCLI(ctx context.Context, binaryPath string, args []string, workDir, lowe
 		return stdout.String(), nil
 	}
 	if runCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("%s did not finish within %ds; aborting analysis.", lowerName, cliTimeoutSeconds)
+		return "", fmt.Errorf("%s did not finish within %ds; aborting analysis", lowerName, cliTimeoutSeconds)
 	}
 	if runCtx.Err() != nil {
 		// The parent context was canceled.
