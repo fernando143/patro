@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  # Keep this focused on independent, low-noise checks. Staticcheck,
+  # cyclomatic complexity, and duplication run separately in the report.
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - unconvert
+    - unused

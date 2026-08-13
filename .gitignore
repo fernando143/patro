@@ -55,3 +55,6 @@ coverage.out
 /internal/analyzer/prompt_template.txt
 /internal/analyzer/response_schema.json
 /internal/analyzer/prompt_fragments/*.txt
+
+# Generated quality reports
+/artifacts/quality/

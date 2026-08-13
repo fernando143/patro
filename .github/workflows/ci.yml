@@ -40,3 +40,38 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.out
           fail_ci_if_error: true
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Prepare build
+        uses: ./.github/actions/prepare-build
+        with:
+          langfuse-base-url: ${{ vars.LANGFUSE_BASE_URL }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+
+      - name: Install quality tools
+        shell: bash
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.1
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+          go install github.com/mibk/dupl@v1.0.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run quality report
+        run: ./scripts/quality-report.sh
+
+      - name: Upload quality report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: artifacts/quality/report.md
+          if-no-files-found: error
