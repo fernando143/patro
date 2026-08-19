@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -717,6 +718,12 @@ func searchSnippet(markdown, normalizedQuery string) string {
 	end := start + 2*radius
 	if end > len(clean) {
 		end = len(clean)
+	}
+	for start > 0 && !utf8.RuneStart(clean[start]) {
+		start--
+	}
+	for end < len(clean) && !utf8.RuneStart(clean[end]) {
+		end--
 	}
 	snippet := strings.TrimSpace(clean[start:end])
 	if start > 0 {

@@ -527,3 +527,14 @@ func TestSearchKindFilter(t *testing.T) {
 		t.Errorf("meeting filter is not exposed as active\n%s", body)
 	}
 }
+
+func TestSearchSnippetPreservesUTF8(t *testing.T) {
+	markdown := strings.Repeat("á", 100) + " decisión técnica " + strings.Repeat("ñ", 100)
+	got := searchSnippet(markdown, "decisión")
+	if !strings.Contains(got, "decisión técnica") {
+		t.Fatalf("snippet lost the matching UTF-8 text: %q", got)
+	}
+	if strings.ToValidUTF8(got, "") != got {
+		t.Fatalf("snippet contains invalid UTF-8: %q", got)
+	}
+}
