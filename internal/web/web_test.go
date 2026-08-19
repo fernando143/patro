@@ -341,19 +341,15 @@ func TestSearchFusesHitsFromTopicsAndMeetings(t *testing.T) {
 	}
 }
 
-// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the fused ranking
-// genuinely incorporates the cosine signal, not just BM25: with SearchIndex
-// nil, the only way a result can appear at all is through vectors.Nearest,
-// and its title/link metadata must be resolved from the topic file directly
-// (there is no BM25 Hit to borrow Title/Kind from).
+// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the hybrid ranking
+// incorporates the cosine signal when neither lexical nor BM25 matches.
 func TestSearchVectorOnlyFallbackWhenBM25Unavailable(t *testing.T) {
 	root, _, store, embedder := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.Vectors = store
 	srv.Embedder = embedder
 
-	topicContent := "# Roadmap\n\nQ3 zephyr rollout planning and deployment goals.\n"
-	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(topicContent), nil)
+	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape("semantic-only-query"), nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -421,15 +417,15 @@ func TestSearchEmptyQueryShowsForm(t *testing.T) {
 func TestSearchWithoutIndexDegradesGracefully(t *testing.T) {
 	srv := NewServer(setupLibrary(t))
 
-	req := httptest.NewRequest(http.MethodGet, "/search?q=anything", nil)
+	req := httptest.NewRequest(http.MethodGet, "/search?q=roadmap", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (must never 500 when index/store are unavailable)", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "not available") {
-		t.Errorf("expected a graceful not-available message\n%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, `href="/topics/roadmap.md"`) {
+		t.Errorf("expected Markdown fallback result\n%s", body)
 	}
 }
 
@@ -451,5 +447,53 @@ func TestSearchNoMatchesShowsMessage(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "No results") {
 		t.Errorf("expected a no-results message\n%s", body)
+	}
+}
+
+func TestSearchPrioritizesExactMarkdownMatchOverSemanticFallback(t *testing.T) {
+	root := setupLibrary(t)
+	if err := os.WriteFile(filepath.Join(root, "topics", "cachea.md"), []byte("# Cachea hiring process\n\nTechnical interview and next steps.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(root)
+	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "roadmap", Score: .99}}}
+	srv.Representer = &fakeWebRepresenter{}
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=cachea", nil))
+	body := rec.Body.String()
+	resultsStart := strings.Index(body, `class="search-results"`)
+	if resultsStart < 0 {
+		t.Fatalf("response missing search results\n%s", body)
+	}
+	resultsBody := body[resultsStart:]
+	cachea := strings.Index(resultsBody, `href="/topics/cachea.md"`)
+	roadmap := strings.Index(resultsBody, `href="/topics/roadmap.md"`)
+	if cachea < 0 || roadmap < 0 || cachea > roadmap {
+		t.Fatalf("exact match must rank before semantic fallback\n%s", body)
+	}
+	for _, want := range []string{`class="filters"`, `class="search-result"`, `class="result-kind"`, "Technical interview and next steps"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("search result missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestSearchKindFilter(t *testing.T) {
+	root, idx, _, _ := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=zephyr&kind=meeting", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/meetings/2026-01-05-kickoff.md"`) {
+		t.Fatalf("meeting filter omitted meeting result\n%s", body)
+	}
+	if strings.Contains(body, `<h2><a href="/topics/roadmap.md"`) {
+		t.Fatalf("meeting filter included topic result\n%s", body)
+	}
+	if !strings.Contains(body, `class="active" aria-current="page" href="/search?q=zephyr&amp;kind=meeting"`) {
+		t.Errorf("meeting filter is not exposed as active\n%s", body)
 	}
 }

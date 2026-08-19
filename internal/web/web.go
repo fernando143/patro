@@ -12,6 +12,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"net/http"
 	"os"
@@ -95,6 +96,18 @@ h1 { margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: .55r
 .collection-list { list-style: none; margin: 1.25rem 0 0; padding: 0; }
 .collection-list li { border-bottom: 1px solid var(--border); padding: .85rem 0; }
 .collection-list a { font-weight: 650; }
+.filters { display: flex; flex-wrap: wrap; gap: .45rem; margin: 1rem 0 1.25rem; }
+.filters a { border: 1px solid var(--border); border-radius: 999px; padding: .28rem .75rem; color: var(--muted); text-decoration: none; font-size: .88rem; }
+.filters a:hover { color: var(--text); background: var(--surface-subtle); }
+.filters a.active { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.search-results { display: grid; gap: .8rem; list-style: none; margin: 0; padding: 0; }
+.search-result { border: 1px solid var(--border); border-radius: .7rem; padding: 1rem 1.1rem; background: var(--surface); }
+.search-result h2 { margin: 0; font-size: 1.08rem; }
+.search-result h2 a { color: var(--text); text-decoration: none; }
+.search-result h2 a:hover { color: var(--accent); text-decoration: underline; }
+.search-result p { margin: .45rem 0 0; color: var(--muted); }
+.result-meta { display: flex; gap: .55rem; align-items: center; margin-top: .4rem; color: var(--muted); font-size: .8rem; }
+.result-kind { border-radius: 999px; padding: .08rem .5rem; background: var(--surface-subtle); text-transform: capitalize; }
 code { background: var(--surface-subtle); padding: .1em .3em; border-radius: 3px; font-size: .9em; }
 pre {
   background: var(--surface-subtle); padding: 1rem; border-radius: 6px; overflow-x: auto;
@@ -363,22 +376,23 @@ func (s *Server) serveText(w http.ResponseWriter, r *http.Request, full string) 
 	s.render(w, r, titleFor(full), template.HTML(body))
 }
 
-// rrfK is the reciprocal-rank-fusion damping constant (design D3). 60 is
-// the value from the original RRF paper and is a common default: it flattens
-// the influence of rank 1 vs. rank 2 without needing per-ranker score
-// normalization (BM25 and cosine scores are not on comparable scales).
-const rrfK = 60
-
 // searchResultLimit bounds how many hits are requested from each ranker
 // before fusion.
-const searchResultLimit = 50
+const (
+	searchResultLimit   = 50
+	semanticResultLimit = 8
+	renderedResultLimit = 20
+)
 
 // searchResult is one fused, render-ready hit.
 type searchResult struct {
-	ID    string // "topic:slug" or "meeting:slug"
-	Kind  string
-	Title string
-	URL   string
+	ID      string // "topic:slug" or "meeting:slug"
+	Kind    string
+	Title   string
+	URL     string
+	Date    string
+	Snippet string
+	Score   float64
 }
 
 // handleSearch serves the read-only /search route: a query form plus, once
@@ -388,54 +402,84 @@ type searchResult struct {
 // or an explicit message, per design "Migration / Rollout".
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	kind := r.URL.Query().Get("kind")
+	if kind != searchindex.KindTopic && kind != searchindex.KindMeeting {
+		kind = ""
+	}
 
 	var b strings.Builder
-	b.WriteString("<h1>Search</h1>\n")
-	b.WriteString(`<form method="get" action="/search">` +
-		`<input type="text" name="q" value="` + template.HTMLEscapeString(q) +
-		`" placeholder="Search topics and meetings" style="width:100%;padding:0.5rem;font-size:1rem;">` +
-		`<button type="submit" style="margin-top:0.5rem;">Search</button></form>`)
+	b.WriteString("<h1>Search</h1>\n<p class=\"lede\">Search meeting history and evolving topics from one place.</p>")
 
-	switch {
-	case q == "":
-		// No query yet: just the form.
-	case s.SearchIndex == nil && s.Vectors == nil && s.MultiVectors == nil:
-		b.WriteString(`<p>Search index is not available yet. Run "patro reconcile" (or start ` +
-			`"patro serve") to build it.</p>`)
-	default:
-		results := s.rankedResults(r.Context(), q)
+	if q != "" {
+		s.writeSearchFilters(&b, q, kind)
+		results := s.rankedResults(r.Context(), q, kind)
 		if len(results) == 0 {
-			b.WriteString("<p>No results.</p>\n")
+			b.WriteString(`<p>No results. Try a company, person, decision, or action item.</p>`)
 		} else {
-			b.WriteString("<ol>\n")
+			b.WriteString(`<p class="meta">` + template.HTMLEscapeString(resultCountLabel(len(results))) + `</p>`)
+			b.WriteString(`<ol class="search-results">`)
 			for _, res := range results {
-				b.WriteString(`<li><a href="` + template.HTMLEscapeString(res.URL) + `">` +
-					template.HTMLEscapeString(res.Title) + `</a> <small>(` +
-					template.HTMLEscapeString(res.Kind) + `)</small></li>` + "\n")
+				b.WriteString(`<li><article class="search-result"><h2><a href="` + template.HTMLEscapeString(res.URL) + `">` +
+					template.HTMLEscapeString(res.Title) + `</a></h2><div class="result-meta"><span class="result-kind">` +
+					template.HTMLEscapeString(res.Kind) + `</span>`)
+				if res.Date != "" {
+					b.WriteString(`<time datetime="` + template.HTMLEscapeString(res.Date) + `">` + template.HTMLEscapeString(res.Date) + `</time>`)
+				}
+				b.WriteString(`</div>`)
+				if res.Snippet != "" {
+					b.WriteString(`<p>` + template.HTMLEscapeString(res.Snippet) + `</p>`)
+				}
+				b.WriteString(`</article></li>`)
 			}
-			b.WriteString("</ol>\n")
+			b.WriteString(`</ol>`)
 		}
 	}
 
 	s.render(w, r, "Search", template.HTML(b.String()))
 }
 
+func (s *Server) writeSearchFilters(b *strings.Builder, q, active string) {
+	b.WriteString(`<nav class="filters" aria-label="Search result type">`)
+	for _, filter := range []struct {
+		kind, label string
+	}{{"", "All"}, {searchindex.KindMeeting, "Meetings"}, {searchindex.KindTopic, "Topics"}} {
+		class := ""
+		if active == filter.kind {
+			class = ` class="active" aria-current="page"`
+		}
+		href := "/search?q=" + urlQueryEscape(q)
+		if filter.kind != "" {
+			href += "&kind=" + filter.kind
+		}
+		b.WriteString(`<a` + class + ` href="` + template.HTMLEscapeString(href) + `">` + filter.label + `</a>`)
+	}
+	b.WriteString(`</nav>`)
+}
+
+func resultCountLabel(count int) string {
+	if count == 1 {
+		return "1 result"
+	}
+	return fmt.Sprintf("%d results", count)
+}
+
 // rankedResults runs both rankers (whichever are available), fuses their
 // ranked ID lists with reciprocal-rank fusion, and resolves each fused ID to
 // render-ready metadata. Either ranker failing (including a nil field) is
 // treated as "no hits from that ranker", never an error response.
-func (s *Server) rankedResults(ctx context.Context, q string) []searchResult {
-	var bm25IDs, vecIDs []string
-	meta := map[string]searchResult{}
+func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []searchResult {
+	meta, scores := s.lexicalResults(q)
 
 	if s.SearchIndex != nil {
 		hits, err := s.SearchIndex.Query(q, searchResultLimit)
 		if err != nil {
 			logging.Warnf("web: search index query failed: %v", err)
 		}
-		for _, h := range hits {
-			bm25IDs = append(bm25IDs, h.ID)
-			meta[h.ID] = searchResult{ID: h.ID, Kind: h.Kind, Title: h.Title, URL: urlFor(h.Kind, h.ID)}
+		for rank, h := range hits {
+			if _, ok := meta[h.ID]; !ok {
+				meta[h.ID] = s.resultForID(h.ID, h.Kind, h.Title)
+			}
+			scores[h.ID] += 20 / float64(rank+1)
 		}
 	}
 
@@ -444,16 +488,16 @@ func (s *Server) rankedResults(ctx context.Context, q string) []searchResult {
 		if err != nil {
 			logging.Warnf("web: representation search query failed: %v", err)
 		} else {
-			hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, searchResultLimit)
+			hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
 			if err != nil {
 				logging.Warnf("web: multi-vector search failed: %v", err)
 			} else {
-				for _, h := range hits {
+				for rank, h := range hits {
 					id := searchindex.KindTopic + ":" + h.ID
-					vecIDs = append(vecIDs, id)
 					if _, ok := meta[id]; !ok {
-						meta[id] = searchResult{ID: id, Kind: searchindex.KindTopic, Title: s.topicTitle(h.ID), URL: urlFor(searchindex.KindTopic, id)}
+						meta[id] = s.resultForID(id, searchindex.KindTopic, "")
 					}
+					scores[id] += 2 / float64(rank+1)
 				}
 			}
 		}
@@ -461,61 +505,138 @@ func (s *Server) rankedResults(ctx context.Context, q string) []searchResult {
 		if vec, err := s.Embedder.Embed(ctx, q); err != nil {
 			logging.Warnf("web: embedding search query failed: %v", err)
 		} else {
-			hits, err := s.Vectors.Nearest(vec, searchResultLimit)
+			hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
 			if err != nil {
 				logging.Warnf("web: vector search failed: %v", err)
 			}
-			for _, h := range hits {
+			for rank, h := range hits {
 				// The vector store only ever holds topic embeddings
 				// (design D2); tag its bare slugs into the same
 				// "kind:slug" ID space searchindex uses so both rankers
 				// can be fused by a single ID.
 				id := searchindex.KindTopic + ":" + h.ID
-				vecIDs = append(vecIDs, id)
 				if _, ok := meta[id]; !ok {
-					meta[id] = searchResult{
-						ID:    id,
-						Kind:  searchindex.KindTopic,
-						Title: s.topicTitle(h.ID),
-						URL:   urlFor(searchindex.KindTopic, id),
-					}
+					meta[id] = s.resultForID(id, searchindex.KindTopic, "")
 				}
+				scores[id] += 2 / float64(rank+1)
 			}
 		}
 	}
 
-	fused := reciprocalRankFusion(rrfK, bm25IDs, vecIDs)
-
-	results := make([]searchResult, 0, len(fused))
-	for _, id := range fused {
-		results = append(results, meta[id])
+	results := make([]searchResult, 0, len(meta))
+	for id, result := range meta {
+		if result.Title == "" || (kindFilter != "" && result.Kind != kindFilter) {
+			continue
+		}
+		result.Score = scores[id]
+		results = append(results, result)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if results[i].Date != results[j].Date {
+			return results[i].Date > results[j].Date
+		}
+		return results[i].ID < results[j].ID
+	})
+	if len(results) > renderedResultLimit {
+		results = results[:renderedResultLimit]
 	}
 	return results
 }
 
-// reciprocalRankFusion fuses any number of already-ranked ID lists into one
-// list ordered by descending fused score: score(id) = sum over rankers of
-// 1/(k+rank), rank being 1-based (design D3). Ties break on ID for a
-// deterministic order.
-func reciprocalRankFusion(k int, rankings ...[]string) []string {
+// lexicalResults scans the Markdown source of truth so exact user terms stay
+// useful even when a derived search index is stale or unavailable. BM25 and
+// semantic scores are added on top in rankedResults.
+func (s *Server) lexicalResults(q string) (map[string]searchResult, map[string]float64) {
+	results := map[string]searchResult{}
 	scores := map[string]float64{}
-	for _, ranking := range rankings {
-		for i, id := range ranking {
-			scores[id] += 1.0 / float64(k+i+1)
+	normalizedQuery := strings.ToLower(strings.TrimSpace(q))
+	terms := strings.Fields(normalizedQuery)
+	for _, pair := range []struct{ dir, kind string }{{"topics", searchindex.KindTopic}, {"meetings", searchindex.KindMeeting}} {
+		files, _ := filepath.Glob(filepath.Join(s.Root, pair.dir, "*.md"))
+		for _, full := range files {
+			data, err := os.ReadFile(full)
+			if err != nil {
+				continue
+			}
+			title := headingOrStem(full)
+			lowerTitle := strings.ToLower(title)
+			lowerContent := strings.ToLower(string(data))
+			score := 0.0
+			if strings.Contains(lowerTitle, normalizedQuery) {
+				score += 100
+			}
+			if strings.Contains(lowerContent, normalizedQuery) {
+				score += 40
+			}
+			for _, term := range terms {
+				if strings.Contains(lowerTitle, term) {
+					score += 12
+				}
+				if strings.Contains(lowerContent, term) {
+					score += 3
+				}
+			}
+			if score == 0 {
+				continue
+			}
+			id := pair.kind + ":" + strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
+			result := s.resultForID(id, pair.kind, title)
+			result.Snippet = searchSnippet(string(data), normalizedQuery)
+			results[id] = result
+			scores[id] = score
 		}
 	}
+	return results, scores
+}
 
-	ids := make([]string, 0, len(scores))
-	for id := range scores {
-		ids = append(ids, id)
+func (s *Server) resultForID(id, kind, title string) searchResult {
+	if kind == "" {
+		kind, _, _ = strings.Cut(id, ":")
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		if scores[ids[i]] != scores[ids[j]] {
-			return scores[ids[i]] > scores[ids[j]]
-		}
-		return ids[i] < ids[j]
-	})
-	return ids
+	slug := strings.TrimPrefix(id, kind+":")
+	full := filepath.Join(s.Root, kind+"s", slug+".md")
+	if title == "" {
+		title = headingOrStem(full)
+	}
+	date := latestSectionDate(full)
+	if kind == searchindex.KindMeeting && len(slug) >= len("2006-01-02") {
+		date = slug[:len("2006-01-02")]
+	}
+	return searchResult{ID: id, Kind: kind, Title: title, URL: urlFor(kind, id), Date: date}
+}
+
+func searchSnippet(markdown, normalizedQuery string) string {
+	clean := strings.Join(strings.Fields(strings.NewReplacer("#", " ", "*", " ", "`", " ", "[", " ", "]", " ").Replace(markdown)), " ")
+	lower := strings.ToLower(clean)
+	start := strings.Index(lower, normalizedQuery)
+	if start < 0 {
+		start = 0
+	}
+	const radius = 90
+	if start > radius {
+		start -= radius
+	} else {
+		start = 0
+	}
+	end := start + 2*radius
+	if end > len(clean) {
+		end = len(clean)
+	}
+	snippet := strings.TrimSpace(clean[start:end])
+	if start > 0 {
+		snippet = "…" + snippet
+	}
+	if end < len(clean) {
+		snippet += "…"
+	}
+	return snippet
+}
+
+func urlQueryEscape(value string) string {
+	return strings.ReplaceAll(template.URLQueryEscaper(value), "+", "%20")
 }
 
 // urlFor builds the library-relative link for a "kind:slug" search hit ID.
