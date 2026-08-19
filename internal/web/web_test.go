@@ -45,7 +45,7 @@ func setupLibrary(t *testing.T) string {
 	root := t.TempDir()
 	files := map[string]string{
 		"index.md":                 "# Knowledge library\n\n- [Roadmap](topics/roadmap.md)\n",
-		"topics/roadmap.md":        "# Roadmap\n\n## 2026-07-18 — Kickoff\n\nShip the web viewer.\n",
+		"topics/roadmap.md":        "# Roadmap\n\n## 2026-07-18 — Kickoff\n\nShip the web viewer.\n\n*Source: [Kickoff](../meetings/2026-07-18-x.md)*\n",
 		"meetings/2026-07-18-x.md": "# Kickoff\n\nSee [transcript](../transcripts/abc.txt).\n",
 		"transcripts/abc.txt":      "Speaker A: hello <world> & goodbye\n",
 	}
@@ -98,10 +98,26 @@ func TestServeHTTP(t *testing.T) {
 			wantContains: []string{`<a class="active" href="/topics/roadmap.md">Roadmap</a>`},
 		},
 		{
-			name:         "markdown file rendered to html",
-			path:         "/topics/roadmap.md",
-			wantStatus:   http.StatusOK,
-			wantContains: []string{"<h1>Roadmap</h1>", "Ship the web viewer."},
+			name:       "markdown file rendered to html",
+			path:       "/topics/roadmap.md",
+			wantStatus: http.StatusOK,
+			wantContains: []string{
+				"<h1>Roadmap</h1>",
+				"Ship the web viewer.",
+				`aria-label="Breadcrumb"`,
+				"Related meetings",
+				`href="/meetings/2026-07-18-x.md">Kickoff</a>`,
+			},
+		},
+		{
+			name:       "meeting links back to related topics",
+			path:       "/meetings/2026-07-18-x.md",
+			wantStatus: http.StatusOK,
+			wantContains: []string{
+				"<h1>Kickoff</h1>",
+				"Related topics",
+				`href="/topics/roadmap.md">Roadmap</a>`,
+			},
 		},
 		{
 			name:         "transcript shown as escaped preformatted text",
@@ -269,6 +285,20 @@ func TestCollectionRoutesRenderMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMeetingNavigationLinksAdjacentDates(t *testing.T) {
+	root := setupLibrary(t)
+	newer := filepath.Join(root, "meetings", "2026-07-19-y.md")
+	if err := os.WriteFile(newer, []byte("# Follow-up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(root)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/meetings/2026-07-18-x.md", nil))
+	if body := rec.Body.String(); !strings.Contains(body, `Newer: Follow-up →`) {
+		t.Fatalf("meeting page missing newer navigation\n%s", body)
 	}
 }
 

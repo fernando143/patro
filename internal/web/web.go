@@ -108,6 +108,17 @@ h1 { margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: .55r
 .search-result p { margin: .45rem 0 0; color: var(--muted); }
 .result-meta { display: flex; gap: .55rem; align-items: center; margin-top: .4rem; color: var(--muted); font-size: .8rem; }
 .result-kind { border-radius: 999px; padding: .08rem .5rem; background: var(--surface-subtle); text-transform: capitalize; }
+.breadcrumbs { margin: 0 0 1.1rem; color: var(--muted); font-size: .86rem; }
+.breadcrumbs a { color: var(--muted); }
+.breadcrumbs span { padding: 0 .3rem; }
+.related-section { margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--border); }
+.related-section h2 { margin-top: 0; font-size: 1.15rem; }
+.related-list { display: grid; gap: .45rem; list-style: none; margin: 0; padding: 0; }
+.related-list li { display: flex; justify-content: space-between; gap: 1rem; }
+.related-list a { font-weight: 650; }
+.page-navigation { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.page-navigation a { max-width: 48%; font-weight: 650; }
+.page-navigation .newer { margin-left: auto; text-align: right; }
 code { background: var(--surface-subtle); padding: .1em .3em; border-radius: 3px; font-size: .9em; }
 pre {
   background: var(--surface-subtle); padding: 1rem; border-radius: 6px; overflow-x: auto;
@@ -360,7 +371,89 @@ func (s *Server) serveMarkdown(w http.ResponseWriter, r *http.Request, full stri
 		http.Error(w, "cannot render markdown", http.StatusInternalServerError)
 		return
 	}
-	s.render(w, r, titleFor(full), template.HTML(buf.String()))
+	body := s.decorateMarkdown(full, template.HTML(buf.String()))
+	s.render(w, r, titleFor(full), body)
+}
+
+func (s *Server) decorateMarkdown(full string, rendered template.HTML) template.HTML {
+	dir := filepath.Base(filepath.Dir(full))
+	if dir != "topics" && dir != "meetings" {
+		return rendered
+	}
+
+	var b strings.Builder
+	b.WriteString(`<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Overview</a><span aria-hidden="true">/</span><a href="/` +
+		template.HTMLEscapeString(dir) + `/">` + template.HTMLEscapeString(strings.ToUpper(dir[:1])+dir[1:]) + `</a></nav>`)
+	b.WriteString(string(rendered))
+
+	relatedDir := "topics"
+	if dir == "topics" {
+		relatedDir = "meetings"
+	}
+	related := s.relatedItems(full, dir, relatedDir)
+	if len(related) > 0 {
+		b.WriteString(`<section class="related-section"><h2>Related ` + template.HTMLEscapeString(relatedDir) + `</h2><ul class="related-list">`)
+		for _, item := range related {
+			b.WriteString(`<li><a href="` + template.HTMLEscapeString(item.URL) + `">` + template.HTMLEscapeString(item.Label) + `</a>`)
+			if item.Meta != "" {
+				b.WriteString(`<span class="meta">` + template.HTMLEscapeString(item.Meta) + `</span>`)
+			}
+			b.WriteString(`</li>`)
+		}
+		b.WriteString(`</ul></section>`)
+	}
+	if dir == "meetings" {
+		s.writeMeetingNavigation(&b, full)
+	}
+	return template.HTML(b.String())
+}
+
+func (s *Server) relatedItems(sourceFull, sourceDir, targetDir string) []navItem {
+	items := s.listSection(targetDir, targetDir == "meetings")
+	sourceData, err := os.ReadFile(sourceFull)
+	if err != nil {
+		return nil
+	}
+	sourceName := filepath.Base(sourceFull)
+	result := make([]navItem, 0)
+	for _, item := range items {
+		candidateName := filepath.Base(item.URL)
+		if sourceDir == "topics" {
+			if strings.Contains(string(sourceData), candidateName) {
+				result = append(result, item)
+			}
+			continue
+		}
+		candidateData, err := os.ReadFile(filepath.Join(s.Root, targetDir, candidateName))
+		if err == nil && strings.Contains(string(candidateData), sourceName) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (s *Server) writeMeetingNavigation(b *strings.Builder, full string) {
+	items := s.listSection("meetings", true)
+	currentURL := "/meetings/" + filepath.Base(full)
+	for i, item := range items {
+		if item.URL != currentURL {
+			continue
+		}
+		if i == 0 && i+1 >= len(items) {
+			return
+		}
+		b.WriteString(`<nav class="page-navigation" aria-label="Adjacent meetings">`)
+		if i+1 < len(items) {
+			older := items[i+1]
+			b.WriteString(`<a href="` + template.HTMLEscapeString(older.URL) + `">← Older: ` + template.HTMLEscapeString(older.Label) + `</a>`)
+		}
+		if i > 0 {
+			newer := items[i-1]
+			b.WriteString(`<a class="newer" href="` + template.HTMLEscapeString(newer.URL) + `">Newer: ` + template.HTMLEscapeString(newer.Label) + ` →</a>`)
+		}
+		b.WriteString(`</nav>`)
+		return
+	}
 }
 
 // serveText shows a plain-text file (e.g. a transcript) as preformatted,
