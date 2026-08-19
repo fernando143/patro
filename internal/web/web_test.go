@@ -45,7 +45,7 @@ func setupLibrary(t *testing.T) string {
 	root := t.TempDir()
 	files := map[string]string{
 		"index.md":                 "# Knowledge library\n\n- [Roadmap](topics/roadmap.md)\n",
-		"topics/roadmap.md":        "# Roadmap\n\n## 2026-07-18 — Kickoff\n\nShip the web viewer.\n",
+		"topics/roadmap.md":        "# Roadmap\n\n## 2026-07-18 — Kickoff\n\nShip the web viewer.\n\n*Source: [Kickoff](../meetings/2026-07-18-x.md)*\n",
 		"meetings/2026-07-18-x.md": "# Kickoff\n\nSee [transcript](../transcripts/abc.txt).\n",
 		"transcripts/abc.txt":      "Speaker A: hello <world> & goodbye\n",
 	}
@@ -71,19 +71,24 @@ func TestServeHTTP(t *testing.T) {
 		wantContains []string
 	}{
 		{
-			name:       "root renders index.md",
+			name:       "root renders retrieval overview",
 			path:       "/",
 			wantStatus: http.StatusOK,
 			wantContains: []string{
 				"<h1>Knowledge library</h1>",
-				`href="topics/roadmap.md"`,
-				// Sidebar sections and links.
+				"Recent meetings",
+				"Recently updated topics",
+				`role="search"`,
+				`aria-label="Library navigation"`,
+				`class="mobile-nav"`,
+				// Compact sidebar sections and full collection links.
 				`<div class="section">Topics</div>`,
 				`<div class="section">Meetings</div>`,
 				`href="/topics/roadmap.md">Roadmap</a>`,
 				`href="/meetings/2026-07-18-x.md">Kickoff</a>`,
-				// Home entry active on the index page.
-				`class="home active"`,
+				`href="/topics/">View all topics</a>`,
+				// Overview entry active on the home page.
+				`class="primary-link active"`,
 			},
 		},
 		{
@@ -93,10 +98,26 @@ func TestServeHTTP(t *testing.T) {
 			wantContains: []string{`<a class="active" href="/topics/roadmap.md">Roadmap</a>`},
 		},
 		{
-			name:         "markdown file rendered to html",
-			path:         "/topics/roadmap.md",
-			wantStatus:   http.StatusOK,
-			wantContains: []string{"<h1>Roadmap</h1>", "Ship the web viewer."},
+			name:       "markdown file rendered to html",
+			path:       "/topics/roadmap.md",
+			wantStatus: http.StatusOK,
+			wantContains: []string{
+				"<h1>Roadmap</h1>",
+				"Ship the web viewer.",
+				`aria-label="Breadcrumb"`,
+				"Related meetings",
+				`href="/meetings/2026-07-18-x.md">Kickoff</a>`,
+			},
+		},
+		{
+			name:       "meeting links back to related topics",
+			path:       "/meetings/2026-07-18-x.md",
+			wantStatus: http.StatusOK,
+			wantContains: []string{
+				"<h1>Kickoff</h1>",
+				"Related topics",
+				`href="/topics/roadmap.md">Roadmap</a>`,
+			},
 		},
 		{
 			name:         "transcript shown as escaped preformatted text",
@@ -237,8 +258,47 @@ func TestServeDirListingWithoutIndex(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `href="a.md"`) {
+	if body := rec.Body.String(); !strings.Contains(body, `href="/topics/a.md"`) {
 		t.Errorf("listing does not link a.md\n%s", body)
+	}
+}
+
+func TestCollectionRoutesRenderMetadata(t *testing.T) {
+	srv := NewServer(setupLibrary(t))
+	tests := []struct {
+		path string
+		want []string
+	}{
+		{path: "/topics/", want: []string{"<h1>Topics</h1>", "Roadmap", "2026-07-18"}},
+		{path: "/meetings/", want: []string{"<h1>Meetings</h1>", "Kickoff", "2026-07-18"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Errorf("body missing %q\n%s", want, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestMeetingNavigationLinksAdjacentDates(t *testing.T) {
+	root := setupLibrary(t)
+	newer := filepath.Join(root, "meetings", "2026-07-19-y.md")
+	if err := os.WriteFile(newer, []byte("# Follow-up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(root)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/meetings/2026-07-18-x.md", nil))
+	if body := rec.Body.String(); !strings.Contains(body, `Newer: Follow-up →`) {
+		t.Fatalf("meeting page missing newer navigation\n%s", body)
 	}
 }
 
@@ -311,19 +371,15 @@ func TestSearchFusesHitsFromTopicsAndMeetings(t *testing.T) {
 	}
 }
 
-// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the fused ranking
-// genuinely incorporates the cosine signal, not just BM25: with SearchIndex
-// nil, the only way a result can appear at all is through vectors.Nearest,
-// and its title/link metadata must be resolved from the topic file directly
-// (there is no BM25 Hit to borrow Title/Kind from).
+// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the hybrid ranking
+// incorporates the cosine signal when neither lexical nor BM25 matches.
 func TestSearchVectorOnlyFallbackWhenBM25Unavailable(t *testing.T) {
 	root, _, store, embedder := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.Vectors = store
 	srv.Embedder = embedder
 
-	topicContent := "# Roadmap\n\nQ3 zephyr rollout planning and deployment goals.\n"
-	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(topicContent), nil)
+	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape("semantic-only-query"), nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -391,15 +447,15 @@ func TestSearchEmptyQueryShowsForm(t *testing.T) {
 func TestSearchWithoutIndexDegradesGracefully(t *testing.T) {
 	srv := NewServer(setupLibrary(t))
 
-	req := httptest.NewRequest(http.MethodGet, "/search?q=anything", nil)
+	req := httptest.NewRequest(http.MethodGet, "/search?q=roadmap", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (must never 500 when index/store are unavailable)", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "not available") {
-		t.Errorf("expected a graceful not-available message\n%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, `href="/topics/roadmap.md"`) {
+		t.Errorf("expected Markdown fallback result\n%s", body)
 	}
 }
 
@@ -421,5 +477,64 @@ func TestSearchNoMatchesShowsMessage(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "No results") {
 		t.Errorf("expected a no-results message\n%s", body)
+	}
+}
+
+func TestSearchPrioritizesExactMarkdownMatchOverSemanticFallback(t *testing.T) {
+	root := setupLibrary(t)
+	if err := os.WriteFile(filepath.Join(root, "topics", "cachea.md"), []byte("# Cachea hiring process\n\nTechnical interview and next steps.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(root)
+	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "roadmap", Score: .99}}}
+	srv.Representer = &fakeWebRepresenter{}
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=cachea", nil))
+	body := rec.Body.String()
+	resultsStart := strings.Index(body, `class="search-results"`)
+	if resultsStart < 0 {
+		t.Fatalf("response missing search results\n%s", body)
+	}
+	resultsBody := body[resultsStart:]
+	cachea := strings.Index(resultsBody, `href="/topics/cachea.md"`)
+	roadmap := strings.Index(resultsBody, `href="/topics/roadmap.md"`)
+	if cachea < 0 || roadmap < 0 || cachea > roadmap {
+		t.Fatalf("exact match must rank before semantic fallback\n%s", body)
+	}
+	for _, want := range []string{`class="filters"`, `class="search-result"`, `class="result-kind"`, "Technical interview and next steps"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("search result missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestSearchKindFilter(t *testing.T) {
+	root, idx, _, _ := setupSearchLibrary(t)
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=zephyr&kind=meeting", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/meetings/2026-01-05-kickoff.md"`) {
+		t.Fatalf("meeting filter omitted meeting result\n%s", body)
+	}
+	if strings.Contains(body, `<h2><a href="/topics/roadmap.md"`) {
+		t.Fatalf("meeting filter included topic result\n%s", body)
+	}
+	if !strings.Contains(body, `class="active" aria-current="page" href="/search?q=zephyr&amp;kind=meeting"`) {
+		t.Errorf("meeting filter is not exposed as active\n%s", body)
+	}
+}
+
+func TestSearchSnippetPreservesUTF8(t *testing.T) {
+	markdown := strings.Repeat("á", 100) + " decisión técnica " + strings.Repeat("ñ", 100)
+	got := searchSnippet(markdown, "decisión")
+	if !strings.Contains(got, "decisión técnica") {
+		t.Fatalf("snippet lost the matching UTF-8 text: %q", got)
+	}
+	if strings.ToValidUTF8(got, "") != got {
+		t.Fatalf("snippet contains invalid UTF-8: %q", got)
 	}
 }
