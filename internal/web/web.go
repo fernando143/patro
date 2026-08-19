@@ -2,8 +2,8 @@
 // website. It renders .md files to HTML on the fly with goldmark, shows
 // .txt transcripts as preformatted text, and serves everything else raw.
 //
-// Every page carries a sidebar listing the library's topics and meetings so
-// the whole library is navigable from anywhere. The server is read-only and
+// Every page carries compact library navigation and a global search so the
+// whole library is retrievable from anywhere. The server is read-only and
 // self-contained: no external assets, no CDN, no JavaScript. It is meant to
 // be started on demand (patro run web) and stopped with Ctrl+C, not to run
 // as a background service.
@@ -28,9 +28,8 @@ import (
 	"github.com/fernando143/patro/internal/vectors"
 )
 
-// pageTemplate wraps rendered content in a minimal, theme-aware HTML shell
-// with a navigation sidebar. Everything is inlined so the page works fully
-// offline.
+// pageTemplate wraps rendered content in a theme-aware, responsive shell.
+// Everything is inlined so the page works fully offline.
 var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -38,65 +37,108 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-:root { color-scheme: light dark; }
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfc; --surface: #fff; --surface-subtle: #f4f5f7;
+  --text: #17181a; --muted: #62666d; --border: #dedfe3;
+  --accent: #245eea; --accent-strong: #1948bc; --focus: #ffbf47;
+}
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
   margin: 0;
   font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #1a1a1a; background: #fdfdfd;
+  color: var(--text); background: var(--bg);
 }
-.layout { display: flex; align-items: flex-start; max-width: 72rem; margin: 0 auto; }
-aside {
-  position: sticky; top: 0; align-self: flex-start;
-  width: 17rem; flex: 0 0 17rem; height: 100vh; overflow-y: auto;
-  padding: 1.5rem 1rem; border-right: 1px solid #e5e5e5; background: #f7f7f7;
-  font-size: 0.9rem;
+.skip-link {
+  position: fixed; left: 1rem; top: -5rem; z-index: 10;
+  padding: .65rem 1rem; color: #fff; background: var(--accent-strong); border-radius: .5rem;
 }
-aside .home { display: block; font-weight: 600; margin-bottom: 1rem; color: #1a1a1a; text-decoration: none; }
-aside .section { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.72rem; color: #888; margin: 1.2rem 0 0.4rem; }
-aside ul { list-style: none; margin: 0; padding: 0; }
-aside li { margin: 0.15rem 0; }
-aside a { color: #444; text-decoration: none; display: block; padding: 0.15rem 0.4rem; border-radius: 4px; }
-aside a:hover { background: rgba(0,0,0,0.06); }
-aside a.active { background: #2563eb; color: #fff; }
-main { flex: 1 1 auto; min-width: 0; padding: 2rem 2rem 4rem; max-width: 52rem; }
-a { color: #2563eb; }
+.skip-link:focus { top: 1rem; }
+.topbar { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); }
+.topbar-inner { display: flex; align-items: center; gap: 2rem; max-width: 76rem; margin: 0 auto; padding: .8rem 1.25rem; }
+.brand { color: var(--text); font-size: 1.05rem; font-weight: 750; text-decoration: none; white-space: nowrap; }
+.global-search { display: flex; flex: 1; max-width: 42rem; margin-left: auto; }
+.global-search input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: .55rem 0 0 .55rem; padding: .6rem .75rem; font: inherit; background: var(--surface); color: var(--text); }
+.global-search button { border: 1px solid var(--accent); border-radius: 0 .55rem .55rem 0; padding: .6rem 1rem; color: #fff; background: var(--accent); font: inherit; font-weight: 650; cursor: pointer; }
+.global-search button:hover { background: var(--accent-strong); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.layout { display: grid; grid-template-columns: 17rem minmax(0, 1fr); align-items: start; max-width: 76rem; margin: 0 auto; }
+.sidebar {
+  position: sticky; top: 4.6rem; max-height: calc(100vh - 4.6rem); overflow-y: auto;
+  padding: 1.5rem 1rem 2rem; border-right: 1px solid var(--border); font-size: .9rem;
+}
+.sidebar .primary-link { display: block; margin-bottom: .25rem; font-weight: 650; }
+.sidebar .section { text-transform: uppercase; letter-spacing: .07em; font-size: .72rem; font-weight: 700; color: var(--muted); margin: 1.4rem .5rem .4rem; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { margin: .1rem 0; }
+.sidebar a { color: var(--muted); text-decoration: none; display: block; padding: .38rem .5rem; border-radius: .4rem; line-height: 1.35; }
+.sidebar a:hover { color: var(--text); background: var(--surface-subtle); }
+.sidebar a.active { color: #fff; background: var(--accent); }
+.sidebar .view-all { margin-top: .25rem; color: var(--accent); font-weight: 650; }
+.mobile-nav { display: none; }
+main { min-width: 0; width: 100%; max-width: 58rem; padding: 2.4rem 2.25rem 5rem; }
+a { color: var(--accent); }
+a:hover { color: var(--accent-strong); }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 h1, h2, h3 { line-height: 1.25; }
-h1 { border-bottom: 1px solid #e5e5e5; padding-bottom: 0.3rem; }
-code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; }
+h1 { margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: .55rem; }
+.lede { max-width: 62ch; color: var(--muted); font-size: 1.05rem; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-top: 2.3rem; }
+.section-heading h2 { margin: 0; }
+.section-heading a { font-size: .9rem; font-weight: 650; }
+.card-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; list-style: none; margin: 1rem 0 0; padding: 0; }
+.card { height: 100%; border: 1px solid var(--border); border-radius: .7rem; padding: .9rem 1rem; background: var(--surface); }
+.card a { color: var(--text); font-weight: 700; text-decoration: none; }
+.card a:hover { color: var(--accent); text-decoration: underline; }
+.meta { display: block; margin-top: .3rem; color: var(--muted); font-size: .82rem; }
+.collection-list { list-style: none; margin: 1.25rem 0 0; padding: 0; }
+.collection-list li { border-bottom: 1px solid var(--border); padding: .85rem 0; }
+.collection-list a { font-weight: 650; }
+code { background: var(--surface-subtle); padding: .1em .3em; border-radius: 3px; font-size: .9em; }
 pre {
-  background: #f6f6f6; padding: 1rem; border-radius: 6px; overflow-x: auto;
+  background: var(--surface-subtle); padding: 1rem; border-radius: 6px; overflow-x: auto;
   white-space: pre-wrap; word-wrap: break-word;
 }
 pre code { background: none; padding: 0; }
-blockquote { border-left: 3px solid #ddd; margin-left: 0; padding-left: 1rem; color: #555; }
+blockquote { border-left: 3px solid var(--border); margin-left: 0; padding-left: 1rem; color: var(--muted); }
 table { border-collapse: collapse; }
-th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; }
-@media (max-width: 720px) {
-  .layout { flex-direction: column; }
-  aside { position: static; width: 100%; flex-basis: auto; height: auto; border-right: none; border-bottom: 1px solid #e5e5e5; }
-  main { padding: 1.5rem 1.25rem 3rem; }
+th, td { border: 1px solid var(--border); padding: .4rem .6rem; }
+@media (max-width: 760px) {
+  .topbar { position: static; }
+  .topbar-inner { align-items: stretch; flex-direction: column; gap: .65rem; }
+  .global-search { width: 100%; max-width: none; }
+  .layout { display: block; }
+  .sidebar { display: none; }
+  .mobile-nav { display: block; margin: 1rem 1.25rem 0; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); }
+  .mobile-nav summary { cursor: pointer; padding: .7rem .9rem; font-weight: 700; }
+  .mobile-nav .sidebar { display: block; position: static; max-height: min(65vh, 32rem); border: 0; border-top: 1px solid var(--border); padding: .75rem; }
+  main { padding: 1.6rem 1.25rem 3rem; }
+  .card-list { grid-template-columns: 1fr; }
 }
 @media (prefers-color-scheme: dark) {
-  body { color: #e4e4e4; background: #1a1a1a; }
-  aside { background: #202020; border-right-color: #333; }
-  aside .home { color: #e4e4e4; }
-  aside a { color: #bbb; }
-  aside a:hover { background: rgba(255,255,255,0.08); }
-  a { color: #6ba3ff; }
-  h1 { border-bottom-color: #333; }
-  code { background: #2a2a2a; }
-  pre { background: #222; }
-  blockquote { border-left-color: #444; color: #aaa; }
-  th, td { border-color: #333; }
-  @media (max-width: 720px) { aside { border-bottom-color: #333; } }
+  :root { --bg: #151617; --surface: #1d1f21; --surface-subtle: #25282b; --text: #eef0f2; --muted: #b4b8be; --border: #34373b; --accent: #75a2ff; --accent-strong: #a9c5ff; --focus: #ffca5c; }
+  .global-search button { color: #101114; background: #75a2ff; }
+  .sidebar a.active { color: #101114; }
 }
 </style>
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">Patro knowledge</a>
+    <form class="global-search" method="get" action="/search" role="search">
+      <label class="sr-only" for="global-search">Search meetings and topics</label>
+      <input id="global-search" type="search" name="q" value="{{.Query}}" placeholder="Search meetings and topics">
+      <button type="submit">Search</button>
+    </form>
+  </div>
+</header>
 <div class="layout">
-<aside>{{.Sidebar}}</aside>
-<main>{{.Body}}</main>
+<nav class="sidebar" aria-label="Library navigation">{{.Sidebar}}</nav>
+<details class="mobile-nav"><summary>Browse library</summary><nav class="sidebar" aria-label="Mobile library navigation">{{.Sidebar}}</nav></details>
+<main id="content">{{.Body}}</main>
 </div>
 </body>
 </html>`))
@@ -145,8 +187,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rel := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
 
-	if rel == "search" {
+	switch rel {
+	case "", "index.md":
+		s.handleHome(w, r)
+		return
+	case "search":
 		s.handleSearch(w, r)
+		return
+	case "topics":
+		s.handleCollection(w, r, "topics", "Topics", false)
+		return
+	case "meetings":
+		s.handleCollection(w, r, "meetings", "Meetings", true)
 		return
 	}
 
@@ -177,6 +229,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.ServeFile(w, r, full)
 	}
+}
+
+// handleHome renders a retrieval-oriented overview instead of repeating the
+// complete generated index. Full collections remain available under their
+// own routes.
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	topics := s.listSection("topics", false)
+	sort.SliceStable(topics, func(i, j int) bool {
+		if topics[i].Meta == topics[j].Meta {
+			return topics[i].Label < topics[j].Label
+		}
+		return topics[i].Meta > topics[j].Meta
+	})
+	meetings := s.listSection("meetings", true)
+
+	var b strings.Builder
+	b.WriteString(`<h1>Knowledge library</h1><p class="lede">Find decisions, action items, and context from your recorded meetings.</p>`)
+	s.writeOverviewSection(&b, "Recent meetings", "/meetings/", meetings, 6)
+	s.writeOverviewSection(&b, "Recently updated topics", "/topics/", topics, 6)
+	s.render(w, r, "Knowledge library", template.HTML(b.String()))
+}
+
+func (s *Server) writeOverviewSection(b *strings.Builder, title, allURL string, items []navItem, limit int) {
+	b.WriteString(`<div class="section-heading"><h2>` + template.HTMLEscapeString(title) + `</h2><a href="` +
+		template.HTMLEscapeString(allURL) + `">View all</a></div>`)
+	if len(items) == 0 {
+		b.WriteString(`<p class="meta">Nothing here yet.</p>`)
+		return
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	b.WriteString(`<ul class="card-list">`)
+	for _, item := range items {
+		b.WriteString(`<li><article class="card"><a href="` + template.HTMLEscapeString(item.URL) + `">` +
+			template.HTMLEscapeString(item.Label) + `</a>`)
+		if item.Meta != "" {
+			b.WriteString(`<span class="meta">` + template.HTMLEscapeString(item.Meta) + `</span>`)
+		}
+		b.WriteString(`</article></li>`)
+	}
+	b.WriteString(`</ul>`)
+}
+
+func (s *Server) handleCollection(w http.ResponseWriter, r *http.Request, dir, title string, newestFirst bool) {
+	if _, err := os.ReadDir(filepath.Join(s.Root, dir)); err != nil {
+		http.Error(w, "cannot read directory", http.StatusInternalServerError)
+		return
+	}
+	items := s.listSection(dir, newestFirst)
+	var b strings.Builder
+	b.WriteString(`<h1>` + template.HTMLEscapeString(title) + `</h1>`)
+	b.WriteString(`<p class="lede">Browse all ` + template.HTMLEscapeString(strings.ToLower(title)) + ` in the library.</p>`)
+	if len(items) == 0 {
+		b.WriteString(`<p>Nothing here yet.</p>`)
+	} else {
+		b.WriteString(`<ul class="collection-list">`)
+		for _, item := range items {
+			b.WriteString(`<li><a href="` + template.HTMLEscapeString(item.URL) + `">` +
+				template.HTMLEscapeString(item.Label) + `</a>`)
+			if item.Meta != "" {
+				b.WriteString(`<span class="meta">` + template.HTMLEscapeString(item.Meta) + `</span>`)
+			}
+			b.WriteString(`</li>`)
+		}
+		b.WriteString(`</ul>`)
+	}
+	s.render(w, r, title, template.HTML(b.String()))
 }
 
 // serveDir renders the directory's index.md when present, otherwise a
@@ -426,37 +546,46 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, title string, bo
 		Title   string
 		Sidebar template.HTML
 		Body    template.HTML
-	}{Title: title, Sidebar: s.buildSidebar(r.URL.Path), Body: body})
+		Query   string
+	}{Title: title, Sidebar: s.buildSidebar(r.URL.Path), Body: body, Query: strings.TrimSpace(r.URL.Query().Get("q"))})
 }
 
 // navItem is a single sidebar link.
 type navItem struct {
 	URL   string
 	Label string
+	Meta  string
 }
 
 // buildSidebar renders the navigation sidebar: a home link plus the Topics
 // and Meetings sections read from the library. The entry whose URL matches
 // active is highlighted.
 func (s *Server) buildSidebar(active string) template.HTML {
-	homeClass := ""
+	homeClass := ` class="primary-link"`
 	if active == "/" || active == "/index.md" {
-		homeClass = " active"
+		homeClass = ` class="primary-link active"`
 	}
 	var b strings.Builder
-	b.WriteString(`<a class="home` + homeClass + `" href="/">Knowledge library</a>`)
-	s.writeSection(&b, "Topics", s.listSection("topics", false), active)
-	s.writeSection(&b, "Meetings", s.listSection("meetings", true), active)
+	b.WriteString(`<a` + homeClass + ` href="/">Overview</a>`)
+	topics := s.listSection("topics", false)
+	sort.SliceStable(topics, func(i, j int) bool { return topics[i].Meta > topics[j].Meta })
+	s.writeSection(&b, "Topics", "/topics/", topics, active, 8)
+	s.writeSection(&b, "Meetings", "/meetings/", s.listSection("meetings", true), active, 6)
 	return template.HTML(b.String())
 }
 
-// writeSection appends a titled list of nav items, skipping empty sections.
-func (s *Server) writeSection(b *strings.Builder, title string, items []navItem, active string) {
+// writeSection appends a compact collection preview plus a route to the full
+// collection, keeping navigation useful as the library grows.
+func (s *Server) writeSection(b *strings.Builder, title, allURL string, items []navItem, active string, limit int) {
 	if len(items) == 0 {
 		return
 	}
 	b.WriteString(`<div class="section">` + template.HTMLEscapeString(title) + `</div><ul>`)
-	for _, it := range items {
+	visible := items
+	if len(visible) > limit {
+		visible = visible[:limit]
+	}
+	for _, it := range visible {
 		cls := ""
 		if active == it.URL {
 			cls = ` class="active"`
@@ -465,6 +594,12 @@ func (s *Server) writeSection(b *strings.Builder, title string, items []navItem,
 			template.HTMLEscapeString(it.Label) + `</a></li>`)
 	}
 	b.WriteString(`</ul>`)
+	allClass := `class="view-all"`
+	if active == allURL || active == strings.TrimSuffix(allURL, "/") {
+		allClass = `class="view-all active"`
+	}
+	b.WriteString(`<a ` + allClass + ` href="` + template.HTMLEscapeString(allURL) + `">View all ` +
+		template.HTMLEscapeString(strings.ToLower(title)) + `</a>`)
 }
 
 // listSection lists the *.md files under dir as nav items labelled by their
@@ -483,12 +618,39 @@ func (s *Server) listSection(dir string, newestFirst bool) []navItem {
 	})
 	items := make([]navItem, 0, len(files))
 	for _, f := range files {
+		meta := latestSectionDate(f)
+		if dir == "meetings" {
+			base := filepath.Base(f)
+			if len(base) >= len("2006-01-02") {
+				meta = base[:len("2006-01-02")]
+			}
+		}
 		items = append(items, navItem{
 			URL:   "/" + dir + "/" + filepath.Base(f),
 			Label: headingOrStem(f),
+			Meta:  meta,
 		})
 	}
 	return items
+}
+
+func latestSectionDate(full string) string {
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return ""
+	}
+	latest := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "## ") || len(line) < len("## 2006-01-02") {
+			continue
+		}
+		date := line[3 : 3+len("2006-01-02")]
+		if date[4] == '-' && date[7] == '-' && date > latest {
+			latest = date
+		}
+	}
+	return latest
 }
 
 // headingOrStem returns a file's first "# " heading, or its base name

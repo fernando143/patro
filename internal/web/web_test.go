@@ -71,19 +71,24 @@ func TestServeHTTP(t *testing.T) {
 		wantContains []string
 	}{
 		{
-			name:       "root renders index.md",
+			name:       "root renders retrieval overview",
 			path:       "/",
 			wantStatus: http.StatusOK,
 			wantContains: []string{
 				"<h1>Knowledge library</h1>",
-				`href="topics/roadmap.md"`,
-				// Sidebar sections and links.
+				"Recent meetings",
+				"Recently updated topics",
+				`role="search"`,
+				`aria-label="Library navigation"`,
+				`class="mobile-nav"`,
+				// Compact sidebar sections and full collection links.
 				`<div class="section">Topics</div>`,
 				`<div class="section">Meetings</div>`,
 				`href="/topics/roadmap.md">Roadmap</a>`,
 				`href="/meetings/2026-07-18-x.md">Kickoff</a>`,
-				// Home entry active on the index page.
-				`class="home active"`,
+				`href="/topics/">View all topics</a>`,
+				// Overview entry active on the home page.
+				`class="primary-link active"`,
 			},
 		},
 		{
@@ -237,8 +242,33 @@ func TestServeDirListingWithoutIndex(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `href="a.md"`) {
+	if body := rec.Body.String(); !strings.Contains(body, `href="/topics/a.md"`) {
 		t.Errorf("listing does not link a.md\n%s", body)
+	}
+}
+
+func TestCollectionRoutesRenderMetadata(t *testing.T) {
+	srv := NewServer(setupLibrary(t))
+	tests := []struct {
+		path string
+		want []string
+	}{
+		{path: "/topics/", want: []string{"<h1>Topics</h1>", "Roadmap", "2026-07-18"}},
+		{path: "/meetings/", want: []string{"<h1>Meetings</h1>", "Kickoff", "2026-07-18"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Errorf("body missing %q\n%s", want, rec.Body.String())
+				}
+			}
+		})
 	}
 }
 
