@@ -557,65 +557,13 @@ func resultCountLabel(count int) string {
 	return fmt.Sprintf("%d results", count)
 }
 
-// rankedResults runs both rankers (whichever are available), fuses their
-// ranked ID lists with reciprocal-rank fusion, and resolves each fused ID to
-// render-ready metadata. Either ranker failing (including a nil field) is
-// treated as "no hits from that ranker", never an error response.
+// rankedResults combines source-of-truth lexical matches with whichever
+// derived rankers are available. Exact Markdown evidence dominates BM25,
+// while semantic results broaden recall without taking over the first page.
 func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []searchResult {
 	meta, scores := s.lexicalResults(q)
-
-	if s.SearchIndex != nil {
-		hits, err := s.SearchIndex.Query(q, searchResultLimit)
-		if err != nil {
-			logging.Warnf("web: search index query failed: %v", err)
-		}
-		for rank, h := range hits {
-			if _, ok := meta[h.ID]; !ok {
-				meta[h.ID] = s.resultForID(h.ID, h.Kind, h.Title)
-			}
-			scores[h.ID] += 20 / float64(rank+1)
-		}
-	}
-
-	if s.MultiVectors != nil && s.Representer != nil {
-		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
-		if err != nil {
-			logging.Warnf("web: representation search query failed: %v", err)
-		} else {
-			hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
-			if err != nil {
-				logging.Warnf("web: multi-vector search failed: %v", err)
-			} else {
-				for rank, h := range hits {
-					id := searchindex.KindTopic + ":" + h.ID
-					if _, ok := meta[id]; !ok {
-						meta[id] = s.resultForID(id, searchindex.KindTopic, "")
-					}
-					scores[id] += 2 / float64(rank+1)
-				}
-			}
-		}
-	} else if s.Vectors != nil && s.Embedder != nil {
-		if vec, err := s.Embedder.Embed(ctx, q); err != nil {
-			logging.Warnf("web: embedding search query failed: %v", err)
-		} else {
-			hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
-			if err != nil {
-				logging.Warnf("web: vector search failed: %v", err)
-			}
-			for rank, h := range hits {
-				// The vector store only ever holds topic embeddings
-				// (design D2); tag its bare slugs into the same
-				// "kind:slug" ID space searchindex uses so both rankers
-				// can be fused by a single ID.
-				id := searchindex.KindTopic + ":" + h.ID
-				if _, ok := meta[id]; !ok {
-					meta[id] = s.resultForID(id, searchindex.KindTopic, "")
-				}
-				scores[id] += 2 / float64(rank+1)
-			}
-		}
-	}
+	s.addBM25Scores(q, meta, scores)
+	s.addSemanticScores(ctx, q, meta, scores)
 
 	results := make([]searchResult, 0, len(meta))
 	for id, result := range meta {
@@ -636,6 +584,66 @@ func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []sear
 	})
 	if len(results) > renderedResultLimit {
 		results = results[:renderedResultLimit]
+	}
+	return results
+}
+
+func (s *Server) addBM25Scores(q string, meta map[string]searchResult, scores map[string]float64) {
+	if s.SearchIndex != nil {
+		hits, err := s.SearchIndex.Query(q, searchResultLimit)
+		if err != nil {
+			logging.Warnf("web: search index query failed: %v", err)
+		}
+		for rank, h := range hits {
+			if _, ok := meta[h.ID]; !ok {
+				meta[h.ID] = s.resultForID(h.ID, h.Kind, h.Title)
+			}
+			scores[h.ID] += 20 / float64(rank+1)
+		}
+	}
+}
+
+func (s *Server) addSemanticScores(ctx context.Context, q string, meta map[string]searchResult, scores map[string]float64) {
+	hits := s.semanticHits(ctx, q)
+	for rank, hit := range hits {
+		id := searchindex.KindTopic + ":" + hit.ID
+		if _, ok := meta[id]; !ok {
+			meta[id] = s.resultForID(id, searchindex.KindTopic, "")
+		}
+		scores[id] += 2 / float64(rank+1)
+	}
+}
+
+func (s *Server) semanticHits(ctx context.Context, q string) []embed.RankedResult {
+	if s.MultiVectors != nil && s.Representer != nil {
+		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
+		if err != nil {
+			logging.Warnf("web: representation search query failed: %v", err)
+			return nil
+		}
+		hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
+		if err != nil {
+			logging.Warnf("web: multi-vector search failed: %v", err)
+			return nil
+		}
+		return hits
+	}
+	if s.Vectors == nil || s.Embedder == nil {
+		return nil
+	}
+	vec, err := s.Embedder.Embed(ctx, q)
+	if err != nil {
+		logging.Warnf("web: embedding search query failed: %v", err)
+		return nil
+	}
+	hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
+	if err != nil {
+		logging.Warnf("web: vector search failed: %v", err)
+		return nil
+	}
+	results := make([]embed.RankedResult, 0, len(hits))
+	for _, hit := range hits {
+		results = append(results, embed.RankedResult{ID: hit.ID, Score: hit.Score})
 	}
 	return results
 }
@@ -743,14 +751,6 @@ func urlQueryEscape(value string) string {
 func urlFor(kind, id string) string {
 	slug := strings.TrimPrefix(id, kind+":")
 	return "/" + kind + "s/" + slug + ".md"
-}
-
-// topicTitle resolves a topic slug's display title straight from its
-// markdown file, mirroring headingOrStem — used when a hit reaches the
-// results list only via the vector ranker and has no BM25 Hit to borrow
-// Title/Kind from.
-func (s *Server) topicTitle(slug string) string {
-	return headingOrStem(filepath.Join(s.Root, "topics", slug+".md"))
 }
 
 // notFound renders a 404 page that still carries the navigation sidebar.
