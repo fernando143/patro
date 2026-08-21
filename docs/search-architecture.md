@@ -1,7 +1,8 @@
 # Search architecture
 
-Patro uses **hybrid retrieval**: BM25 finds exact lexical matches and embeddings
-find semantically similar topics. The two ranked lists are combined with
+Patro uses **hybrid retrieval**: BM25 finds lexical term matches and multi-vector
+representations find semantically similar topics. The two ranked lists are
+combined with
 **Reciprocal Rank Fusion (RRF)**. The old Markdown-wide lexical scoring pass is
 not part of the search path anymore.
 
@@ -15,10 +16,11 @@ flowchart LR
     R --> E[Multi-vector semantic leg]
     B --> BI[searchindex.Index.Query]
     BI --> IDX[(.state/search-index)]
-    E --> ER[Representer.Represent]
-    ER --> VS[(.state/vectors/topics.json)]
+    E --> ER[Embedder.Represent]
+    ER --> NR[V2Store.NearestRepresentations]
+    VS[(.state/vectors/topics.json)] --> NR
     B --> F[RRF fusion\nK = 60]
-    E --> F
+    NR --> F
     F --> P[Metadata + Markdown snippet]
     P --> O[Sorted HTML results]
 ```
@@ -30,7 +32,7 @@ The two legs have different responsibilities:
 | BM25 | Terms, names, and phrases present in the text | Topics **and** meetings |
 | Multi-vector embeddings | Similar meaning, paraphrases, and related concepts | Topics |
 
-BM25 and embedding **raw scores are not added together**. RRF combines their
+BM25 and semantic **raw scores are not added together**. RRF combines their
 rank positions, which avoids pretending that the two score scales are
 calibrated.
 
@@ -41,6 +43,7 @@ sequenceDiagram
     participant B as Browser
     participant W as internal/web.Server
     participant I as searchindex.Index
+    participant E as embed.Embedder
     participant V as vectors.V2Store
     participant F as RRF fusion
 
@@ -49,7 +52,9 @@ sequenceDiagram
     W->>W: rankedResults(ctx, query, kind)
     W->>I: bm25Hits(query)
     I-->>W: topic/meeting hits by BM25 rank
-    W->>V: semanticHits(ctx, query)
+    W->>E: Represent(query document)
+    E-->>W: complete multi-vector representation
+    W->>V: NearestRepresentations(query)
     V-->>W: topic hits by multi-vector rank
     W->>F: add 1 / (60 + rank) per leg
     F-->>W: merged result IDs and scores
@@ -73,7 +78,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Q[Query text] --> R[Representer.Represent]
+    Q[Query text] --> R[Embedder.Represent]
     R --> MV[V2Store.NearestRepresentations]
     MV --> T[Topic IDs]
 ```
@@ -138,16 +143,51 @@ the video remains eligible for retry. `searchindex.Rebuild` reconstructs the
 whole index from Markdown and removes stale documents instead of adding only
 the newest file.
 
-`patro serve` and `patro reconcile` also rebuild BM25 when the derived index is
-missing. Manual edits to existing Markdown files are outside the automatic
-video-processing path; remove/rebuild the derived index when those edits must
-be reflected immediately.
+`patro serve` and `patro reconcile` also ensure both derived indexes: they sync
+the multi-vector snapshot when it is missing or marked dirty and rebuild BM25
+when its directory is missing. Manual edits to existing Markdown files are
+outside the automatic video-processing path; remove the affected derived state
+before running maintenance when those edits must be reflected immediately:
+`.state/vectors/topics.json` for semantic retrieval and
+`.state/search-index` for lexical retrieval.
+
+### Multi-vector snapshot maintenance
+
+The semantic snapshot is maintained separately from the per-video BM25
+freshness boundary:
+
+```mermaid
+sequenceDiagram
+    participant M as Maintenance
+    participant E as embed.Embedder
+    participant V as vectors.V2Store
+    participant T as Topic Markdown
+
+    M->>V: NeedsSync()
+    alt missing or marked dirty
+        M->>V: Sync(topics, embedder)
+        V->>T: read topic Markdown
+        V->>E: Represent(document)
+        E-->>V: chunk vectors + identity
+        V-->>M: atomically publish current snapshot
+    else current snapshot
+        V-->>M: reuse snapshot
+    end
+```
+
+`patro process` refreshes BM25 immediately after writing a video. It does not
+rebuild the complete semantic snapshot in that same critical path. An existing
+semantic snapshot therefore remains unchanged until the next maintenance sync;
+the newly written topic may be absent from semantic results while BM25 remains
+available. If no usable snapshot exists, `V2Store` safe-fails only the semantic
+leg and the BM25 leg still works.
 
 ## Code map
 
 ```mermaid
 flowchart TB
     MAIN[cmd/patro/main.go\nwireSearch] --> WEB[internal/web/web.go]
+    MAIN --> MAINT[runMaintenance\nserve/reconcile]
     WEB --> H[handleSearch]
     H --> RR[rankedResults]
     RR --> BM[bm25Hits]
@@ -156,6 +196,9 @@ flowchart TB
     SI1 --> SI2[internal/searchindex/rebuild.go\nRebuild / collectDocs]
     SEM --> EMB[internal/embed]
     SEM --> VEC[internal/vectors]
+    MAINT --> SYNC[V2Store.Sync\nNeedsSync]
+    SYNC --> EMB
+    SYNC --> VEC
     PIPE[internal/pipeline/pipeline.go\nProcessVideo] --> LIB[internal/library\nAddMeetingCtx]
     PIPE --> REF[rebuildSearchIndex]
     REF --> SI2
@@ -170,7 +213,9 @@ flowchart TB
 | BM25 query | `internal/searchindex/index.go` | `Open`, `Query` |
 | BM25 rebuild | `internal/searchindex/rebuild.go` | `Rebuild`, `collectDocs` |
 | Video freshness boundary | `internal/pipeline/pipeline.go` | `ProcessVideo`, `rebuildSearchIndex` |
-| Semantic retrieval | `internal/embed`, `internal/vectors` | `Represent`, `NearestRepresentations` |
+| Semantic backend | `internal/embed/embed.go`, `internal/embed/cybertron.go` | `Embedder`, `Represent`, `EncodeWindow` |
+| Semantic retrieval and sync | `internal/vectors/sync.go` | `NewV2Store`, `NeedsSync`, `Sync`, `NearestRepresentations` |
+| Maintenance boundary | `cmd/patro/main.go` | `runMaintenance`, `wireSearch` |
 
 ## What is intentionally not part of ranking?
 
