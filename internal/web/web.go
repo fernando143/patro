@@ -11,6 +11,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -23,8 +24,10 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
+	"github.com/fernando143/patro/internal/vectors"
 )
 
 // pageTemplate wraps rendered content in a theme-aware, responsive shell.
@@ -170,15 +173,22 @@ type Server struct {
 	Root string
 	md   goldmark.Markdown
 
-	// SearchIndex powers the read-only /search route. It is optional so the
-	// viewer can still start before the derived index has been created; in that
-	// case /search reports no results instead of failing the whole server.
+	// SearchIndex and the semantic fields power the read-only /search route.
 	// SearchIndex is used by tests and embedders that already own an index
 	// handle. SearchIndexPath is used by the CLI and opens the derived index for
 	// the duration of each request, allowing `patro process` to rebuild it while
-	// the viewer remains running.
+	// the viewer remains running. All fields are optional so a missing derived
+	// store degrades to whichever ranking leg is available.
 	SearchIndex     *searchindex.Index
 	SearchIndexPath string
+	Vectors         *vectors.Store
+	Embedder        embed.Embedder
+	MultiVectors    interface {
+		NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
+	}
+	Representer interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}
 }
 
 // NewServer returns a Server that serves the library under root. Root is
@@ -460,9 +470,11 @@ func (s *Server) serveText(w http.ResponseWriter, r *http.Request, full string) 
 	s.render(w, r, titleFor(full), template.HTML(body))
 }
 
-// searchResultLimit bounds how many BM25 hits are requested before rendering.
+// searchResultLimit bounds how many BM25 hits are requested before fusion.
 const (
 	searchResultLimit   = 50
+	semanticResultLimit = 8
+	rrfK                = 60
 	renderedResultLimit = 20
 )
 
@@ -478,9 +490,9 @@ type searchResult struct {
 }
 
 // handleSearch serves the read-only /search route: a query form plus, once
-// a query is submitted, hits ranked directly by BM25 (internal/searchindex).
-// An unavailable index degrades to an explicit no-results message rather than
-// failing the whole viewer.
+// a query is submitted, hits ranked by BM25 and semantic similarity through
+// reciprocal-rank fusion. An unavailable ranking leg degrades gracefully to
+// the other leg rather than failing the whole viewer.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	kind := r.URL.Query().Get("kind")
@@ -493,7 +505,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	if q != "" {
 		s.writeSearchFilters(&b, q, kind)
-		results := s.rankedResults(q, kind)
+		results := s.rankedResults(r.Context(), q, kind)
 		if len(results) == 0 {
 			b.WriteString(`<p>No results. Try a company, person, decision, or action item.</p>`)
 		} else {
@@ -544,54 +556,40 @@ func resultCountLabel(count int) string {
 	return fmt.Sprintf("%d results", count)
 }
 
-// rankedResults returns the BM25 index's ranking without adding a second
-// lexical score or a semantic fallback. Markdown is read only to decorate
-// each indexed hit with a snippet; it never changes whether a document hits
-// or where it ranks.
-func (s *Server) rankedResults(q, kindFilter string) []searchResult {
-	idx := s.SearchIndex
-	var closeIndex func()
-	if idx == nil && s.SearchIndexPath != "" {
-		if _, err := os.Stat(s.SearchIndexPath); err != nil {
-			if !os.IsNotExist(err) {
-				logging.Warnf("web: search index unavailable: %v", err)
+// rankedResults fuses the BM25 and semantic rankings using reciprocal-rank
+// fusion. The lexical source scan was deliberately removed: Markdown is read
+// only to decorate indexed hits with snippets and never contributes a score.
+func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []searchResult {
+	meta := map[string]searchResult{}
+	scores := map[string]float64{}
+
+	if hits, closeIndex := s.bm25Hits(q); hits != nil {
+		for rank, hit := range hits {
+			id := hit.ID
+			if _, ok := meta[id]; !ok {
+				meta[id] = s.resultForID(id, hit.Kind, hit.Title)
 			}
-			return nil
+			scores[id] += reciprocalRank(rank)
 		}
-		opened, err := searchindex.Open(s.SearchIndexPath)
-		if err != nil {
-			logging.Warnf("web: search index unavailable: %v", err)
-			return nil
+		if closeIndex != nil {
+			closeIndex()
 		}
-		idx = opened
-		closeIndex = func() {
-			if err := opened.Close(); err != nil {
-				logging.Warnf("web: closing search index: %v", err)
-			}
-		}
-	}
-	if idx == nil {
-		return nil
-	}
-	if closeIndex != nil {
-		defer closeIndex()
-	}
-	hits, err := idx.Query(q, searchResultLimit)
-	if err != nil {
-		logging.Warnf("web: search index query failed: %v", err)
-		return nil
 	}
 
-	results := make([]searchResult, 0, len(hits))
-	for _, hit := range hits {
-		if kindFilter != "" && hit.Kind != kindFilter {
+	for rank, hit := range s.semanticHits(ctx, q) {
+		id := searchindex.KindTopic + ":" + hit.ID
+		if _, ok := meta[id]; !ok {
+			meta[id] = s.resultForID(id, searchindex.KindTopic, "")
+		}
+		scores[id] += reciprocalRank(rank)
+	}
+
+	results := make([]searchResult, 0, len(meta))
+	for id, result := range meta {
+		if result.Title == "" || (kindFilter != "" && result.Kind != kindFilter) {
 			continue
 		}
-		result := s.resultForID(hit.ID, hit.Kind, hit.Title)
-		if result.Title == "" {
-			continue
-		}
-		result.Score = hit.Score
+		result.Score = scores[id]
 		slug := strings.TrimPrefix(result.ID, result.Kind+":")
 		if data, err := os.ReadFile(filepath.Join(s.Root, result.Kind+"s", slug+".md")); err == nil {
 			result.Snippet = searchSnippet(string(data), strings.ToLower(strings.TrimSpace(q)))
@@ -609,6 +607,83 @@ func (s *Server) rankedResults(q, kindFilter string) []searchResult {
 	})
 	if len(results) > renderedResultLimit {
 		results = results[:renderedResultLimit]
+	}
+	return results
+}
+
+func reciprocalRank(rank int) float64 {
+	return 1 / float64(rrfK+rank+1)
+}
+
+// bm25Hits opens the configured index lazily so the web viewer does not hold
+// Bleve's lock while another process publishes a rebuilt index. A nil hit
+// slice means that this ranking leg is unavailable or returned an error.
+func (s *Server) bm25Hits(q string) ([]searchindex.Hit, func()) {
+	idx := s.SearchIndex
+	var closeIndex func()
+	if idx == nil && s.SearchIndexPath != "" {
+		if _, err := os.Stat(s.SearchIndexPath); err != nil {
+			if !os.IsNotExist(err) {
+				logging.Warnf("web: search index unavailable: %v", err)
+			}
+			return nil, nil
+		}
+		opened, err := searchindex.Open(s.SearchIndexPath)
+		if err != nil {
+			logging.Warnf("web: search index unavailable: %v", err)
+			return nil, nil
+		}
+		idx = opened
+		closeIndex = func() {
+			if err := opened.Close(); err != nil {
+				logging.Warnf("web: closing search index: %v", err)
+			}
+		}
+	}
+	if idx == nil {
+		return nil, nil
+	}
+	hits, err := idx.Query(q, searchResultLimit)
+	if err != nil {
+		logging.Warnf("web: search index query failed: %v", err)
+		if closeIndex != nil {
+			closeIndex()
+		}
+		return nil, nil
+	}
+	return hits, closeIndex
+}
+
+func (s *Server) semanticHits(ctx context.Context, q string) []embed.RankedResult {
+	if s.MultiVectors != nil && s.Representer != nil {
+		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
+		if err != nil {
+			logging.Warnf("web: representation search query failed: %v", err)
+			return nil
+		}
+		hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
+		if err != nil {
+			logging.Warnf("web: multi-vector search failed: %v", err)
+			return nil
+		}
+		return hits
+	}
+	if s.Vectors == nil || s.Embedder == nil {
+		return nil
+	}
+	vec, err := s.Embedder.Embed(ctx, q)
+	if err != nil {
+		logging.Warnf("web: embedding search query failed: %v", err)
+		return nil
+	}
+	hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
+	if err != nil {
+		logging.Warnf("web: vector search failed: %v", err)
+		return nil
+	}
+	results := make([]embed.RankedResult, 0, len(hits))
+	for _, hit := range hits {
+		results = append(results, embed.RankedResult{ID: hit.ID, Score: hit.Score})
 	}
 	return results
 }

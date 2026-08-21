@@ -9,8 +9,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/searchindex"
 )
+
+type fakeWebRepresenter struct {
+	err error
+}
+
+func (f *fakeWebRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &embed.Representation{DocumentID: doc.ID}, nil
+}
+
+type fakeWebMultiStore struct {
+	results []embed.RankedResult
+	err     error
+}
+
+func (f fakeWebMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
+	return f.results, f.err
+}
 
 // setupLibrary creates a temporary knowledge library with an index, a
 // topic, a meeting note and a transcript, and returns its root.
@@ -331,6 +352,31 @@ func TestSearchReturnsBM25HitsFromTopicsAndMeetings(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="/meetings/2026-01-05-kickoff.md"`) {
 		t.Errorf("results missing meeting hit\n%s", body)
+	}
+}
+
+func TestSearchCombinesBM25AndSemanticHits(t *testing.T) {
+	root, idx := setupSearchLibrary(t)
+	if err := os.WriteFile(filepath.Join(root, "topics", "semantic-only.md"), []byte("# Semantic result\n\nA paraphrase not present in the BM25 index.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(root)
+	srv.SearchIndex = idx
+	srv.Representer = &fakeWebRepresenter{}
+	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "semantic-only", Score: .9}}}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=zephyr", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/topics/roadmap.md"`) {
+		t.Errorf("BM25 result missing\n%s", body)
+	}
+	if !strings.Contains(body, `href="/topics/semantic-only.md"`) {
+		t.Errorf("semantic result missing\n%s", body)
 	}
 }
 

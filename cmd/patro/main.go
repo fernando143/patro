@@ -619,14 +619,44 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	return nil
 }
 
-// wireSearch configures the BM25 index path that powers the web viewer's
-// read-only /search route. The web handler opens and closes this derived index
-// per request, so a long-running viewer does not hold Bleve's lock while
-// `patro process` publishes a replacement. It returns a cleanup func to keep
-// the caller's lifecycle contract unchanged.
+// wireSearch configures the BM25 index path and semantic store that power the
+// web viewer's read-only /search route. The web handler opens and closes the
+// derived BM25 index per request, so a long-running viewer does not hold
+// Bleve's lock while `patro process` publishes a replacement. Embedding setup
+// is best effort: a failure disables only the semantic leg and leaves BM25
+// available. It returns a cleanup func to keep the caller's lifecycle
+// contract unchanged.
 func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 	srv.SearchIndexPath = cfg.SearchIndexDir()
-	return func() {}
+	closeFn = func() {}
+
+	embedder, err := embed.New(cfg.EmbeddingBackend)
+	if err != nil {
+		logging.Warnf("embedding backend unavailable, /search will use BM25 only: %v", err)
+		return closeFn
+	}
+
+	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	if representer, ok := embedder.(interface {
+		Represent(context.Context, embed.Document) (*embed.Representation, error)
+	}); ok {
+		sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		if err != nil {
+			logging.Warnf("representation backend unavailable, /search will use BM25 only: %v", err)
+			return closeFn
+		}
+		srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+		srv.Representer = representer
+	} else {
+		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+		if err != nil {
+			logging.Warnf("vector store unavailable, /search will use BM25 only: %v", err)
+			return closeFn
+		}
+		srv.Vectors = store
+	}
+	srv.Embedder = embedder
+	return closeFn
 }
 
 // runWeb starts the local knowledge-library web viewer and blocks until
