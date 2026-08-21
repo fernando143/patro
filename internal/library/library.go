@@ -517,8 +517,9 @@ func (l *Library) AddMeetingCtx(ctx context.Context, t *types.TranscriptResult, 
 // D4) — no content is lost, only relocated within the library.
 //
 // onProgress, if non-nil, is called after each flagged slug is processed
-// with (done, total), mirroring vectors.Store.Rebuild's callback shape. It
-// returns the number of topics that were merged into an existing topic. A
+// with (done, total), matching the representation-sync progress callback
+// shape. It returns the number of topics that were merged into an existing
+// topic. A
 // nil Reconciler makes this a no-op (0, nil); a failure reconciling one
 // flagged topic is logged and does not abort the batch.
 func (l *Library) ReconcileFlagged(ctx context.Context, ledgerPath string, onProgress func(done, total int)) (int, error) {

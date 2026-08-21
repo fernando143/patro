@@ -17,20 +17,16 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("migration: embedding backend unavailable: %w", err)
 	}
-	representer, ok := embedder.(DocumentRepresenter)
-	if !ok {
-		return nil, fmt.Errorf("migration: embedding backend %q does not support document representations", embedder.Name())
-	}
 	s := &Service{
 		LibraryRoot: cfg.Library,
 		StateDir:    cfg.StateDir(),
 		Threshold:   cfg.MergeThreshold,
-		Representer: representer,
+		Representer: embedder,
 	}
 	s.RebuildDerived = func(ctx context.Context) error {
 		storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
 		topicsDir := filepath.Join(cfg.Library, "topics")
-		sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 		if err != nil {
 			return fmt.Errorf("migration: initializing representation identity: %w", err)
 		}
@@ -38,7 +34,7 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 			return fmt.Errorf("migration: representation backend returned nil identity")
 		}
 		v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		if err := v2.Sync(ctx, topicsDir, representer); err != nil {
+		if err := v2.Sync(ctx, topicsDir, embedder); err != nil {
 			return err
 		}
 		idx, err := searchindex.Open(cfg.SearchIndexDir())

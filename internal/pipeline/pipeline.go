@@ -137,8 +137,8 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 // newReconciler builds the production Reconciler wired to the configured
 // multi-vector representation backend and store (design D1/D2/D7/D9/D10).
 // It returns nil — never an error — on any construction failure
-// (unknown/misconfigured embedding_backend, a backend without document
-// representation support, or a store that cannot be initialized): Library.
+// (unknown/misconfigured embedding_backend or a representation store that
+// cannot be initialized): Library.
 // Reconciler is nil-safe and falls back to today's exact-slug-only behavior
 // (design D1), so a missing/misconfigured representation backend never blocks
 // video processing. A dirty or missing v2 snapshot remains wired and
@@ -158,14 +158,8 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 		return nil
 	}
 
-	representer, ok := embedder.(library.DocumentRepresenter)
-	if !ok {
-		logging.Warnf("reconciliation disabled: embedding backend %q does not support document representations", embedder.Name())
-		return nil
-	}
-
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", err)
 		return nil
@@ -195,7 +189,7 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 
 	return &library.SemanticReconciler{
-		Representer:       representer,
+		Representer:       embedder,
 		MultiStore:        v2,
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,

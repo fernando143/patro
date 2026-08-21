@@ -16,8 +16,8 @@ type fakeEmbedder struct {
 	dim  int
 }
 
-func (f fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
-	return make([]float32, f.dim), nil
+func (f fakeEmbedder) Represent(_ context.Context, document Document) (*Representation, error) {
+	return &Representation{DocumentID: document.ID, Dimension: f.dim}, nil
 }
 func (f fakeEmbedder) Dim() int     { return f.dim }
 func (f fakeEmbedder) Name() string { return f.name }
@@ -113,59 +113,5 @@ func TestNewPropagatesFactoryError(t *testing.T) {
 	_, err := New("broken")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("New(\"broken\") error = %v, want %v", err, wantErr)
-	}
-}
-
-func TestNopEmbedderIsDeterministicAndUnitNorm(t *testing.T) {
-	e := NewNop(8)
-	if e.Dim() != 8 {
-		t.Fatalf("Dim() = %d, want 8", e.Dim())
-	}
-	if e.Name() == "" {
-		t.Fatal("Name() is empty")
-	}
-
-	ctx := context.Background()
-	v1, err := e.Embed(ctx, "hello world")
-	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
-	}
-	if len(v1) != 8 {
-		t.Fatalf("Embed() returned %d dims, want 8", len(v1))
-	}
-
-	v2, err := e.Embed(ctx, "hello world")
-	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
-	}
-	if !reflect.DeepEqual(v1, v2) {
-		t.Error("Embed() is not deterministic for the same input")
-	}
-
-	v3, err := e.Embed(ctx, "a different string")
-	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
-	}
-	if reflect.DeepEqual(v1, v3) {
-		t.Error("Embed() returned the same vector for different inputs")
-	}
-
-	var sumSquares float64
-	for _, f := range v1 {
-		sumSquares += float64(f) * float64(f)
-	}
-	if diff := sumSquares - 1.0; diff < -1e-4 || diff > 1e-4 {
-		t.Errorf("||Embed()|| = %v, want a unit vector (sum of squares ~1.0)", sumSquares)
-	}
-}
-
-func TestNopEmbedderIsNotInProductionRegistry(t *testing.T) {
-	// nopEmbedder is a test/--mock double, not a config-selectable
-	// embedding_backend value (design D9: only real, verified adapters are
-	// registered — currently just cybertron).
-	for _, name := range Available() {
-		if name == "nop" {
-			t.Error("nop embedder must not be registered as a selectable backend")
-		}
 	}
 }

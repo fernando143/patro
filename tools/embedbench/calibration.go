@@ -63,11 +63,8 @@ func runCalibration(path string) int {
 		fmt.Printf("calibration unavailable: %v\n", err)
 		return 1
 	}
-	representer, ok := backend.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	})
-	if !ok || len(manifest.Cases) == 0 {
-		fmt.Println("calibration unavailable: document representer or corpus case missing")
+	if len(manifest.Cases) == 0 {
+		fmt.Println("calibration unavailable: corpus case missing")
 		return 1
 	}
 	text, err := caseText(path, manifest.Cases[0].A, manifest.Cases[0].APath)
@@ -75,7 +72,7 @@ func runCalibration(path string) int {
 		fmt.Printf("calibration unavailable: %v\n", err)
 		return 1
 	}
-	representation, err := representer.Represent(context.Background(), embed.Document{ID: "calibration", Text: text})
+	representation, err := backend.Represent(context.Background(), embed.Document{ID: "calibration", Text: text})
 	if err != nil {
 		fmt.Printf("calibration unavailable: %v\n", err)
 		return 1

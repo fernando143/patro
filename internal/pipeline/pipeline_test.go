@@ -675,16 +675,12 @@ func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 		t.Fatalf("embed.New error = %v", err)
 	}
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	representer, ok := embedder.(library.DocumentRepresenter)
-	if !ok {
-		t.Fatal("cybertron backend does not implement DocumentRepresenter")
-	}
-	sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		t.Fatalf("Represent identity error = %v", err)
 	}
 	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-	if err := store.Sync(context.Background(), lib.TopicsDir, representer); err != nil {
+	if err := store.Sync(context.Background(), lib.TopicsDir, embedder); err != nil {
 		t.Fatalf("Sync error = %v", err)
 	}
 

@@ -62,13 +62,6 @@ func runAcceptance(path string) int {
 		fmt.Printf("acceptance: authoritative=true pass=false error=%v\n", err)
 		return 1
 	}
-	representer, ok := backend.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	})
-	if !ok {
-		fmt.Println("acceptance: authoritative=true pass=false reason=backend has no document representer")
-		return 1
-	}
 	for _, c := range manifest.Cases {
 		a, err := caseText(path, c.A, c.APath)
 		if err != nil {
@@ -80,11 +73,11 @@ func runAcceptance(path string) int {
 			fmt.Printf("acceptance: authoritative=true pass=false error=%v\n", err)
 			return 1
 		}
-		if _, err := representer.Represent(context.Background(), embed.Document{ID: c.ID + "-a", Text: a}); err != nil {
+		if _, err := backend.Represent(context.Background(), embed.Document{ID: c.ID + "-a", Text: a}); err != nil {
 			fmt.Printf("acceptance: authoritative=true pass=false error=%v\n", err)
 			return 1
 		}
-		if _, err := representer.Represent(context.Background(), embed.Document{ID: c.ID + "-b", Text: b}); err != nil {
+		if _, err := backend.Represent(context.Background(), embed.Document{ID: c.ID + "-b", Text: b}); err != nil {
 			fmt.Printf("acceptance: authoritative=true pass=false error=%v\n", err)
 			return 1
 		}
@@ -97,7 +90,7 @@ func runAcceptance(path string) int {
 		if err != nil {
 			return err
 		}
-		_, err = representer.Represent(ctx, embed.Document{ID: "acceptance", Text: a})
+		_, err = backend.Represent(ctx, embed.Document{ID: "acceptance", Text: a})
 		return err
 	})
 	if err != nil {

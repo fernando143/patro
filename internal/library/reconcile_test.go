@@ -202,7 +202,7 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 	}
 }
 
-func TestSemanticReconcilerErrRebuildingSafeFails(t *testing.T) {
+func TestSemanticReconcilerErrV2NeedsRebuildSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	r := &SemanticReconciler{
 		Representer:       fakeRepresenter{},
@@ -217,17 +217,17 @@ func TestSemanticReconcilerErrRebuildingSafeFails(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if res.Merged {
-		t.Error("ErrRebuilding MUST NOT be treated as a merge signal")
+		t.Error("ErrV2NeedsRebuild MUST NOT be treated as a merge signal")
 	}
 	if !res.Flagged {
-		t.Error("ErrRebuilding MUST flag the new topic needs-reconciliation, so a later reconcile pass picks it up")
+		t.Error("ErrV2NeedsRebuild MUST flag the new topic needs-reconciliation, so a later reconcile pass picks it up")
 	}
 	if res.Slug != "x-y" {
 		t.Errorf("Slug = %q, want %q (no meeting lost during rebuild)", res.Slug, "x-y")
 	}
 
 	if _, err := os.Stat(ledgerPath); err != nil {
-		t.Errorf("ledger not written for the ErrRebuilding fail-safe path: %v", err)
+		t.Errorf("ledger not written for the ErrV2NeedsRebuild fail-safe path: %v", err)
 	}
 }
 

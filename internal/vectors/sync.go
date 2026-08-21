@@ -124,6 +124,14 @@ type V2Store struct {
 	beforeRename func()
 }
 
+// stem returns the file name without its final extension, e.g.
+// "topics/foo.md" -> "foo".
+func stem(path string) string {
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	return base[:len(base)-len(ext)]
+}
+
 func (s *V2Store) NearestRepresentations(ctx context.Context, query embed.Representation, mode embed.ScoreMode, limit int) ([]embed.RankedResult, error) {
 	s.mu.Lock()
 	if s.state != StateCurrent {

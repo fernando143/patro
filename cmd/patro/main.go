@@ -304,7 +304,7 @@ func runPipeline(opts *cliOptions) int {
 	// demand. Never mid-pipeline."). Runs in its own goroutine so a
 	// first-run/large-library rebuild never blocks the watcher from coming
 	// up and queueing new recordings; reconciliation itself safely degrades
-	// (ErrRebuilding -> new+flagged) for the rebuild's duration, which is
+	// (ErrV2NeedsRebuild -> new+flagged) for the rebuild's duration, which is
 	// already-designed behavior (Unit 3/4), not new machinery here.
 	go func() {
 		if err := runMaintenance(ctx, cfg, tracker); err != nil {
@@ -537,13 +537,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
 	topicsDir := filepath.Join(cfg.Library, "topics")
-	representer, ok := embedder.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	})
-	if !ok {
-		return fmt.Errorf("maintenance: embedding backend %q does not support multi-vector representations", embedder.Name())
-	}
-	sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		return fmt.Errorf("maintenance: initializing representation identity: %w", err)
 	}
@@ -554,7 +548,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	if store.NeedsSync() {
 		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
 		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
-		rebuildErr := store.Sync(ctx, topicsDir, representer)
+		rebuildErr := store.Sync(ctx, topicsDir, embedder)
 		tracker.MaintenanceDone()
 		if rebuildErr != nil {
 			return fmt.Errorf("maintenance: rebuilding vector representations: %w", rebuildErr)
@@ -626,14 +620,7 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 	}
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	representer, ok := embedder.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	})
-	if !ok {
-		logging.Warnf("embedding backend %q does not support multi-vector representations", embedder.Name())
-		return closeFn
-	}
-	sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		logging.Warnf("representation backend unavailable, multi-vector search is disabled: %v", err)
 		return closeFn
@@ -643,7 +630,7 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 		return closeFn
 	}
 	srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-	srv.Representer = representer
+	srv.Representer = embedder
 	return closeFn
 }
 
