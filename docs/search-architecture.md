@@ -192,17 +192,23 @@ flowchart TB
     H --> RR[rankedResults]
     RR --> BM[bm25Hits]
     RR --> SEM[semanticHits]
-    BM --> SI1[internal/searchindex/index.go\nOpen / Query]
-    SI1 --> SI2[internal/searchindex/rebuild.go\nRebuild / collectDocs]
-    SEM --> EMB[internal/embed]
-    SEM --> VEC[internal/vectors]
+    BM --> SIQ[searchindex.Index\nOpen / Query]
+    SEM --> EMBQ[embed.Embedder\nRepresent]
+    SEM --> VQ[V2Store\nNearestRepresentations]
+    SIQ --> F[RRF fusion\nreciprocalRank]
+    EMBQ --> VQ
+    IDX[(.state/search-index)] -. opened by .-> SIQ
+    VS[(.state/vectors/topics.json)] -. loaded by .-> VQ
+    VQ --> F
+    F --> META[metadata + Markdown snippets]
     MAINT --> SYNC[V2Store.Sync\nNeedsSync]
-    SYNC --> EMB
-    SYNC --> VEC
+    SYNC --> EMBM[embed.Embedder\nRepresent]
+    SYNC --> VS
     PIPE[internal/pipeline/pipeline.go\nProcessVideo] --> LIB[internal/library\nAddMeetingCtx]
     PIPE --> REF[rebuildSearchIndex]
-    REF --> SI2
-    SI2 --> MD[(knowledge/topics + meetings)]
+    REF --> SIR[searchindex.Rebuild\ncollectDocs]
+    MD[(knowledge/topics + meetings)] --> SIR
+    SIR --> IDX
 ```
 
 | Responsibility | File | Methods / symbols |
