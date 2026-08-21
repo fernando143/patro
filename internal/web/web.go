@@ -27,7 +27,6 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
-	"github.com/fernando143/patro/internal/vectors"
 )
 
 // pageTemplate wraps rendered content in a theme-aware, responsive shell.
@@ -181,8 +180,6 @@ type Server struct {
 	// store degrades to whichever ranking leg is available.
 	SearchIndex     *searchindex.Index
 	SearchIndexPath string
-	Vectors         *vectors.Store
-	Embedder        embed.Embedder
 	MultiVectors    interface {
 		NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
 	}
@@ -655,37 +652,24 @@ func (s *Server) bm25Hits(q string) ([]searchindex.Hit, func()) {
 }
 
 func (s *Server) semanticHits(ctx context.Context, q string) []embed.RankedResult {
-	if s.MultiVectors != nil && s.Representer != nil {
-		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
-		if err != nil {
-			logging.Warnf("web: representation search query failed: %v", err)
-			return nil
-		}
-		hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
-		if err != nil {
-			logging.Warnf("web: multi-vector search failed: %v", err)
-			return nil
-		}
-		return hits
-	}
-	if s.Vectors == nil || s.Embedder == nil {
+	if s.MultiVectors == nil || s.Representer == nil {
 		return nil
 	}
-	vec, err := s.Embedder.Embed(ctx, q)
+	representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
 	if err != nil {
-		logging.Warnf("web: embedding search query failed: %v", err)
+		logging.Warnf("web: representation search query failed: %v", err)
 		return nil
 	}
-	hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
+	if representation == nil {
+		logging.Warnf("web: representation backend returned nil query representation")
+		return nil
+	}
+	hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
 	if err != nil {
-		logging.Warnf("web: vector search failed: %v", err)
+		logging.Warnf("web: multi-vector search failed: %v", err)
 		return nil
 	}
-	results := make([]embed.RankedResult, 0, len(hits))
-	for _, hit := range hits {
-		results = append(results, embed.RankedResult{ID: hit.ID, Score: hit.Score})
-	}
-	return results
+	return hits
 }
 
 func (s *Server) resultForID(id, kind, title string) searchResult {

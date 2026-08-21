@@ -12,25 +12,15 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 )
 
-type fakeEmbedder map[string][]float32
+type fakeRepresenter map[string][]float32
 
-func (f fakeEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
-	for marker, vec := range f {
-		if strings.Contains(text, marker) {
-			return vec, nil
-		}
-	}
-	return []float32{0, 1}, nil
-}
-
-type fakeRepresenter struct{}
-
-func (fakeRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
+func (f fakeRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
 	vec := []float32{0, 1}
-	if strings.Contains(doc.Text, "PAIR_A") {
-		vec = []float32{1, 0}
-	} else if strings.Contains(doc.Text, "PAIR_B") {
-		vec = []float32{0.99, 0.14106736}
+	for marker, candidate := range f {
+		if strings.Contains(doc.Text, marker) {
+			vec = candidate
+			break
+		}
 	}
 	return &embed.Representation{
 		DocumentID: doc.ID,
@@ -64,8 +54,8 @@ func fixtureService(t *testing.T) (*Service, string) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	return &Service{
 		LibraryRoot: root, StateDir: filepath.Join(dir, ".state"), Threshold: .9,
-		Embedder: fakeEmbedder{"PAIR_A": {1, 0}, "PAIR_B": {.99, .01}, "OTHER": {0, 1}},
-		Now:      func() time.Time { return now },
+		Representer: fakeRepresenter{"PAIR_A": {1, 0}, "PAIR_B": {.99, .14106736}, "OTHER": {0, 1}},
+		Now:         func() time.Time { return now },
 	}, root
 }
 
@@ -101,10 +91,9 @@ func TestBuildPlanIsDeterministicFilteredAndDisjoint(t *testing.T) {
 	}
 }
 
-func TestBuildPlanUsesCompleteRepresentationsInsteadOfLegacyEmbedder(t *testing.T) {
+func TestBuildPlanUsesCompleteRepresentations(t *testing.T) {
 	s, _ := fixtureService(t)
-	s.Embedder = fakeEmbedder{"PAIR_A": {0, 1}}
-	s.Representer = fakeRepresenter{}
+	s.Representer = fakeRepresenter{"PAIR_A": {1, 0}, "PAIR_B": {.99, .14106736}, "OTHER": {0, 1}}
 
 	plan, err := s.BuildPlan(context.Background())
 	if err != nil {
@@ -120,7 +109,7 @@ func TestBuildPlanPreventsChains(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "topics", "third.md"), []byte("# Third\nPAIR_C"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s.Embedder.(fakeEmbedder)["PAIR_C"] = []float32{.98, .02}
+	s.Representer.(fakeRepresenter)["PAIR_C"] = []float32{.98, .02}
 	plan, err := s.BuildPlan(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -182,9 +171,9 @@ func TestApplyLeavesRejectedProposalUntouched(t *testing.T) {
 	}
 	write("second", "SECOND_A")
 	write("second-old", "SECOND_B")
-	embedder := s.Embedder.(fakeEmbedder)
-	embedder["SECOND_A"] = []float32{.7, .7}
-	embedder["SECOND_B"] = []float32{.71, .69}
+	representer := s.Representer.(fakeRepresenter)
+	representer["SECOND_A"] = []float32{.7, .7}
+	representer["SECOND_B"] = []float32{.71, .69}
 	plan, err := s.BuildPlan(context.Background())
 	if err != nil {
 		t.Fatal(err)

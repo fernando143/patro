@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,11 +17,6 @@ import (
 
 // ErrStalePlan means at least one accepted topic changed after preview.
 var ErrStalePlan = errors.New("migration: plan is stale; refresh and review it again")
-
-// Embedder is the planning boundary used by configured and test embedders.
-type Embedder interface {
-	Embed(context.Context, string) ([]float32, error)
-}
 
 type DocumentRepresenter interface {
 	Represent(context.Context, embed.Document) (*embed.Representation, error)
@@ -65,7 +59,6 @@ type Service struct {
 	LibraryRoot    string
 	StateDir       string
 	Threshold      float64
-	Embedder       Embedder
 	Representer    DocumentRepresenter
 	RebuildDerived func(context.Context) error
 	Now            func() time.Time
@@ -75,7 +68,6 @@ type topic struct {
 	slug, title, path, hash string
 	data                    []byte
 	sections                int
-	vector                  []float32
 	representation          *embed.Representation
 }
 
@@ -84,11 +76,12 @@ type edge struct {
 	score float64
 }
 
-// BuildPlan embeds every topic and greedily selects the strongest disjoint
-// pairs. A slug can appear in only one proposal, preventing cycles and chains.
+// BuildPlan represents every topic as a complete multi-vector document and
+// greedily selects the strongest disjoint pairs. A slug can appear in only one
+// proposal, preventing cycles and chains.
 func (s *Service) BuildPlan(ctx context.Context) (Plan, error) {
-	if s.Embedder == nil && s.Representer == nil {
-		return Plan{}, errors.New("migration: embedding backend is unavailable")
+	if s.Representer == nil {
+		return Plan{}, errors.New("migration: multi-vector representation backend is unavailable")
 	}
 	files, err := filepath.Glob(filepath.Join(s.LibraryRoot, "topics", "*.md"))
 	if err != nil {
@@ -104,24 +97,18 @@ func (s *Service) BuildPlan(ctx context.Context) (Plan, error) {
 		if err != nil {
 			return Plan{}, fmt.Errorf("migration: read %s: %w", path, err)
 		}
-		var vec []float32
-		var representation *embed.Representation
-		if s.Representer != nil {
-			representation, err = s.Representer.Represent(ctx, embed.Document{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Text: string(data)})
-			if err != nil {
-				return Plan{}, fmt.Errorf("migration: represent %s: %w", path, err)
-			}
-		} else {
-			vec, err = s.Embedder.Embed(ctx, string(data))
-			if err != nil {
-				return Plan{}, fmt.Errorf("migration: embed %s: %w", path, err)
-			}
+		representation, err := s.Representer.Represent(ctx, embed.Document{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Text: string(data)})
+		if err != nil {
+			return Plan{}, fmt.Errorf("migration: represent %s: %w", path, err)
+		}
+		if representation == nil {
+			return Plan{}, fmt.Errorf("migration: represent %s: backend returned nil representation", path)
 		}
 		slug := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		topics = append(topics, topic{
 			slug: slug, title: topicTitle(data, slug), path: path,
 			hash: contentHash(data), data: data,
-			sections: strings.Count(string(data), "\n## "), vector: vec, representation: representation,
+			sections: strings.Count(string(data), "\n## "), representation: representation,
 		})
 	}
 
@@ -175,10 +162,7 @@ func (s *Service) BuildPlan(ctx context.Context) (Plan, error) {
 }
 
 func topicScore(ctx context.Context, left, right topic) (float64, error) {
-	if left.representation != nil && right.representation != nil {
-		return embed.SymmetricScore(ctx, *left.representation, *right.representation)
-	}
-	return cosine(left.vector, right.vector), nil
+	return embed.SymmetricScore(ctx, *left.representation, *right.representation)
 }
 
 // Apply validates every accepted proposal before creating backups or writing.
@@ -282,23 +266,6 @@ func betterTarget(a, b topic) bool {
 		return len(a.data) > len(b.data)
 	}
 	return a.slug < b.slug
-}
-
-func cosine(a, b []float32) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	var dot, aa, bb float64
-	for i := 0; i < n; i++ {
-		dot += float64(a[i] * b[i])
-		aa += float64(a[i] * a[i])
-		bb += float64(b[i] * b[i])
-	}
-	if aa == 0 || bb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(aa) * math.Sqrt(bb))
 }
 
 func contentHash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }

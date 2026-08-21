@@ -4,16 +4,17 @@
 //
 // Library.Reconciler is an optional interface (nil ⇒ today's exact-slug
 // behavior, unchanged — design D1). SemanticReconciler is the default
-// implementation: it embeds the candidate topic, queries a vector store for
-// the closest existing topic, and applies a 3-band decision:
+// implementation: it represents the candidate topic as multiple vectors,
+// queries a representation store for the closest existing topic, and applies
+// a 3-band decision:
 //
 //	score >= MergeThreshold    -> auto-merge into the closest topic
 //	score <  NewTopicThreshold -> new topic, LLM-proposed slug used as-is
 //	otherwise (gray zone)      -> exactly one reconciliation LLM call
 //
-// Every path that could otherwise risk a wrong merge — a failed embed, a
-// store error (including vectors.ErrRebuilding during a background
-// rebuild), or a gray-zone LLM call that errors or times out — safe-fails
+// Every path that could otherwise risk a wrong merge — a failed
+// representation, a store error (including a v2 rebuild in progress during a
+// background rebuild), or a gray-zone LLM call that errors or times out — safe-fails
 // toward a new, flagged topic instead (spec "Safe-fail toward new topic").
 // Merges are never silent: every merge is recorded both as a markdown
 // annotation (library.go's AppendTopicSectionAnnotated) and as an entry in
@@ -36,7 +37,6 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
-	"github.com/fernando143/patro/internal/vectors"
 )
 
 // Resolution is the outcome of reconciling one LLM-proposed candidate topic
@@ -55,11 +55,11 @@ type Resolution struct {
 	ProposedSlug string
 	// Score is the cosine similarity against the matched existing topic (0
 	// when there was nothing to compare against, e.g. an empty library, or
-	// a store/embed failure).
+	// a representation/store failure).
 	Score float64
 	// Flagged reports whether this candidate needs human reconciliation
 	// review — set on any safe-fail path (gray-zone LLM error/timeout,
-	// vectors.ErrRebuilding, embed failure). Flagged is never true together
+	// representation store rebuild/error). Flagged is never true together
 	// with Merged.
 	Flagged bool
 }
@@ -72,23 +72,8 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error)
 }
 
-// Embedder is the narrow subset of internal/embed's Embedder this package
-// needs. Declared locally (rather than importing internal/embed) so this
-// package only depends on the shape it actually uses; any embed.Embedder
-// implementation satisfies it structurally.
-type Embedder interface {
-	Embed(ctx context.Context, text string) ([]float32, error)
-}
-
 type DocumentRepresenter interface {
 	Represent(context.Context, embed.Document) (*embed.Representation, error)
-}
-
-// NearestFinder is the narrow subset of *vectors.Store this package needs,
-// narrowed for testability: fakes can synchronously return
-// vectors.ErrRebuilding without spinning a real concurrent rebuild.
-type NearestFinder interface {
-	Nearest(vec []float32, k int) ([]vectors.Result, error)
 }
 
 type MultiVectorFinder interface {
@@ -102,12 +87,10 @@ type MultiVectorFinder interface {
 // never treated as an implicit merge (spec "Safe-fail toward new topic").
 type GrayZoneDecider func(ctx context.Context, candidate types.Topic, nearest types.TopicRef) (bool, error)
 
-// SemanticReconciler is the default Reconciler: cosine similarity via an
-// embedding backend + vector store, with a single gray-zone LLM call as a
-// tie-breaker (design D1/D2/D7).
+// SemanticReconciler is the default Reconciler: complete document
+// representations via a multi-vector backend + representation store, with a
+// single gray-zone LLM call as a tie-breaker (design D1/D2/D7).
 type SemanticReconciler struct {
-	Embedder          Embedder
-	Store             NearestFinder
 	Representer       DocumentRepresenter
 	MultiStore        MultiVectorFinder
 	MergeThreshold    float64
@@ -121,8 +104,8 @@ type SemanticReconciler struct {
 }
 
 // Reconcile implements Reconciler. It never returns a non-nil error for the
-// failure modes this package is designed to absorb (embed failure, store
-// failure, gray-zone LLM failure) — those all safe-fail into a flagged
+// failure modes this package is designed to absorb (representation failure,
+// store failure, gray-zone LLM failure) — those all safe-fail into a flagged
 // Resolution instead, so a candidate topic is never lost.
 func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error) {
 	proposed := Resolution{Slug: candidate.Slug, Name: candidate.Name, ProposedSlug: candidate.Slug}
@@ -130,30 +113,26 @@ func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topi
 	var topID string
 	var topScore float64
 	var err error
-	if r.Representer != nil && r.MultiStore != nil {
-		var representation *embed.Representation
-		representation, err = r.Representer.Represent(ctx, embed.Document{ID: candidate.Slug, Text: "# " + candidate.Name + "\n\n" + candidate.Content})
-		if err == nil {
-			var results []embed.RankedResult
-			results, err = r.MultiStore.NearestRepresentations(ctx, *representation, embed.DirectedMode, 1)
-			if err == nil && len(results) > 0 {
-				topID, topScore = results[0].ID, results[0].Score
-			}
-		}
-	} else {
-		var vec []float32
-		vec, err = r.Embedder.Embed(ctx, candidate.Name+"\n"+candidate.Content)
-		if err == nil {
-			var results []vectors.Result
-			results, err = r.Store.Nearest(vec, 1)
-			if err == nil && len(results) > 0 {
-				topID, topScore = results[0].ID, results[0].Score
-			}
+	if r.Representer == nil || r.MultiStore == nil {
+		res := r.failSafe(candidate, 0)
+		r.writeLedger(res)
+		return res, nil
+	}
+	var representation *embed.Representation
+	representation, err = r.Representer.Represent(ctx, embed.Document{ID: candidate.Slug, Text: "# " + candidate.Name + "\n\n" + candidate.Content})
+	if err == nil && representation == nil {
+		err = errors.New("library: representation backend returned nil representation")
+	}
+	if err == nil {
+		var results []embed.RankedResult
+		results, err = r.MultiStore.NearestRepresentations(ctx, *representation, embed.DirectedMode, 1)
+		if err == nil && len(results) > 0 {
+			topID, topScore = results[0].ID, results[0].Score
 		}
 	}
 	if err != nil {
-		// vectors.ErrRebuilding (or any other store error) must never risk
-		// a wrong merge answered from a half-rebuilt/unavailable store —
+		// An unavailable or rebuilding representation store must never risk a
+		// wrong merge answered from a half-rebuilt/inconsistent snapshot —
 		// safe-fail toward a new, flagged topic (spec "No lost meetings
 		// during rebuild" / "Safe-fail toward new topic").
 		res := r.failSafe(candidate, 0)

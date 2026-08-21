@@ -12,10 +12,10 @@ flowchart LR
     U[Browser\n/search?q=...] --> H[handleSearch]
     H --> R[rankedResults]
     R --> B[BM25 leg]
-    R --> E[Embedding leg]
+    R --> E[Multi-vector semantic leg]
     B --> BI[searchindex.Index.Query]
     BI --> IDX[(.state/search-index)]
-    E --> ER[Embedder or Representer]
+    E --> ER[Representer.Represent]
     ER --> VS[(.state/vectors/topics.json)]
     B --> F[RRF fusion\nK = 60]
     E --> F
@@ -28,7 +28,7 @@ The two legs have different responsibilities:
 | Leg | Finds | Current coverage |
 | --- | --- | --- |
 | BM25 | Terms, names, and phrases present in the text | Topics **and** meetings |
-| Embeddings | Similar meaning, paraphrases, and related concepts | Topics |
+| Multi-vector embeddings | Similar meaning, paraphrases, and related concepts | Topics |
 
 BM25 and embedding **raw scores are not added together**. RRF combines their
 rank positions, which avoids pretending that the two score scales are
@@ -41,7 +41,7 @@ sequenceDiagram
     participant B as Browser
     participant W as internal/web.Server
     participant I as searchindex.Index
-    participant V as vectors.Store / V2Store
+    participant V as vectors.V2Store
     participant F as RRF fusion
 
     B->>W: GET /search?q=roadmap
@@ -50,7 +50,7 @@ sequenceDiagram
     W->>I: bm25Hits(query)
     I-->>W: topic/meeting hits by BM25 rank
     W->>V: semanticHits(ctx, query)
-    V-->>W: topic hits by embedding rank
+    V-->>W: topic hits by multi-vector rank
     W->>F: add 1 / (60 + rank) per leg
     F-->>W: merged result IDs and scores
     W->>W: resultForID() + searchSnippet()
@@ -67,24 +67,22 @@ sequenceDiagram
    running web viewer from holding Bleve's lock while ingestion publishes a
    rebuilt index.
 
-### Embedding leg
+### Multi-vector semantic leg
 
-`semanticHits` selects the available embedding API:
+`semanticHits` uses the single supported semantic path:
 
 ```mermaid
 flowchart TD
-    Q[Query text] --> C{Multi-vector backend?}
-    C -- yes --> R[Representer.Represent]
-    R --> MV[MultiVectors.NearestRepresentations]
-    C -- no --> E[Embedder.Embed]
-    E --> V[Vectors.Nearest]
+    Q[Query text] --> R[Representer.Represent]
+    R --> MV[V2Store.NearestRepresentations]
     MV --> T[Topic IDs]
-    V --> T
 ```
 
-Semantic IDs are normalized to the same `topic:slug` namespace used by BM25
-before fusion. A semantic-only topic can therefore appear even when BM25 did
-not return it.
+The backend must implement `Represent`; there is no one-vector fallback.
+`Represent` creates the query representation, and `V2Store` ranks complete
+document representations. Semantic IDs are normalized to the same `topic:slug`
+namespace used by BM25 before fusion. A semantic-only topic can therefore
+appear even when BM25 did not return it.
 
 ## Reciprocal Rank Fusion
 
@@ -172,7 +170,7 @@ flowchart TB
 | BM25 query | `internal/searchindex/index.go` | `Open`, `Query` |
 | BM25 rebuild | `internal/searchindex/rebuild.go` | `Rebuild`, `collectDocs` |
 | Video freshness boundary | `internal/pipeline/pipeline.go` | `ProcessVideo`, `rebuildSearchIndex` |
-| Semantic retrieval | `internal/embed`, `internal/vectors` | `Embed`, `Represent`, `Nearest`, `NearestRepresentations` |
+| Semantic retrieval | `internal/embed`, `internal/vectors` | `Represent`, `NearestRepresentations` |
 
 ## What is intentionally not part of ranking?
 

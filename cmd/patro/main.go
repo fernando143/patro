@@ -514,8 +514,8 @@ func printMigrationPlan(plan migration.Plan) {
 	fmt.Println("\nDry run only: no knowledge, state, or index files were changed. Use 'patro run tui' -> Migrate to approve or reject each proposal.")
 }
 
-// runMaintenance performs ensure-index (rebuild the vector store and/or the
-// BM25 search index when missing or, for the vector store, backend/dim/
+// runMaintenance performs ensure-index (rebuild the multi-vector
+// representation store and/or the BM25 search index when missing or
 // model-version-mismatched — design D10) and then re-attempts reconciliation
 // for every flagged topic against the now-current store. Both "patro
 // reconcile" (on demand) and serve's own startup integrity check drive
@@ -523,8 +523,8 @@ func printMigrationPlan(plan migration.Plan) {
 // tracker.Maintenance* — tracker may be nil (e.g. status.json could not be
 // opened), which every Tracker method already tolerates.
 //
-// The vector store's self-invalidating tag (design D10) is exactly
-// NeedsRebuild(); bleve's BM25 index has no equivalent backend/dim concept
+// The representation store's self-invalidating tag (design D10) is exactly
+// NeedsSync(); bleve's BM25 index has no equivalent backend/model concept
 // to mismatch, so its ensure-index trigger is simply "the index directory
 // did not exist yet" (first run / pre-Unit-7 library) — Rebuild is
 // otherwise left alone rather than paying a full re-embed/reindex cost on
@@ -537,38 +537,27 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
 	topicsDir := filepath.Join(cfg.Library, "topics")
-	if representer, ok := embedder.(interface {
+	representer, ok := embedder.(interface {
 		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	}); ok {
-		sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-		if err != nil {
-			return fmt.Errorf("maintenance: initializing representation identity: %w", err)
-		}
-		store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		if store.NeedsSync() {
-			files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
-			tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
-			rebuildErr := store.Sync(ctx, topicsDir, representer)
-			tracker.MaintenanceDone()
-			if rebuildErr != nil {
-				return fmt.Errorf("maintenance: rebuilding vector representations: %w", rebuildErr)
-			}
-		}
-	} else {
-		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-		if err != nil {
-			return fmt.Errorf("maintenance: opening vector store: %w", err)
-		}
-		if store.NeedsRebuild() {
-			files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
-			tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
-			rebuildErr := store.Rebuild(ctx, topicsDir, func(done, _ int) {
-				tracker.MaintenanceProgress(done)
-			})
-			tracker.MaintenanceDone()
-			if rebuildErr != nil {
-				return fmt.Errorf("maintenance: rebuilding vector store: %w", rebuildErr)
-			}
+	})
+	if !ok {
+		return fmt.Errorf("maintenance: embedding backend %q does not support multi-vector representations", embedder.Name())
+	}
+	sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	if err != nil {
+		return fmt.Errorf("maintenance: initializing representation identity: %w", err)
+	}
+	if sample == nil {
+		return fmt.Errorf("maintenance: representation backend returned nil identity")
+	}
+	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+	if store.NeedsSync() {
+		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
+		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
+		rebuildErr := store.Sync(ctx, topicsDir, representer)
+		tracker.MaintenanceDone()
+		if rebuildErr != nil {
+			return fmt.Errorf("maintenance: rebuilding vector representations: %w", rebuildErr)
 		}
 	}
 
@@ -632,30 +621,29 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 
 	embedder, err := embed.New(cfg.EmbeddingBackend)
 	if err != nil {
-		logging.Warnf("embedding backend unavailable, /search will use BM25 only: %v", err)
+		logging.Warnf("embedding backend unavailable, multi-vector search is disabled: %v", err)
 		return closeFn
 	}
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	if representer, ok := embedder.(interface {
+	representer, ok := embedder.(interface {
 		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	}); ok {
-		sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-		if err != nil {
-			logging.Warnf("representation backend unavailable, /search will use BM25 only: %v", err)
-			return closeFn
-		}
-		srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		srv.Representer = representer
-	} else {
-		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-		if err != nil {
-			logging.Warnf("vector store unavailable, /search will use BM25 only: %v", err)
-			return closeFn
-		}
-		srv.Vectors = store
+	})
+	if !ok {
+		logging.Warnf("embedding backend %q does not support multi-vector representations", embedder.Name())
+		return closeFn
 	}
-	srv.Embedder = embedder
+	sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	if err != nil {
+		logging.Warnf("representation backend unavailable, multi-vector search is disabled: %v", err)
+		return closeFn
+	}
+	if sample == nil {
+		logging.Warnf("representation backend returned nil identity, multi-vector search is disabled")
+		return closeFn
+	}
+	srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+	srv.Representer = representer
 	return closeFn
 }
 
