@@ -2,41 +2,15 @@ package web
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/searchindex"
-	"github.com/fernando143/patro/internal/vectors"
 )
-
-type fakeWebRepresenter struct {
-	err  error
-	text string
-}
-
-func (f *fakeWebRepresenter) Represent(_ context.Context, doc embed.Document) (*embed.Representation, error) {
-	f.text = doc.Text
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &embed.Representation{DocumentID: doc.ID}, nil
-}
-
-type fakeWebMultiStore struct {
-	results []embed.RankedResult
-	err     error
-}
-
-func (f fakeWebMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
-	return f.results, f.err
-}
 
 // setupLibrary creates a temporary knowledge library with an index, a
 // topic, a meeting note and a transcript, and returns its root.
@@ -302,10 +276,10 @@ func TestMeetingNavigationLinksAdjacentDates(t *testing.T) {
 	}
 }
 
-// setupSearchLibrary builds a library plus a BM25 index and a vector store
-// over its topics/meetings, mirroring the shapes internal/searchindex and
-// internal/vectors already prove in their own Rebuild tests.
-func setupSearchLibrary(t *testing.T) (root string, idx *searchindex.Index, store *vectors.Store, embedder embed.Embedder) {
+// setupSearchLibrary builds a library plus a BM25 index over its topics and
+// meetings, mirroring the shape internal/searchindex proves in its rebuild
+// tests.
+func setupSearchLibrary(t *testing.T) (root string, idx *searchindex.Index) {
 	t.Helper()
 	root = t.TempDir()
 	topicsDir := filepath.Join(root, "topics")
@@ -336,24 +310,13 @@ func setupSearchLibrary(t *testing.T) (root string, idx *searchindex.Index, stor
 		t.Fatalf("searchindex Rebuild: %v", err)
 	}
 
-	embedder = embed.NewNop(4)
-	store, err = vectors.NewStore(filepath.Join(root, ".state", "vectors", "topics.json"), embedder, embedder.Name())
-	if err != nil {
-		t.Fatalf("vectors.NewStore: %v", err)
-	}
-	if err := store.Rebuild(context.Background(), topicsDir, nil); err != nil {
-		t.Fatalf("vectors Rebuild: %v", err)
-	}
-
-	return root, idx, store, embedder
+	return root, idx
 }
 
-func TestSearchFusesHitsFromTopicsAndMeetings(t *testing.T) {
-	root, idx, store, embedder := setupSearchLibrary(t)
+func TestSearchReturnsBM25HitsFromTopicsAndMeetings(t *testing.T) {
+	root, idx := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.SearchIndex = idx
-	srv.Vectors = store
-	srv.Embedder = embedder
 
 	req := httptest.NewRequest(http.MethodGet, "/search?q=zephyr", nil)
 	rec := httptest.NewRecorder()
@@ -371,66 +334,27 @@ func TestSearchFusesHitsFromTopicsAndMeetings(t *testing.T) {
 	}
 }
 
-// TestSearchVectorOnlyFallbackWhenBM25Unavailable proves the hybrid ranking
-// incorporates the cosine signal when neither lexical nor BM25 matches.
-func TestSearchVectorOnlyFallbackWhenBM25Unavailable(t *testing.T) {
-	root, _, store, embedder := setupSearchLibrary(t)
-	srv := NewServer(root)
-	srv.Vectors = store
-	srv.Embedder = embedder
-
-	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape("semantic-only-query"), nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+func TestSearchDoesNotFallbackToUnindexedMarkdown(t *testing.T) {
+	root, idx := setupSearchLibrary(t)
+	newTopic := filepath.Join(root, "topics", "not-indexed.md")
+	if err := os.WriteFile(newTopic, []byte("# Fresh note\n\nThis text only exists after the index rebuild.\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `href="/topics/roadmap.md"`) || !strings.Contains(body, "Roadmap") {
-		t.Errorf("results missing vector-only topic hit with resolved title\n%s", body)
-	}
-}
 
-func TestSearchUsesCompleteMultiVectorQuery(t *testing.T) {
-	root := setupLibrary(t)
-	representer := &fakeWebRepresenter{}
-	srv := NewServer(root)
-	srv.Representer = representer
-	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "roadmap", Score: .9}}}
-	query := strings.Repeat("long-context ", 200)
-	req := httptest.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(query), nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="/topics/roadmap.md"`) {
-		t.Fatalf("multi-vector search response = %d/%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(representer.text, "# Query\n\n"+strings.TrimSpace(query)) {
-		t.Fatalf("semantic search did not represent the complete query: got len=%d want len=%d suffix=%q", len(representer.text), len("# Query\n\n"+query), representer.text[len(representer.text)-40:])
-	}
-}
-
-func TestSearchFallsBackToAllBM25WhenMultiVectorQueryFails(t *testing.T) {
-	root, idx, _, _ := setupSearchLibrary(t)
-	representer := &fakeWebRepresenter{err: errors.New("query representation failed")}
 	srv := NewServer(root)
 	srv.SearchIndex = idx
-	srv.Representer = representer
-	srv.MultiVectors = fakeWebMultiStore{}
-	req := httptest.NewRequest(http.MethodGet, "/search?q=zephyr", nil)
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="/topics/roadmap.md"`) {
-		t.Fatalf("BM25 fallback response = %d/%s", rec.Code, rec.Body.String())
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=only+exists+after", nil))
+
+	if body := rec.Body.String(); !strings.Contains(body, "No results") {
+		t.Fatalf("unindexed Markdown must not be searched lexically\n%s", body)
 	}
 }
 
 func TestSearchEmptyQueryShowsForm(t *testing.T) {
-	root, idx, store, embedder := setupSearchLibrary(t)
+	root, idx := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.SearchIndex = idx
-	srv.Vectors = store
-	srv.Embedder = embedder
 
 	req := httptest.NewRequest(http.MethodGet, "/search", nil)
 	rec := httptest.NewRecorder()
@@ -444,7 +368,7 @@ func TestSearchEmptyQueryShowsForm(t *testing.T) {
 	}
 }
 
-func TestSearchWithoutIndexDegradesGracefully(t *testing.T) {
+func TestSearchWithoutIndexShowsNoResults(t *testing.T) {
 	srv := NewServer(setupLibrary(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/search?q=roadmap", nil)
@@ -454,17 +378,13 @@ func TestSearchWithoutIndexDegradesGracefully(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (must never 500 when index/store are unavailable)", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `href="/topics/roadmap.md"`) {
-		t.Errorf("expected Markdown fallback result\n%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, "No results") {
+		t.Errorf("expected no-results message without BM25 index\n%s", body)
 	}
 }
 
-// TestSearchNoMatchesShowsMessage wires BM25 only (no vector store): kNN
-// search is approximate and always returns its k-nearest entries regardless
-// of relevance, so a genuine "no results" case is only observable when the
-// only active ranker is exact-term BM25.
 func TestSearchNoMatchesShowsMessage(t *testing.T) {
-	root, idx, _, _ := setupSearchLibrary(t)
+	root, idx := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.SearchIndex = idx
 
@@ -480,37 +400,8 @@ func TestSearchNoMatchesShowsMessage(t *testing.T) {
 	}
 }
 
-func TestSearchPrioritizesExactMarkdownMatchOverSemanticFallback(t *testing.T) {
-	root := setupLibrary(t)
-	if err := os.WriteFile(filepath.Join(root, "topics", "cachea.md"), []byte("# Cachea hiring process\n\nTechnical interview and next steps.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	srv := NewServer(root)
-	srv.MultiVectors = fakeWebMultiStore{results: []embed.RankedResult{{ID: "roadmap", Score: .99}}}
-	srv.Representer = &fakeWebRepresenter{}
-
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=cachea", nil))
-	body := rec.Body.String()
-	resultsStart := strings.Index(body, `class="search-results"`)
-	if resultsStart < 0 {
-		t.Fatalf("response missing search results\n%s", body)
-	}
-	resultsBody := body[resultsStart:]
-	cachea := strings.Index(resultsBody, `href="/topics/cachea.md"`)
-	roadmap := strings.Index(resultsBody, `href="/topics/roadmap.md"`)
-	if cachea < 0 || roadmap < 0 || cachea > roadmap {
-		t.Fatalf("exact match must rank before semantic fallback\n%s", body)
-	}
-	for _, want := range []string{`class="filters"`, `class="search-result"`, `class="result-kind"`, "Technical interview and next steps"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("search result missing %q\n%s", want, body)
-		}
-	}
-}
-
 func TestSearchKindFilter(t *testing.T) {
-	root, idx, _, _ := setupSearchLibrary(t)
+	root, idx := setupSearchLibrary(t)
 	srv := NewServer(root)
 	srv.SearchIndex = idx
 

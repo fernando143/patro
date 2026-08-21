@@ -619,56 +619,14 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	return nil
 }
 
-// wireSearch opens the BM25 index and vector store that power the web
-// viewer's read-only /search route and attaches whichever it manages to
-// open to srv. Neither is required to exist yet — a fresh install has no
-// index until "patro reconcile" or "patro serve" build one (Unit 7) — so a
-// failure here is only logged, never fatal: /search degrades gracefully
-// (design "Migration / Rollout") instead of stopping `patro run web` from
-// starting. It returns a cleanup func the caller should defer.
+// wireSearch configures the BM25 index path that powers the web viewer's
+// read-only /search route. The web handler opens and closes this derived index
+// per request, so a long-running viewer does not hold Bleve's lock while
+// `patro process` publishes a replacement. It returns a cleanup func to keep
+// the caller's lifecycle contract unchanged.
 func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
-	closeFn = func() {}
-
-	idx, err := searchindex.Open(cfg.SearchIndexDir())
-	if err != nil {
-		logging.Warnf("search index unavailable, /search will return no results: %v", err)
-	} else {
-		srv.SearchIndex = idx
-		closeFn = func() {
-			if err := idx.Close(); err != nil {
-				logging.Warnf("closing search index: %v", err)
-			}
-		}
-	}
-
-	embedder, err := embed.New(cfg.EmbeddingBackend)
-	if err != nil {
-		logging.Warnf("embedding backend unavailable, /search will use text search only: %v", err)
-		return closeFn
-	}
-
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	if representer, ok := embedder.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	}); ok {
-		sample, err := representer.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-		if err != nil {
-			logging.Warnf("representation backend unavailable, /search will use text search only: %v", err)
-			return closeFn
-		}
-		srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		srv.Representer = representer
-	} else {
-		store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-		if err != nil {
-			logging.Warnf("vector store unavailable, /search will use text search only: %v", err)
-			return closeFn
-		}
-		srv.Vectors = store
-	}
-	srv.Embedder = embedder
-
-	return closeFn
+	srv.SearchIndexPath = cfg.SearchIndexDir()
+	return func() {}
 }
 
 // runWeb starts the local knowledge-library web viewer and blocks until

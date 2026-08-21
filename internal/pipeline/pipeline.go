@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/transcriber"
@@ -262,6 +264,9 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 	if err != nil {
 		return "", err
 	}
+	if err := rebuildSearchIndex(ctx, cfg); err != nil {
+		return "", err
+	}
 
 	if err := st.MarkProcessed(videoPath, transcript.ID); err != nil {
 		return "", err
@@ -269,4 +274,25 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 	logging.Infof("Done: %s -> %s", filepath.Base(videoPath), notePath)
 	tracker.Done(videoPath, analysis.Title)
 	return notePath, nil
+}
+
+// rebuildSearchIndex refreshes the derived BM25 index from the Markdown
+// library after a successful meeting write. The source files are written
+// before this call and the video is marked processed only after it succeeds,
+// so a failed rebuild leaves the video eligible for a retry.
+func rebuildSearchIndex(ctx context.Context, cfg *config.Config) error {
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		return fmt.Errorf("open search index: %w", err)
+	}
+
+	rebuildErr := idx.Rebuild(ctx, filepath.Join(cfg.Library, "topics"), filepath.Join(cfg.Library, "meetings"))
+	closeErr := idx.Close()
+	if rebuildErr != nil {
+		return fmt.Errorf("rebuild search index: %w", rebuildErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close search index: %w", closeErr)
+	}
+	return nil
 }

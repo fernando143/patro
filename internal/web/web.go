@@ -11,7 +11,6 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -24,10 +23,8 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
-	"github.com/fernando143/patro/internal/vectors"
 )
 
 // pageTemplate wraps rendered content in a theme-aware, responsive shell.
@@ -173,22 +170,15 @@ type Server struct {
 	Root string
 	md   goldmark.Markdown
 
-	// SearchIndex, Vectors and Embedder power the read-only /search route
-	// (design D3/D5). All three are optional and independently nil-able:
-	// the caller (cmd/patro's `run web`) attaches whatever it managed to
-	// open. When SearchIndex is nil, /search reports it is not available
-	// yet; when only Vectors/Embedder are nil, results degrade to BM25-only
-	// (design "Migration / Rollout") — /search never fails with a 500
-	// because these are unset.
-	SearchIndex  *searchindex.Index
-	Vectors      *vectors.Store
-	Embedder     embed.Embedder
-	MultiVectors interface {
-		NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
-	}
-	Representer interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	}
+	// SearchIndex powers the read-only /search route. It is optional so the
+	// viewer can still start before the derived index has been created; in that
+	// case /search reports no results instead of failing the whole server.
+	// SearchIndex is used by tests and embedders that already own an index
+	// handle. SearchIndexPath is used by the CLI and opens the derived index for
+	// the duration of each request, allowing `patro process` to rebuild it while
+	// the viewer remains running.
+	SearchIndex     *searchindex.Index
+	SearchIndexPath string
 }
 
 // NewServer returns a Server that serves the library under root. Root is
@@ -470,11 +460,9 @@ func (s *Server) serveText(w http.ResponseWriter, r *http.Request, full string) 
 	s.render(w, r, titleFor(full), template.HTML(body))
 }
 
-// searchResultLimit bounds how many hits are requested from each ranker
-// before fusion.
+// searchResultLimit bounds how many BM25 hits are requested before rendering.
 const (
 	searchResultLimit   = 50
-	semanticResultLimit = 8
 	renderedResultLimit = 20
 )
 
@@ -490,10 +478,9 @@ type searchResult struct {
 }
 
 // handleSearch serves the read-only /search route: a query form plus, once
-// a query is submitted, ranked hits fusing BM25 (internal/searchindex) and
-// cosine similarity (internal/vectors) via reciprocal-rank fusion. It never
-// fails with a 500 — an unavailable index/store degrades to fewer results
-// or an explicit message, per design "Migration / Rollout".
+// a query is submitted, hits ranked directly by BM25 (internal/searchindex).
+// An unavailable index degrades to an explicit no-results message rather than
+// failing the whole viewer.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	kind := r.URL.Query().Get("kind")
@@ -506,7 +493,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	if q != "" {
 		s.writeSearchFilters(&b, q, kind)
-		results := s.rankedResults(r.Context(), q, kind)
+		results := s.rankedResults(q, kind)
 		if len(results) == 0 {
 			b.WriteString(`<p>No results. Try a company, person, decision, or action item.</p>`)
 		} else {
@@ -557,20 +544,58 @@ func resultCountLabel(count int) string {
 	return fmt.Sprintf("%d results", count)
 }
 
-// rankedResults combines source-of-truth lexical matches with whichever
-// derived rankers are available. Exact Markdown evidence dominates BM25,
-// while semantic results broaden recall without taking over the first page.
-func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []searchResult {
-	meta, scores := s.lexicalResults(q)
-	s.addBM25Scores(q, meta, scores)
-	s.addSemanticScores(ctx, q, meta, scores)
+// rankedResults returns the BM25 index's ranking without adding a second
+// lexical score or a semantic fallback. Markdown is read only to decorate
+// each indexed hit with a snippet; it never changes whether a document hits
+// or where it ranks.
+func (s *Server) rankedResults(q, kindFilter string) []searchResult {
+	idx := s.SearchIndex
+	var closeIndex func()
+	if idx == nil && s.SearchIndexPath != "" {
+		if _, err := os.Stat(s.SearchIndexPath); err != nil {
+			if !os.IsNotExist(err) {
+				logging.Warnf("web: search index unavailable: %v", err)
+			}
+			return nil
+		}
+		opened, err := searchindex.Open(s.SearchIndexPath)
+		if err != nil {
+			logging.Warnf("web: search index unavailable: %v", err)
+			return nil
+		}
+		idx = opened
+		closeIndex = func() {
+			if err := opened.Close(); err != nil {
+				logging.Warnf("web: closing search index: %v", err)
+			}
+		}
+	}
+	if idx == nil {
+		return nil
+	}
+	if closeIndex != nil {
+		defer closeIndex()
+	}
+	hits, err := idx.Query(q, searchResultLimit)
+	if err != nil {
+		logging.Warnf("web: search index query failed: %v", err)
+		return nil
+	}
 
-	results := make([]searchResult, 0, len(meta))
-	for id, result := range meta {
-		if result.Title == "" || (kindFilter != "" && result.Kind != kindFilter) {
+	results := make([]searchResult, 0, len(hits))
+	for _, hit := range hits {
+		if kindFilter != "" && hit.Kind != kindFilter {
 			continue
 		}
-		result.Score = scores[id]
+		result := s.resultForID(hit.ID, hit.Kind, hit.Title)
+		if result.Title == "" {
+			continue
+		}
+		result.Score = hit.Score
+		slug := strings.TrimPrefix(result.ID, result.Kind+":")
+		if data, err := os.ReadFile(filepath.Join(s.Root, result.Kind+"s", slug+".md")); err == nil {
+			result.Snippet = searchSnippet(string(data), strings.ToLower(strings.TrimSpace(q)))
+		}
 		results = append(results, result)
 	}
 	sort.Slice(results, func(i, j int) bool {
@@ -586,112 +611,6 @@ func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []sear
 		results = results[:renderedResultLimit]
 	}
 	return results
-}
-
-func (s *Server) addBM25Scores(q string, meta map[string]searchResult, scores map[string]float64) {
-	if s.SearchIndex != nil {
-		hits, err := s.SearchIndex.Query(q, searchResultLimit)
-		if err != nil {
-			logging.Warnf("web: search index query failed: %v", err)
-		}
-		for rank, h := range hits {
-			if _, ok := meta[h.ID]; !ok {
-				meta[h.ID] = s.resultForID(h.ID, h.Kind, h.Title)
-			}
-			scores[h.ID] += 20 / float64(rank+1)
-		}
-	}
-}
-
-func (s *Server) addSemanticScores(ctx context.Context, q string, meta map[string]searchResult, scores map[string]float64) {
-	hits := s.semanticHits(ctx, q)
-	for rank, hit := range hits {
-		id := searchindex.KindTopic + ":" + hit.ID
-		if _, ok := meta[id]; !ok {
-			meta[id] = s.resultForID(id, searchindex.KindTopic, "")
-		}
-		scores[id] += 2 / float64(rank+1)
-	}
-}
-
-func (s *Server) semanticHits(ctx context.Context, q string) []embed.RankedResult {
-	if s.MultiVectors != nil && s.Representer != nil {
-		representation, err := s.Representer.Represent(ctx, embed.Document{ID: "query", Text: "# Query\n\n" + q})
-		if err != nil {
-			logging.Warnf("web: representation search query failed: %v", err)
-			return nil
-		}
-		hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
-		if err != nil {
-			logging.Warnf("web: multi-vector search failed: %v", err)
-			return nil
-		}
-		return hits
-	}
-	if s.Vectors == nil || s.Embedder == nil {
-		return nil
-	}
-	vec, err := s.Embedder.Embed(ctx, q)
-	if err != nil {
-		logging.Warnf("web: embedding search query failed: %v", err)
-		return nil
-	}
-	hits, err := s.Vectors.Nearest(vec, semanticResultLimit)
-	if err != nil {
-		logging.Warnf("web: vector search failed: %v", err)
-		return nil
-	}
-	results := make([]embed.RankedResult, 0, len(hits))
-	for _, hit := range hits {
-		results = append(results, embed.RankedResult{ID: hit.ID, Score: hit.Score})
-	}
-	return results
-}
-
-// lexicalResults scans the Markdown source of truth so exact user terms stay
-// useful even when a derived search index is stale or unavailable. BM25 and
-// semantic scores are added on top in rankedResults.
-func (s *Server) lexicalResults(q string) (map[string]searchResult, map[string]float64) {
-	results := map[string]searchResult{}
-	scores := map[string]float64{}
-	normalizedQuery := strings.ToLower(strings.TrimSpace(q))
-	terms := strings.Fields(normalizedQuery)
-	for _, pair := range []struct{ dir, kind string }{{"topics", searchindex.KindTopic}, {"meetings", searchindex.KindMeeting}} {
-		files, _ := filepath.Glob(filepath.Join(s.Root, pair.dir, "*.md"))
-		for _, full := range files {
-			data, err := os.ReadFile(full)
-			if err != nil {
-				continue
-			}
-			title := headingOrStem(full)
-			lowerTitle := strings.ToLower(title)
-			lowerContent := strings.ToLower(string(data))
-			score := 0.0
-			if strings.Contains(lowerTitle, normalizedQuery) {
-				score += 100
-			}
-			if strings.Contains(lowerContent, normalizedQuery) {
-				score += 40
-			}
-			for _, term := range terms {
-				if strings.Contains(lowerTitle, term) {
-					score += 12
-				}
-				if strings.Contains(lowerContent, term) {
-					score += 3
-				}
-			}
-			if score == 0 {
-				continue
-			}
-			id := pair.kind + ":" + strings.TrimSuffix(filepath.Base(full), filepath.Ext(full))
-			result := s.resultForID(id, pair.kind, title)
-			result.Snippet = searchSnippet(string(data), normalizedQuery)
-			results[id] = result
-			scores[id] = score
-		}
-	}
-	return results, scores
 }
 
 func (s *Server) resultForID(id, kind, title string) searchResult {
