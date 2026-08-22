@@ -12,6 +12,8 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 type fakeMultiStore struct {
@@ -318,7 +320,7 @@ func TestExistingTopicsRecent(t *testing.T) {
 }
 
 func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
-	entries, err := ReadLedger(filepath.Join(t.TempDir(), "reconciliation.json"))
+	entries, err := ledger.Read(filepath.Join(t.TempDir(), "reconciliation.json"))
 	if err != nil {
 		t.Fatalf("ReadLedger: %v", err)
 	}
@@ -329,12 +331,12 @@ func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
 
 func TestReadLedgerRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reconciliation.json")
-	want := LedgerEntry{Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Score: 0.5, Flagged: true, Timestamp: time.Now().UTC()}
-	if err := appendLedger(path, want); err != nil {
+	want := ledger.Entry{Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Score: 0.5, Flagged: true, Timestamp: time.Now().UTC()}
+	if err := ledger.Append(path, want); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
-	got, err := ReadLedger(path)
+	got, err := ledger.Read(path)
 	if err != nil {
 		t.Fatalf("ReadLedger: %v", err)
 	}
@@ -346,8 +348,8 @@ func TestReadLedgerRoundTrip(t *testing.T) {
 func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reconciliation.json")
 	writeFile(t, path, "{not json")
-	if _, err := ReadLedger(path); err == nil {
-		t.Error("ReadLedger() error = nil, want an error for corrupt JSON")
+	if _, err := ledger.Read(path); err == nil {
+		t.Error("ledger.Read() error = nil, want an error for corrupt JSON")
 	}
 }
 
@@ -355,17 +357,17 @@ func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
 // record superseded by a later merge (or a later reflag) must not be
 // double-counted or counted as still-pending.
 func TestCountFlagged(t *testing.T) {
-	entries := []LedgerEntry{
+	entries := []ledger.Entry{
 		{Slug: "a", Flagged: true, Timestamp: time.Unix(1, 0)},
 		{Slug: "a", Flagged: false, Timestamp: time.Unix(2, 0)}, // later: merged, no longer flagged
 		{Slug: "b", Flagged: true, Timestamp: time.Unix(1, 0)},
 		{Slug: "c", Flagged: false, Timestamp: time.Unix(1, 0)},
 	}
-	if got := CountFlagged(entries); got != 1 {
-		t.Errorf("CountFlagged() = %d, want 1 (only slug b is still flagged)", got)
+	if got := ledger.CountFlagged(entries); got != 1 {
+		t.Errorf("ledger.CountFlagged() = %d, want 1 (only slug b is still flagged)", got)
 	}
-	if got := CountFlagged(nil); got != 0 {
-		t.Errorf("CountFlagged(nil) = %d, want 0", got)
+	if got := ledger.CountFlagged(nil); got != 0 {
+		t.Errorf("ledger.CountFlagged(nil) = %d, want 0", got)
 	}
 }
 
@@ -386,7 +388,7 @@ func TestReconcileFlaggedMergesOnNowMatchingScore(t *testing.T) {
 	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome flagged content\n")
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)
@@ -431,7 +433,7 @@ func TestReconcileFlaggedStillNoMatchLeavesTopicUntouched(t *testing.T) {
 	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome content\n")
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)
@@ -461,7 +463,7 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	l := newTestLibrary(t)
 	// No x-y.md on disk: it was already merged/removed by an earlier pass.
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)

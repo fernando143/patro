@@ -12,11 +12,12 @@ import (
 	"syscall"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 
 	"github.com/fernando143/patro/internal/layout"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // serviceHealth is the tri-state health of the background service.
@@ -100,11 +101,11 @@ func loadData(cfg *config.Config, logTailLines int) dashboardData {
 // this file (countProcessed, countInboxBacklog) rather than surfacing as an
 // error the dashboard would need a new alert for.
 func countFlaggedTopics(stateDir string) int {
-	entries, err := library.ReadLedger(layout.State(stateDir).Ledger())
+	entries, err := ledger.Read(layout.State(stateDir).Ledger())
 	if err != nil {
 		return 0
 	}
-	return library.CountFlagged(entries)
+	return ledger.CountFlagged(entries)
 }
 
 // processAlive reports whether a process with this PID currently exists. It

@@ -23,17 +23,14 @@ package library
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // Resolution is the outcome of reconciling one LLM-proposed candidate topic
@@ -207,38 +204,13 @@ func nameFor(existing []types.TopicRef, slug string) string {
 	return slug
 }
 
-// --- Audit trail: .state/reconciliation.json (design D4) ---
+// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
 
-// LedgerEntry is one record in the derived, deletable reconciliation
-// ledger. It mirrors the markdown annotation written alongside every merge,
-// plus flagged safe-fail outcomes, so a later TUI can surface "work
-// pending" (design D4/D8).
-type LedgerEntry struct {
-	Slug         string    `json:"slug"`
-	Name         string    `json:"name"`
-	ProposedSlug string    `json:"proposed_slug"`
-	Score        float64   `json:"score"`
-	Merged       bool      `json:"merged"`
-	Flagged      bool      `json:"flagged"`
-	Timestamp    time.Time `json:"timestamp"`
-}
-
-type ledgerFile struct {
-	Entries []LedgerEntry `json:"entries"`
-}
-
-// ledgerMu serializes ledger read-modify-write cycles across reconcilers
-// sharing the same path within one process.
-var ledgerMu sync.Mutex
-
-// writeLedger appends one entry to r.LedgerPath, best-effort: a failure is
-// logged, never propagated, since losing the audit trail must not lose the
-// meeting itself.
 func (r *SemanticReconciler) writeLedger(res Resolution) {
 	if r.LedgerPath == "" || (!res.Merged && !res.Flagged) {
 		return
 	}
-	entry := LedgerEntry{
+	entry := ledger.Entry{
 		Slug:         res.Slug,
 		Name:         res.Name,
 		ProposedSlug: res.ProposedSlug,
@@ -247,100 +219,7 @@ func (r *SemanticReconciler) writeLedger(res Resolution) {
 		Flagged:      res.Flagged,
 		Timestamp:    time.Now().UTC(),
 	}
-	if err := appendLedger(r.LedgerPath, entry); err != nil {
+	if err := ledger.Append(r.LedgerPath, entry); err != nil {
 		logging.Warnf("reconciliation ledger write failed: %v", err)
 	}
 }
-
-// ReadLedger reads every entry recorded in path, the derived, deletable
-// ledger written by writeLedger/appendLedger (design D4). A missing file
-// returns an empty, non-nil slice and a nil error — nothing has ever been
-// merged or flagged is not an error condition, matching appendLedger's own
-// create-on-first-write semantics. It is the reader half of Unit 7's
-// "patro reconcile", which re-attempts reconciliation for every flagged
-// entry (Library.ReconcileFlagged).
-func ReadLedger(path string) ([]LedgerEntry, error) {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []LedgerEntry{}, nil
-		}
-		return nil, err
-	}
-	var lf ledgerFile
-	if err := json.Unmarshal(data, &lf); err != nil {
-		return nil, fmt.Errorf("library: parsing ledger %s: %w", path, err)
-	}
-	if lf.Entries == nil {
-		lf.Entries = []LedgerEntry{}
-	}
-	return lf.Entries, nil
-}
-
-// CountFlagged returns the number of distinct slugs whose most recent ledger
-// record is flagged, i.e. the number of topics genuinely awaiting
-// reconciliation right now. It dedupes to the latest record per slug — an
-// older flagged record superseded by a later merge or reflag does not count
-// — matching ReconcileFlagged's own dedupe, so callers (patro reconcile's
-// Maintenance.Total, the TUI dashboard's flagged-count card) agree with what
-// a reconcile pass will actually process.
-func CountFlagged(entries []LedgerEntry) int {
-	latest := map[string]bool{}
-	for _, e := range entries {
-		latest[e.Slug] = e.Flagged
-	}
-	total := 0
-	for _, flagged := range latest {
-		if flagged {
-			total++
-		}
-	}
-	return total
-}
-
-// appendLedger reads path (if present), appends entry, and writes the
-// result back atomically (temp file + rename), mirroring internal/vectors'
-// flush pattern.
-func appendLedger(path string, entry LedgerEntry) error {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
-	var lf ledgerFile
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &lf) // best-effort; a corrupt ledger starts fresh
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	lf.Entries = append(lf.Entries, entry)
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".reconciliation-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(lf); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
-}
-
-// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
