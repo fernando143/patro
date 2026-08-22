@@ -137,23 +137,26 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 
 // ------------------------------------------------------------------ pipeline
 
-// newReconciler builds the production Reconciler wired to the configured
-// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
-// It returns nil — never an error — on any construction failure
-// (unknown/misconfigured embedding_backend or a representation store that
-// cannot be initialized): Library.
-// Reconciler is nil-safe and falls back to today's exact-slug-only behavior
-// (design D1), so a missing/misconfigured representation backend never blocks
-// video processing. A dirty or missing v2 snapshot remains wired and
-// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation rather
-// than querying an incomplete representation set.
 // NewReconciler is the exported form of newReconciler, so cmd/patro can wire
-// the identical production Reconciler for "patro reconcile" (Unit 7) without
+// the identical production Reconciler for "patro reconcile" without
 // duplicating this construction logic.
 func NewReconciler(cfg *config.Config) library.Reconciler {
 	return newReconciler(cfg)
 }
 
+// newReconciler builds the production Reconciler, wired to the configured
+// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
+//
+// It returns nil — never an error — on any construction failure, such as a
+// misconfigured embedding_backend or a representation store that cannot be
+// initialized. library.Library tolerates a nil Reconciler and falls back to
+// exact-slug matching (design D1), so a missing or misconfigured
+// representation backend degrades reconciliation instead of blocking video
+// processing.
+//
+// A dirty or missing snapshot is a different case: the store stays wired and
+// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation, rather
+// than answering queries from an incomplete representation set.
 func newReconciler(cfg *config.Config) library.Reconciler {
 	v2, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
