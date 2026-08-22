@@ -183,14 +183,21 @@ func TestPrompterPromptBinaryDeclinesFoundThenManual(t *testing.T) {
 }
 
 func TestPrompterPromptBackend(t *testing.T) {
-	if got := newPrompter("kimi\n").promptBackend(); got != "kimi" {
-		t.Errorf("promptBackend() = %q, want kimi", got)
+	if got := newPrompter("kimi\n").promptBackend(); got.Name != "kimi" {
+		t.Errorf("promptBackend() = %q, want kimi", got.Name)
 	}
-	if got := newPrompter("CLAUDE\n").promptBackend(); got != "claude" {
-		t.Errorf("promptBackend() = %q, want claude (lowercased)", got)
+	if got := newPrompter("CLAUDE\n").promptBackend(); got.Name != "claude" {
+		t.Errorf("promptBackend() = %q, want claude (lowercased)", got.Name)
 	}
-	if got := newPrompter("gpt\nclaude\n").promptBackend(); got != "claude" {
-		t.Errorf("promptBackend() = %q, want claude after rejecting an invalid answer", got)
+	if got := newPrompter("gpt\nclaude\n").promptBackend(); got.Name != "claude" {
+		t.Errorf("promptBackend() = %q, want claude after rejecting an invalid answer", got.Name)
+	}
+	// codex and lemur were accepted by config but not offered here.
+	if got := newPrompter("codex\n").promptBackend(); got.Name != "codex" {
+		t.Errorf("promptBackend() = %q, want codex", got.Name)
+	}
+	if got := newPrompter("lemur\n").promptBackend(); got.Name != "lemur" || !got.Hosted {
+		t.Errorf("promptBackend() = %+v, want the hosted lemur backend", got)
 	}
 }
 

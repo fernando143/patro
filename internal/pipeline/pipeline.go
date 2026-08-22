@@ -30,6 +30,8 @@ import (
 	"github.com/fernando143/patro/internal/vectors"
 
 	"github.com/fernando143/patro/internal/layout"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
@@ -59,10 +61,10 @@ func RealTranscribe(ctx context.Context, videoPath string, cfg *config.Config) (
 }
 
 // MakeAnalyzeFunc returns the real analyzer selected by
-// cfg.AnalyzerBackend: "lemur" calls AssemblyAI's hosted LLM with the API
-// key from the environment; "kimi"/"claude"/"codex" shell out to a local CLI.
+// cfg.AnalyzerBackend: a hosted backend calls AssemblyAI's LLM with the API
+// key from the environment, and every other backend shells out to a local CLI.
 func MakeAnalyzeFunc(cfg *config.Config) AnalyzeFunc {
-	if cfg.AnalyzerBackend == "lemur" {
+	if b, ok := backend.Get(cfg.AnalyzerBackend); ok && b.Hosted {
 		return func(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
 			apiKey, err := cfg.APIKey()
 			if err != nil {
@@ -135,23 +137,26 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 
 // ------------------------------------------------------------------ pipeline
 
-// newReconciler builds the production Reconciler wired to the configured
-// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
-// It returns nil — never an error — on any construction failure
-// (unknown/misconfigured embedding_backend or a representation store that
-// cannot be initialized): Library.
-// Reconciler is nil-safe and falls back to today's exact-slug-only behavior
-// (design D1), so a missing/misconfigured representation backend never blocks
-// video processing. A dirty or missing v2 snapshot remains wired and
-// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation rather
-// than querying an incomplete representation set.
 // NewReconciler is the exported form of newReconciler, so cmd/patro can wire
-// the identical production Reconciler for "patro reconcile" (Unit 7) without
+// the identical production Reconciler for "patro reconcile" without
 // duplicating this construction logic.
 func NewReconciler(cfg *config.Config) library.Reconciler {
 	return newReconciler(cfg)
 }
 
+// newReconciler builds the production Reconciler, wired to the configured
+// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
+//
+// It returns nil — never an error — on any construction failure, such as a
+// misconfigured embedding_backend or a representation store that cannot be
+// initialized. library.Library tolerates a nil Reconciler and falls back to
+// exact-slug matching (design D1), so a missing or misconfigured
+// representation backend degrades reconciliation instead of blocking video
+// processing.
+//
+// A dirty or missing snapshot is a different case: the store stays wired and
+// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation, rather
+// than answering queries from an incomplete representation set.
 func newReconciler(cfg *config.Config) library.Reconciler {
 	v2, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
@@ -165,15 +170,16 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	// so this never needs its own separate config key. lemur (hosted, no
 	// local CLI) falls back to kimi_path, matching kimi's status as the
 	// project's default local CLI.
-	binaryPath := cfg.KimiPath
-	if cfg.AnalyzerBackend == "claude" {
-		binaryPath = cfg.ClaudePath
-	} else if cfg.AnalyzerBackend == "codex" {
-		binaryPath = cfg.CodexPath
+	grayZone, ok := backend.Get(cfg.AnalyzerBackend)
+	if !ok || grayZone.Hosted {
+		// lemur is hosted and has no local CLI, so the gray zone falls back
+		// to the project's default local binary.
+		grayZone, _ = backend.Get(backend.Default)
 	}
+	binaryPath := cfg.BinaryPath(grayZone.Name)
 
 	decide := library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second)
-	if cfg.AnalyzerBackend == "codex" {
+	if grayZone.CodexStyleStream {
 		decide = library.GrayZoneCodex(binaryPath, grayZoneTimeoutSeconds*time.Second)
 	}
 

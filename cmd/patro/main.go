@@ -58,6 +58,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/fernando143/patro/internal/layout"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -355,9 +357,9 @@ func runRegenerate(opts *cliOptions) int {
 		logging.Infof("Mock mode: AssemblyAI will NOT be called")
 	} else {
 		// regenerate never uploads to AssemblyAI, so the API key is only
-		// required for lemur, which calls AssemblyAI's hosted LLM (design
-		// D8) — unlike runPipeline's unconditional check.
-		if cfg.AnalyzerBackend == "lemur" {
+		// required by a hosted analyzer backend, which calls AssemblyAI's
+		// LLM (design D8) — unlike runPipeline's unconditional check.
+		if b, ok := backend.Get(cfg.AnalyzerBackend); ok && b.Hosted {
 			if _, err := cfg.APIKey(); err != nil {
 				logging.Errorf("%v", err)
 				return 2

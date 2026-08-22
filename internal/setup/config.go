@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // Values are the setup wizard's answers.
@@ -38,19 +40,19 @@ func WriteConfig(path string, v Values) error {
 	data["inbox"] = v.Inbox
 	data["library"] = v.Library
 	data["analyzer_backend"] = v.Backend
-	switch v.Backend {
-	case "kimi":
-		data["kimi_path"] = v.BinaryPath
-		delete(data, "claude_path")
-		delete(data, "codex_path")
-	case "claude":
-		data["claude_path"] = v.BinaryPath
-		delete(data, "kimi_path")
-		delete(data, "codex_path")
-	case "codex":
-		data["codex_path"] = v.BinaryPath
-		delete(data, "kimi_path")
-		delete(data, "claude_path")
+	// A hosted or unrecognized backend leaves every *_path key alone, which
+	// is what the previous per-backend switch did by simply not matching.
+	if selected, ok := backend.Get(v.Backend); ok && !selected.Hosted {
+		for _, b := range backend.All() {
+			if b.Hosted {
+				continue
+			}
+			if b.Name == selected.Name {
+				data[b.ConfigKey] = v.BinaryPath
+				continue
+			}
+			delete(data, b.ConfigKey)
+		}
 	}
 	if v.MergeThreshold != nil {
 		data["merge_threshold"] = *v.MergeThreshold
@@ -89,12 +91,12 @@ func SetThresholds(path string, merge, newTopic float64, promptLimit int) error 
 // SetBackend changes analyzer_backend and, for a CLI backend, its *_path key.
 // Every other key in the file is preserved, including the other backend's
 // path, so switching back later keeps the previously detected binary.
-// binaryPath is ignored when backend is "lemur", which is hosted.
+// binaryPath is ignored for a hosted backend such as "lemur".
 //
 // Unlike WriteConfig this is a partial edit of a file the user may have
 // written by hand, so a malformed YAML file is an error rather than something
 // to silently overwrite.
-func SetBackend(path, backend, binaryPath string) error {
+func SetBackend(path, name, binaryPath string) error {
 	data := map[string]any{}
 	if raw, err := os.ReadFile(path); err == nil {
 		if err := yaml.Unmarshal(raw, &data); err != nil {
@@ -107,19 +109,17 @@ func SetBackend(path, backend, binaryPath string) error {
 		data = map[string]any{}
 	}
 
-	switch backend {
-	case "kimi":
-		data["kimi_path"] = binaryPath
-	case "claude":
-		data["claude_path"] = binaryPath
-	case "codex":
-		data["codex_path"] = binaryPath
-	case "lemur":
-		// Hosted: no local binary, and both *_path keys are left untouched.
-	default:
-		return fmt.Errorf("unknown analyzer backend %q", backend)
+	selected, ok := backend.Get(name)
+	if !ok {
+		return fmt.Errorf("unknown analyzer backend %q", name)
 	}
-	data["analyzer_backend"] = backend
+	// Unlike WriteConfig this never deletes the other backends' paths: a
+	// user who switches away and back keeps the binary already detected for
+	// the original backend.
+	if !selected.Hosted {
+		data[selected.ConfigKey] = binaryPath
+	}
+	data["analyzer_backend"] = selected.Name
 
 	return writeYAML(path, data)
 }

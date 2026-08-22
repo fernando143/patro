@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // APIKeyEnvVar is the environment variable holding the AssemblyAI API key.
@@ -24,10 +26,6 @@ const (
 	defaultLibrary                  = "./knowledge"
 	defaultStabilityChecks          = 2
 	defaultStabilityIntervalSeconds = 5
-	defaultAnalyzerBackend          = "kimi"
-	defaultKimiPath                 = "kimi"
-	defaultClaudePath               = "claude"
-	defaultCodexPath                = "codex"
 	// defaultEmbeddingBackend is provisional: cybertron is the only
 	// candidate with third-party adoption evidence as of design D9.
 	// tools/embedbench settles the final default once both backends
@@ -49,7 +47,6 @@ const (
 
 var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
-	validAnalyzerBackends  = []string{"kimi", "lemur", "claude", "codex"}
 	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
 	// (design D9 amendment). It is a separate, explicit list here rather
 	// than a call into internal/embed so config validation has no
@@ -79,17 +76,17 @@ type Config struct {
 	MergeThreshold           float64
 	NewTopicThreshold        float64
 	TopicPromptLimit         int
-	KimiPath                 string
-	ClaudePath               string
-	CodexPath                string
-	Dir                      string // directory of the config file; base for relative paths
-	Path                     string // canonical or explicitly requested config file
+	// BinaryPaths maps an analyzer backend name to the path of its CLI.
+	// Hosted backends have no entry. Use BinaryPath to read it.
+	BinaryPaths map[string]string
+	Dir         string // directory of the config file; base for relative paths
+	Path        string // canonical or explicitly requested config file
 }
 
 // ValidAnalyzerBackends returns the accepted analyzer_backend values. The
 // result is a copy so callers cannot corrupt validation.
 func ValidAnalyzerBackends() []string {
-	return append([]string(nil), validAnalyzerBackends...)
+	return backend.Names()
 }
 
 // ValidEmbeddingBackends returns the accepted embedding_backend values. The
@@ -111,9 +108,12 @@ type yamlConfig struct {
 	MergeThreshold           *float64 `yaml:"merge_threshold"`
 	NewTopicThreshold        *float64 `yaml:"new_topic_threshold"`
 	TopicPromptLimit         *int     `yaml:"topic_prompt_limit"`
-	KimiPath                 *string  `yaml:"kimi_path"`
-	ClaudePath               *string  `yaml:"claude_path"`
-	CodexPath                *string  `yaml:"codex_path"`
+	// Binary paths stay flat, top-level keys — kimi_path, claude_path,
+	// codex_path — because they are already written that way in every
+	// installed config.yaml. Capturing them inline instead of as named
+	// fields means a new backend needs no new field here: the registry
+	// alone decides which keys are meaningful.
+	Extra map[string]any `yaml:",inline"`
 }
 
 // UserConfigPath returns ~/.config/patro/config.yaml, or "" when the home
@@ -180,11 +180,11 @@ func Load(flagPath string) (*Config, error) {
 		return nil, err
 	}
 
-	backend := strings.ToLower(strings.TrimSpace(stringOr(raw.AnalyzerBackend, defaultAnalyzerBackend)))
-	if !validBackend(backend) {
+	analyzerBackend := strings.ToLower(strings.TrimSpace(stringOr(raw.AnalyzerBackend, backend.Default)))
+	if !backend.IsValid(analyzerBackend) {
 		return nil, fmt.Errorf(
 			"invalid analyzer_backend %q in %s; valid values: %s",
-			backend, filepath.Base(configPath), strings.Join(validAnalyzerBackends, ", "),
+			analyzerBackend, filepath.Base(configPath), strings.Join(backend.Names(), ", "),
 		)
 	}
 
@@ -202,14 +202,12 @@ func Load(flagPath string) (*Config, error) {
 		VideoExtensions:          normalizeExtensions(extensionsOr(raw.VideoExtensions)),
 		StabilityChecks:          intOr(raw.StabilityChecks, defaultStabilityChecks),
 		StabilityIntervalSeconds: intOr(raw.StabilityIntervalSeconds, defaultStabilityIntervalSeconds),
-		AnalyzerBackend:          backend,
+		AnalyzerBackend:          analyzerBackend,
 		EmbeddingBackend:         embeddingBackend,
 		MergeThreshold:           floatOr(raw.MergeThreshold, defaultMergeThreshold),
 		NewTopicThreshold:        floatOr(raw.NewTopicThreshold, defaultNewTopicThreshold),
 		TopicPromptLimit:         intOr(raw.TopicPromptLimit, defaultTopicPromptLimit),
-		KimiPath:                 binaryPathOr(raw.KimiPath, defaultKimiPath),
-		ClaudePath:               binaryPathOr(raw.ClaudePath, defaultClaudePath),
-		CodexPath:                binaryPathOr(raw.CodexPath, defaultCodexPath),
+		BinaryPaths:              binaryPaths(raw.Extra),
 		Dir:                      dir,
 		Path:                     configPath,
 	}, nil
@@ -258,6 +256,12 @@ func (c *Config) APIKey() (string, error) {
 		)
 	}
 	return key, nil
+}
+
+// BinaryPath returns the CLI path configured for the named analyzer
+// backend, or "" for a hosted backend that has none.
+func (c *Config) BinaryPath(name string) string {
+	return c.BinaryPaths[name]
 }
 
 // IsVideo reports whether path has a configured video extension
@@ -318,23 +322,22 @@ func extensionsOr(value []string) []string {
 }
 
 // binaryPathOr trims the configured binary path, falling back when empty.
-func binaryPathOr(value *string, fallback string) string {
-	if value == nil {
-		return fallback
-	}
-	if trimmed := strings.TrimSpace(*value); trimmed != "" {
-		return trimmed
-	}
-	return fallback
-}
-
-func validBackend(backend string) bool {
-	for _, b := range validAnalyzerBackends {
-		if b == backend {
-			return true
+func binaryPaths(extra map[string]any) map[string]string {
+	paths := make(map[string]string)
+	for _, b := range backend.All() {
+		if b.Hosted {
+			continue
+		}
+		paths[b.Name] = b.DefaultBinary
+		raw, ok := extra[b.ConfigKey].(string)
+		if !ok {
+			continue
+		}
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			paths[b.Name] = trimmed
 		}
 	}
-	return false
+	return paths
 }
 
 func validEmbeddingBackend(backend string) bool {

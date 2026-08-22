@@ -61,14 +61,14 @@ func TestLoadDefaultsForMissingFile(t *testing.T) {
 	if cfg.TopicPromptLimit != 50 {
 		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 50)
 	}
-	if cfg.KimiPath != "kimi" {
-		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "kimi")
+	if cfg.BinaryPath("kimi") != "kimi" {
+		t.Errorf("KimiPath = %q, want %q", cfg.BinaryPath("kimi"), "kimi")
 	}
-	if cfg.ClaudePath != "claude" {
-		t.Errorf("ClaudePath = %q, want %q", cfg.ClaudePath, "claude")
+	if cfg.BinaryPath("claude") != "claude" {
+		t.Errorf("ClaudePath = %q, want %q", cfg.BinaryPath("claude"), "claude")
 	}
-	if cfg.CodexPath != "codex" {
-		t.Errorf("CodexPath = %q, want %q", cfg.CodexPath, "codex")
+	if cfg.BinaryPath("codex") != "codex" {
+		t.Errorf("CodexPath = %q, want %q", cfg.BinaryPath("codex"), "codex")
 	}
 	if cfg.Dir != dir {
 		t.Errorf("Dir = %q, want %q", cfg.Dir, dir)
@@ -133,11 +133,11 @@ kimi_path: /opt/kimi
 	if cfg.TopicPromptLimit != 25 {
 		t.Errorf("TopicPromptLimit = %d, want %d", cfg.TopicPromptLimit, 25)
 	}
-	if cfg.KimiPath != "/opt/kimi" {
-		t.Errorf("KimiPath = %q, want %q", cfg.KimiPath, "/opt/kimi")
+	if cfg.BinaryPath("kimi") != "/opt/kimi" {
+		t.Errorf("KimiPath = %q, want %q", cfg.BinaryPath("kimi"), "/opt/kimi")
 	}
-	if cfg.ClaudePath != "claude" {
-		t.Errorf("ClaudePath = %q, want %q", cfg.ClaudePath, "claude")
+	if cfg.BinaryPath("claude") != "claude" {
+		t.Errorf("ClaudePath = %q, want %q", cfg.BinaryPath("claude"), "claude")
 	}
 }
 
@@ -149,7 +149,7 @@ func TestLoadInvalidBackend(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() succeeded, want an invalid-backend error")
 	}
-	for _, want := range []string{"bogus", "kimi, lemur, claude, codex"} {
+	for _, want := range []string{"bogus", "kimi, claude, codex, lemur"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
@@ -403,18 +403,52 @@ func TestAPIKeyMissingAndSet(t *testing.T) {
 	}
 }
 
-func TestBinaryPathOr(t *testing.T) {
-	blank := "   "
-	set := "/opt/bin/kimi"
+func TestBinaryPathsFallBackToTheRegistryDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra map[string]any
+		want  string
+	}{
+		{"absent key falls back", map[string]any{}, "kimi"},
+		{"blank value falls back", map[string]any{"kimi_path": "   "}, "kimi"},
+		{"non-string value falls back", map[string]any{"kimi_path": 42}, "kimi"},
+		{"set value wins", map[string]any{"kimi_path": "/opt/bin/kimi"}, "/opt/bin/kimi"},
+		{"surrounding space is trimmed", map[string]any{"kimi_path": " /opt/bin/kimi "}, "/opt/bin/kimi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := binaryPaths(tt.extra)["kimi"]; got != tt.want {
+				t.Errorf("binaryPaths(%v)[\"kimi\"] = %q, want %q", tt.extra, got, tt.want)
+			}
+		})
+	}
+}
 
-	if got := binaryPathOr(nil, "fallback"); got != "fallback" {
-		t.Errorf("binaryPathOr(nil) = %q, want fallback", got)
+// TestBinaryPathsSkipsHostedBackends guards against writing a meaningless
+// path entry for a backend that runs in the cloud.
+func TestBinaryPathsSkipsHostedBackends(t *testing.T) {
+	if _, ok := binaryPaths(map[string]any{})["lemur"]; ok {
+		t.Error("binaryPaths included an entry for the hosted lemur backend")
 	}
-	if got := binaryPathOr(&blank, "fallback"); got != "fallback" {
-		t.Errorf("binaryPathOr(blank) = %q, want fallback", got)
+}
+
+// TestLoadKeepsFlatBinaryPathKeys is the compatibility test that matters
+// most here: kimi_path, claude_path and codex_path are top-level keys in
+// every installed user's config.yaml. Reading them through the registry
+// must not change what a hand-written file means.
+func TestLoadKeepsFlatBinaryPathKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "analyzer_backend: claude\nclaude_path: /opt/custom/claude\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
-	if got := binaryPathOr(&set, "fallback"); got != set {
-		t.Errorf("binaryPathOr(set) = %q, want %q", got, set)
+	if got := cfg.BinaryPath("claude"); got != "/opt/custom/claude" {
+		t.Errorf("BinaryPath(claude) = %q, want the configured %q", got, "/opt/custom/claude")
+	}
+	if got := cfg.BinaryPath("kimi"); got != "kimi" {
+		t.Errorf("BinaryPath(kimi) = %q, want the default %q", got, "kimi")
 	}
 }
 
