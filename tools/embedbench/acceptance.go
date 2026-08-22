@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/adapter/embed"
 )
 
 const measuredRuns = 30

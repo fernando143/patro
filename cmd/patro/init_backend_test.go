@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
-	"github.com/fernando143/patro/internal/config"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
+	"github.com/fernando143/patro/internal/platform/config"
 )
 
 // The setup wizard had silently fallen two backends behind: config accepted

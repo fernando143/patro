@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
-	"github.com/fernando143/patro/internal/setup"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
+	"github.com/fernando143/patro/internal/delivery/setup"
 )
 
 // The wizard's backend choices are derived from the registry so they cannot

@@ -1,0 +1,3 @@
+The knowledge library already contains these topics (slug: name):
+{{topics_list}}
+REUSE an existing slug whenever the subject of a topic matches. Only create a new slug for genuinely new subjects.

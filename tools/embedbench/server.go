@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/adapter/embed"
 )
 
 // pageTemplate renders the embedbench form and, once a report has been

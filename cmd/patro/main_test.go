@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fernando143/patro/internal/library"
-	"github.com/fernando143/patro/internal/state"
-	"github.com/fernando143/patro/internal/types"
+	"github.com/fernando143/patro/internal/adapter/state"
+	"github.com/fernando143/patro/internal/domain/knowledge"
+	"github.com/fernando143/patro/internal/domain/meeting"
 )
 
 // newTmpConfig writes a config.yaml resolving inbox/library/state under a
@@ -462,7 +462,7 @@ func TestRunRegenerateRequiresFile(t *testing.T) {
 func TestRunRegenerateMockOverwritesPriorNote(t *testing.T) {
 	cfgPath := newTmpConfig(t)
 	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
-	lib, err := library.NewLibrary(libDir)
+	lib, err := knowledge.NewLibrary(libDir)
 	if err != nil {
 		t.Fatalf("NewLibrary: %v", err)
 	}
@@ -472,8 +472,8 @@ func TestRunRegenerateMockOverwritesPriorNote(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	priorPath, err := lib.WriteMeetingNote(
-		&types.TranscriptResult{ID: "abc123"},
-		&types.AnalysisResult{Title: "Old Title"},
+		&meeting.TranscriptResult{ID: "abc123"},
+		&meeting.AnalysisResult{Title: "Old Title"},
 		"orig.mkv", "2026-01-05",
 	)
 	if err != nil {
@@ -575,7 +575,7 @@ func TestRunRegenerateLemurRequiresAPIKey(t *testing.T) {
 func TestRunRegenerateTopicsIndexAndProcessedStateUntouched(t *testing.T) {
 	cfgPath := newTmpConfig(t)
 	libDir := filepath.Join(filepath.Dir(cfgPath), "library")
-	lib, err := library.NewLibrary(libDir)
+	lib, err := knowledge.NewLibrary(libDir)
 	if err != nil {
 		t.Fatalf("NewLibrary: %v", err)
 	}
