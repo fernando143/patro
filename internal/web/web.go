@@ -27,6 +27,7 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/layout"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/search"
 	"github.com/fernando143/patro/internal/searchindex"
 )
 
@@ -476,13 +477,9 @@ func (s *Server) serveText(w http.ResponseWriter, r *http.Request, full string) 
 	s.render(w, r, titleFor(full), template.HTML(body))
 }
 
-// searchResultLimit bounds how many BM25 hits are requested before fusion.
-const (
-	searchResultLimit   = 50
-	semanticResultLimit = 8
-	rrfK                = 60
-	renderedResultLimit = 20
-)
+// renderedResultLimit bounds how many fused hits reach the page. Retrieval
+// depth and the fusion constant belong to internal/search.
+const renderedResultLimit = 20
 
 // searchResult is one fused, render-ready hit.
 type searchResult struct {
@@ -562,46 +559,53 @@ func resultCountLabel(count int) string {
 	return fmt.Sprintf("%d results", count)
 }
 
-// rankedResults fuses the BM25 and semantic rankings using reciprocal-rank
-// fusion. The lexical source scan was deliberately removed: Markdown is read
-// only to decorate indexed hits with snippets and never contributes a score.
+// rankedResults retrieves both legs, fuses them, then decorates the winners
+// for rendering. Fusion itself lives in internal/search; what remains here is
+// delivery: reading Markdown for snippets, resolving titles and URLs, and
+// applying the viewer's own recency tiebreak.
+//
+// The lexical source scan was deliberately removed: Markdown is read only to
+// decorate indexed hits with snippets and never contributes a score.
 func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []searchResult {
-	meta := map[string]searchResult{}
-	scores := map[string]float64{}
-
+	var lexical []search.Candidate
 	if hits, closeIndex := s.bm25Hits(q); hits != nil {
-		for rank, hit := range hits {
-			id := hit.ID
-			if _, ok := meta[id]; !ok {
-				meta[id] = s.resultForID(id, hit.Kind, hit.Title)
-			}
-			scores[id] += reciprocalRank(rank)
+		lexical = make([]search.Candidate, 0, len(hits))
+		for _, hit := range hits {
+			lexical = append(lexical, search.Candidate{ID: hit.ID, Kind: hit.Kind, Title: hit.Title})
 		}
 		if closeIndex != nil {
 			closeIndex()
 		}
 	}
 
-	for rank, hit := range s.semanticHits(ctx, q) {
-		id := searchindex.KindTopic + ":" + hit.ID
-		if _, ok := meta[id]; !ok {
-			meta[id] = s.resultForID(id, searchindex.KindTopic, "")
-		}
-		scores[id] += reciprocalRank(rank)
+	semanticHits := s.semanticHits(ctx, q)
+	semantic := make([]search.Candidate, 0, len(semanticHits))
+	for _, hit := range semanticHits {
+		semantic = append(semantic, search.Candidate{
+			ID:   searchindex.KindTopic + ":" + hit.ID,
+			Kind: searchindex.KindTopic,
+		})
 	}
 
-	results := make([]searchResult, 0, len(meta))
-	for id, result := range meta {
+	fused := search.Fuse(lexical, semantic)
+	normalizedQuery := strings.ToLower(strings.TrimSpace(q))
+
+	results := make([]searchResult, 0, len(fused))
+	for _, hit := range fused {
+		result := s.resultForID(hit.ID, hit.Kind, hit.Title)
 		if result.Title == "" || (kindFilter != "" && result.Kind != kindFilter) {
 			continue
 		}
-		result.Score = scores[id]
+		result.Score = hit.Score
 		slug := strings.TrimPrefix(result.ID, result.Kind+":")
 		if data, err := os.ReadFile(filepath.Join(s.Root, result.Kind+"s", slug+".md")); err == nil {
-			result.Snippet = searchSnippet(string(data), strings.ToLower(strings.TrimSpace(q)))
+			result.Snippet = searchSnippet(string(data), normalizedQuery)
 		}
 		results = append(results, result)
 	}
+
+	// search.Fuse already orders by score then ID; re-sorting inserts the
+	// viewer's recency preference between those two keys.
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score != results[j].Score {
 			return results[i].Score > results[j].Score
@@ -615,10 +619,6 @@ func (s *Server) rankedResults(ctx context.Context, q, kindFilter string) []sear
 		results = results[:renderedResultLimit]
 	}
 	return results
-}
-
-func reciprocalRank(rank int) float64 {
-	return 1 / float64(rrfK+rank+1)
 }
 
 // bm25Hits opens the configured index lazily so the web viewer does not hold
@@ -649,7 +649,7 @@ func (s *Server) bm25Hits(q string) ([]searchindex.Hit, func()) {
 	if idx == nil {
 		return nil, nil
 	}
-	hits, err := idx.Query(q, searchResultLimit)
+	hits, err := idx.Query(q, search.LexicalLimit)
 	if err != nil {
 		logging.Warnf("web: search index query failed: %v", err)
 		if closeIndex != nil {
@@ -673,7 +673,7 @@ func (s *Server) semanticHits(ctx context.Context, q string) []embed.RankedResul
 		logging.Warnf("web: representation backend returned nil query representation")
 		return nil
 	}
-	hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, semanticResultLimit)
+	hits, err := s.MultiVectors.NearestRepresentations(ctx, *representation, embed.DirectedMode, search.SemanticLimit)
 	if err != nil {
 		logging.Warnf("web: multi-vector search failed: %v", err)
 		return nil
