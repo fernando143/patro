@@ -24,9 +24,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fernando143/patro/internal/analyzer"
-	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/types"
+	"github.com/fernando143/patro/internal/adapter/analyzer"
+	"github.com/fernando143/patro/internal/platform/config"
+	"github.com/fernando143/patro/internal/domain/meeting"
 	"gopkg.in/yaml.v3"
 )
 
@@ -109,14 +109,14 @@ func TestSummaryGeneration(t *testing.T) {
 	}
 }
 
-func loadTranscriptFixture(t *testing.T, caseID string) *types.TranscriptResult {
+func loadTranscriptFixture(t *testing.T, caseID string) *meeting.TranscriptResult {
 	t.Helper()
 	path := filepath.Join("fixtures", "transcripts", caseID, "transcript.txt")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading transcript fixture %s: %v", path, err)
 	}
-	return &types.TranscriptResult{ID: caseID, Text: string(data)}
+	return &meeting.TranscriptResult{ID: caseID, Text: string(data)}
 }
 
 func loadSummaryChecklist(t *testing.T, caseID string) summaryChecklist {
@@ -138,7 +138,7 @@ func loadSummaryChecklist(t *testing.T, caseID string) summaryChecklist {
 // compared, not the complete generated output (e.g. full topic content).
 const outputDir = "output"
 
-func saveAnalysisOutput(t *testing.T, tc summaryCase, got *types.AnalysisResult) {
+func saveAnalysisOutput(t *testing.T, tc summaryCase, got *meeting.AnalysisResult) {
 	t.Helper()
 	dir := filepath.Join(outputDir, tc.caseID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -154,7 +154,7 @@ func saveAnalysisOutput(t *testing.T, tc summaryCase, got *types.AnalysisResult)
 	}
 }
 
-func assertSummaryChecklist(t *testing.T, tc summaryCase, want summaryChecklist, got *types.AnalysisResult) {
+func assertSummaryChecklist(t *testing.T, tc summaryCase, want summaryChecklist, got *meeting.AnalysisResult) {
 	t.Helper()
 
 	topicsHaystack := strings.Join(topicSlugs(got.Topics), " ")
@@ -205,7 +205,7 @@ func assertSummaryChecklist(t *testing.T, tc summaryCase, want summaryChecklist,
 	}
 }
 
-func topicSlugs(topics []types.Topic) []string {
+func topicSlugs(topics []meeting.Topic) []string {
 	slugs := make([]string, len(topics))
 	for i, tp := range topics {
 		slugs[i] = tp.Slug
@@ -220,8 +220,8 @@ func topicSlugs(topics []types.Topic) []string {
 // analyzer copies them near-verbatim from the transcript (see the "owner"
 // field in analyzer.BuildPrompt's schema), so they aren't paraphrased the
 // way free-text facts are.
-func actionItemsByOwner(items []types.ActionItem, owner string) []types.ActionItem {
-	var matches []types.ActionItem
+func actionItemsByOwner(items []meeting.ActionItem, owner string) []meeting.ActionItem {
+	var matches []meeting.ActionItem
 	for _, it := range items {
 		if strings.EqualFold(strings.TrimSpace(it.Owner), strings.TrimSpace(owner)) {
 			matches = append(matches, it)
@@ -230,7 +230,7 @@ func actionItemsByOwner(items []types.ActionItem, owner string) []types.ActionIt
 	return matches
 }
 
-func analysisText(a *types.AnalysisResult) string {
+func analysisText(a *meeting.AnalysisResult) string {
 	var b strings.Builder
 	b.WriteString(a.Title)
 	b.WriteString("\n")

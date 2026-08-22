@@ -19,7 +19,7 @@ runs:
 
     - name: Verify embedded Cybertron model
       shell: bash
-      run: go test ./internal/embed -run '^(TestCybertronEmbeddedWeightsMatchManifest|TestCybertronEmbeddedModelLoads)$' -count=1
+      run: go test ./internal/adapter/embed -run '^(TestCybertronEmbeddedWeightsMatchManifest|TestCybertronEmbeddedModelLoads)$' -count=1
 
     - name: Sync analyzer prompts from Langfuse
       shell: bash

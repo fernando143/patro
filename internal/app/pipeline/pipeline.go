@@ -1,0 +1,261 @@
+// Package pipeline orchestrates: video -> transcript -> analysis -> library.
+//
+// The real work is delegated to two injected callables — a TranscribeFunc
+// and an AnalyzeFunc — so the --mock CLI flag can swap in the deterministic
+// fakes defined here instead of sprinkling conditionals through the
+// pipeline.
+//
+// This is a port of scribe/pipeline.py; the mock transcripts and analyses
+// are byte-for-byte identical to the Python ones.
+package pipeline
+
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/fernando143/patro/internal/adapter/analyzer"
+	"github.com/fernando143/patro/internal/adapter/searchindex"
+	"github.com/fernando143/patro/internal/adapter/state"
+	"github.com/fernando143/patro/internal/adapter/status"
+	"github.com/fernando143/patro/internal/adapter/transcriber"
+	"github.com/fernando143/patro/internal/adapter/vectors"
+	"github.com/fernando143/patro/internal/domain/knowledge"
+	"github.com/fernando143/patro/internal/domain/meeting"
+	"github.com/fernando143/patro/internal/platform/config"
+	"github.com/fernando143/patro/internal/platform/logging"
+
+	"github.com/fernando143/patro/internal/platform/layout"
+
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
+)
+
+// grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
+// (analyzer.GrayZoneDecision): a short yes/no question about two topics, not a
+// full transcript analysis, so it uses a much smaller budget than the
+// analyzer's own CLI timeout (internal/adapter/analyzer/cli.go's cliTimeoutSeconds
+// = 600s).
+const grayZoneTimeoutSeconds = 60
+
+// TranscribeFunc turns one video file into a transcript.
+type TranscribeFunc func(ctx context.Context, videoPath string, cfg *config.Config) (*meeting.TranscriptResult, error)
+
+// AnalyzeFunc distills a transcript into structured knowledge, given the
+// topics already present in the library.
+type AnalyzeFunc func(ctx context.Context, t *meeting.TranscriptResult, existing []meeting.TopicRef) (*meeting.AnalysisResult, error)
+
+// ------------------------------------------------------------------- real fns
+
+// RealTranscribe uploads the video to AssemblyAI and waits for the
+// transcript, using the API key from the environment.
+func RealTranscribe(ctx context.Context, videoPath string, cfg *config.Config) (*meeting.TranscriptResult, error) {
+	apiKey, err := cfg.APIKey()
+	if err != nil {
+		return nil, err
+	}
+	return transcriber.Transcribe(ctx, videoPath, apiKey)
+}
+
+// MakeAnalyzeFunc returns the real analyzer selected by
+// cfg.AnalyzerBackend: a hosted backend calls AssemblyAI's LLM with the API
+// key from the environment, and every other backend shells out to a local CLI.
+func MakeAnalyzeFunc(cfg *config.Config) AnalyzeFunc {
+	if b, ok := backend.Get(cfg.AnalyzerBackend); ok && b.Hosted {
+		return func(ctx context.Context, t *meeting.TranscriptResult, existing []meeting.TopicRef) (*meeting.AnalysisResult, error) {
+			apiKey, err := cfg.APIKey()
+			if err != nil {
+				return nil, err
+			}
+			return analyzer.AnalyzeLeMUR(ctx, t.ID, apiKey, existing, t.Language)
+		}
+	}
+	return func(ctx context.Context, t *meeting.TranscriptResult, existing []meeting.TopicRef) (*meeting.AnalysisResult, error) {
+		return analyzer.AnalyzeCLI(ctx, t, existing, analyzer.CLIOptions{
+			Backend:    cfg.AnalyzerBackend,
+			BinaryPath: cfg.BinaryPath(cfg.AnalyzerBackend),
+			WorkDir:    cfg.Dir,
+			StateDir:   cfg.StateDir(),
+		})
+	}
+}
+
+// ------------------------------------------------------------------- mock fns
+
+// MockTranscribe returns a deterministic fake transcript derived from the
+// file name (no API calls).
+func MockTranscribe(_ context.Context, videoPath string, _ *config.Config) (*meeting.TranscriptResult, error) {
+	base := filepath.Base(videoPath)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	sum := sha1.Sum([]byte(base)) //nolint:gosec // parity with Python's hashlib.sha1
+	digest := hex.EncodeToString(sum[:])[:12]
+	text := "This is a mock transcript for the recording '" + stem + "'. " +
+		"The team discussed the product roadmap and the budget review. " +
+		"No audio was actually processed; AssemblyAI was not called."
+	return &meeting.TranscriptResult{
+		ID:   "mock-" + digest,
+		Text: text,
+		Chapters: []meeting.Chapter{
+			{Headline: "Roadmap discussion", Gist: "roadmap", Start: 0, End: 90000},
+			{Headline: "Budget review", Gist: "budget", Start: 90000, End: 210000},
+		},
+		Utterances: []meeting.Utterance{
+			{Speaker: "A", Text: "Welcome to the mock meeting about " + stem + "."},
+			{Speaker: "B", Text: "Let's review the roadmap and then the budget."},
+			{Speaker: "A", Text: "Agreed, the roadmap comes first."},
+		},
+		Language: "en",
+	}, nil
+}
+
+// MockAnalyze returns a deterministic fake analysis with two sample topics
+// (no API calls).
+func MockAnalyze(_ context.Context, t *meeting.TranscriptResult, _ []meeting.TopicRef) (*meeting.AnalysisResult, error) {
+	return &meeting.AnalysisResult{
+		Title: "Mock analysis of " + t.ID,
+		Summary: "Mock summary: this analysis was generated locally without calling AssemblyAI. " +
+			"It stands in for the LeMUR output so the full pipeline can be verified offline.",
+		KeyPoints: []string{"The pipeline ran end to end in mock mode", "No API key was required"},
+		Decisions: []string{"Ship the mock mode as the default verification path"},
+		ActionItems: []meeting.ActionItem{
+			{Owner: "unassigned", Task: "Set ASSEMBLYAI_API_KEY and run a real transcription"},
+		},
+		Topics: []meeting.Topic{
+			{
+				Slug: "product-roadmap",
+				Name: "Product roadmap",
+				Content: "- The roadmap was reviewed during this mock meeting.\n" +
+					"- Priorities were reaffirmed for the next quarter.",
+			},
+			{
+				Slug: "budget-review",
+				Name: "Budget review",
+				Content: "- The budget was reviewed with no major deviations.\n" +
+					"- A follow-up review was scheduled.",
+			},
+		},
+	}, nil
+}
+
+// ------------------------------------------------------------------ pipeline
+
+// NewReconciler is the exported form of newReconciler, so cmd/patro can wire
+// the identical production Reconciler for "patro reconcile" without
+// duplicating this construction logic.
+func NewReconciler(cfg *config.Config) knowledge.Reconciler {
+	return newReconciler(cfg)
+}
+
+// newReconciler builds the production Reconciler, wired to the configured
+// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
+//
+// It returns nil — never an error — on any construction failure, such as a
+// misconfigured embedding_backend or a representation store that cannot be
+// initialized. knowledge.Library tolerates a nil Reconciler and falls back to
+// exact-slug matching (design D1), so a missing or misconfigured
+// representation backend degrades reconciliation instead of blocking video
+// processing.
+//
+// A dirty or missing snapshot is a different case: the store stays wired and
+// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation, rather
+// than answering queries from an incomplete representation set.
+func newReconciler(cfg *config.Config) knowledge.Reconciler {
+	v2, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
+	if err != nil {
+		logging.Warnf("reconciliation disabled: %v", err)
+		return nil
+	}
+
+	// The gray-zone LLM binary follows the configured analyzer backend,
+	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
+	// populated with a default (internal/platform/config),
+	// so this never needs its own separate config key. lemur (hosted, no
+	// local CLI) falls back to kimi_path, matching kimi's status as the
+	// project's default local CLI.
+	grayZone, ok := backend.Get(cfg.AnalyzerBackend)
+	if !ok || grayZone.Hosted {
+		// lemur is hosted and has no local CLI, so the gray zone falls back
+		// to the project's default local binary.
+		grayZone, _ = backend.Get(backend.Default)
+	}
+	binaryPath := cfg.BinaryPath(grayZone.Name)
+
+	decide := analyzer.GrayZoneDecision(grayZone, binaryPath, grayZoneTimeoutSeconds*time.Second)
+
+	return &knowledge.SemanticReconciler{
+		Similarity:        representationSimilarity{representer: embedder, store: v2},
+		MergeThreshold:    cfg.MergeThreshold,
+		NewTopicThreshold: cfg.NewTopicThreshold,
+		Decide:            decide,
+		LedgerPath:        layout.State(cfg.StateDir()).Ledger(),
+	}
+}
+
+// ProcessVideo processes one video end to end. It returns the meeting note
+// path, or "" when the file was skipped (already processed). Errors are
+// propagated to the caller, which logs them.
+func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st *state.State, tracker *status.Tracker, tf TranscribeFunc, af AnalyzeFunc) (string, error) {
+	if st.IsProcessed(videoPath) {
+		logging.Infof("Skipping %s (already processed)", filepath.Base(videoPath))
+		return "", nil
+	}
+
+	logging.Infof("Processing %s ...", filepath.Base(videoPath))
+	lib, err := knowledge.NewLibrary(cfg.Library)
+	if err != nil {
+		return "", err
+	}
+	lib.Reconciler = newReconciler(cfg)
+
+	tracker.Start(videoPath)
+	tracker.Stage(status.StageTranscribing)
+	transcript, err := tf(ctx, videoPath, cfg)
+	if err != nil {
+		return "", err
+	}
+	tracker.Stage(status.StageAnalyzing)
+	analysis, err := af(ctx, transcript, lib.ExistingTopicsRecent(cfg.TopicPromptLimit))
+	if err != nil {
+		return "", err
+	}
+	tracker.Stage(status.StageWriting)
+	notePath, err := lib.AddMeetingCtx(ctx, transcript, analysis, videoPath)
+	if err != nil {
+		return "", err
+	}
+	if err := rebuildSearchIndex(ctx, cfg); err != nil {
+		return "", err
+	}
+
+	if err := st.MarkProcessed(videoPath, transcript.ID); err != nil {
+		return "", err
+	}
+	logging.Infof("Done: %s -> %s", filepath.Base(videoPath), notePath)
+	tracker.Done(videoPath, analysis.Title)
+	return notePath, nil
+}
+
+// rebuildSearchIndex refreshes the derived BM25 index from the Markdown
+// library after a successful meeting write. The source files are written
+// before this call and the video is marked processed only after it succeeds,
+// so a failed rebuild leaves the video eligible for a retry.
+func rebuildSearchIndex(ctx context.Context, cfg *config.Config) error {
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		return fmt.Errorf("open search index: %w", err)
+	}
+
+	lib := layout.Library(cfg.Library)
+	rebuildErr := idx.Rebuild(ctx, lib.Topics(), lib.Meetings())
+	closeErr := idx.Close()
+	if rebuildErr != nil {
+		return fmt.Errorf("rebuild search index: %w", rebuildErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close search index: %w", closeErr)
+	}
+	return nil
+}

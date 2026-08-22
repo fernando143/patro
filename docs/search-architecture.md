@@ -41,7 +41,7 @@ calibrated.
 ```mermaid
 sequenceDiagram
     participant B as Browser
-    participant W as internal/web.Server
+    participant W as internal/delivery/web.Server
     participant I as searchindex.Index
     participant E as embed.Embedder
     participant V as vectors.V2Store
@@ -186,7 +186,7 @@ leg and the BM25 leg still works.
 
 ```mermaid
 flowchart TB
-    MAIN[cmd/patro/main.go\nwireSearch] --> WEB[internal/web/web.go]
+    MAIN[cmd/patro/main.go\nwireSearch] --> WEB[internal/delivery/web/web.go]
     MAIN --> MAINT[runMaintenance\nserve/reconcile]
     WEB --> H[handleSearch]
     H --> RR[rankedResults]
@@ -204,7 +204,7 @@ flowchart TB
     MAINT --> SYNC[V2Store.Sync\nNeedsSync]
     SYNC --> EMBM[embed.Embedder\nRepresent]
     SYNC --> VS
-    PIPE[internal/pipeline/pipeline.go\nProcessVideo] --> LIB[internal/library\nAddMeetingCtx]
+    PIPE[internal/app/pipeline/pipeline.go\nProcessVideo] --> LIB[internal/domain/knowledge\nAddMeetingCtx]
     PIPE --> REF[rebuildSearchIndex]
     REF --> SIR[searchindex.Rebuild\ncollectDocs]
     MD[(knowledge/topics + meetings)] --> SIR
@@ -213,14 +213,15 @@ flowchart TB
 
 | Responsibility | File | Methods / symbols |
 | --- | --- | --- |
-| HTTP route and rendering | `internal/web/web.go` | `handleSearch`, `writeSearchFilters`, `resultForID`, `searchSnippet` |
-| Hybrid ranking | `internal/web/web.go` | `rankedResults`, `bm25Hits`, `semanticHits`, `reciprocalRank` |
+| HTTP route and rendering | `internal/delivery/web/web.go` | `handleSearch`, `writeSearchFilters`, `resultForID`, `searchSnippet` |
+| Hybrid ranking (RRF) | `internal/app/search/search.go` | `Fuse`, `ReciprocalRank` |
+| Retrieval legs and decoration | `internal/delivery/web/web.go` | `rankedResults`, `bm25Hits`, `semanticHits` |
 | Web wiring | `cmd/patro/main.go` | `wireSearch` |
-| BM25 query | `internal/searchindex/index.go` | `Open`, `Query` |
-| BM25 rebuild | `internal/searchindex/rebuild.go` | `Rebuild`, `collectDocs` |
-| Video freshness boundary | `internal/pipeline/pipeline.go` | `ProcessVideo`, `rebuildSearchIndex` |
-| Semantic backend | `internal/embed/embed.go`, `internal/embed/cybertron.go` | `Embedder`, `Represent`, `EncodeWindow` |
-| Semantic retrieval and sync | `internal/vectors/sync.go` | `NewV2Store`, `NeedsSync`, `Sync`, `NearestRepresentations` |
+| BM25 query | `internal/adapter/searchindex/index.go` | `Open`, `Query` |
+| BM25 rebuild | `internal/adapter/searchindex/rebuild.go` | `Rebuild`, `collectDocs` |
+| Video freshness boundary | `internal/app/pipeline/pipeline.go` | `ProcessVideo`, `rebuildSearchIndex` |
+| Semantic backend | `internal/adapter/embed/embed.go`, `internal/adapter/embed/cybertron.go` | `Embedder`, `Represent`, `EncodeWindow` |
+| Semantic retrieval and sync | `internal/adapter/vectors/sync.go` | `NewV2Store`, `NeedsSync`, `Sync`, `NearestRepresentations` |
 | Maintenance boundary | `cmd/patro/main.go` | `runMaintenance`, `wireSearch` |
 
 ## What is intentionally not part of ranking?

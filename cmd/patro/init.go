@@ -7,7 +7,7 @@
 // This is a port of scribe/install_wizard.py, minus the Python/venv/pip
 // steps that no longer apply to the Go binary. Prompts use plain bufio +
 // fmt; the config and service files themselves are written by
-// internal/setup, which the settings TUI shares.
+// internal/delivery/setup, which the settings TUI shares.
 package main
 
 import (
@@ -17,9 +17,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/fernando143/patro/internal/setup"
+	"github.com/fernando143/patro/internal/delivery/setup"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
 )
 
 // runInitPrompt runs the line-based setup wizard used as a fallback when

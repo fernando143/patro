@@ -5,8 +5,8 @@
   "cases": [
     {
       "id": "observed-609",
-      "a_path": "../../internal/embed/testdata/cybertron-609.md",
-      "b_path": "../../internal/embed/testdata/cybertron-609.md"
+      "a_path": "../../internal/adapter/embed/testdata/cybertron-609.md",
+      "b_path": "../../internal/adapter/embed/testdata/cybertron-609.md"
     }
   ]
 }

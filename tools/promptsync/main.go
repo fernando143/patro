@@ -1,14 +1,14 @@
 // Command promptsync fetches the "production"-labeled versions of the
 // analyzer prompt, its response schema, and its conditional fragments from
 // Langfuse Prompt Management, writing each to its embedded file under
-// internal/analyzer/.
+// internal/adapter/analyzer/.
 //
 // It exists so all of them can be authored and versioned in Langfuse
 // without making the built patro binary depend on Langfuse at runtime:
 // this tool runs once, at release time (see
 // .github/workflows/release.yml) or on-demand during development, and its
 // output is plain files compiled into the binary via go:embed.
-// internal/analyzer.TestResponseSchemaMatchesParser and
+// internal/adapter/analyzer.TestResponseSchemaMatchesParser and
 // TestPromptFragmentsRetainPlaceholders are the build-time guards against
 // a Langfuse edit drifting from what the Go code actually reads.
 //
@@ -34,14 +34,14 @@ var artifacts = []struct {
 	promptName string
 	destPath   string
 }{
-	{"meeting-summary-analyzer", "internal/analyzer/prompt_template.txt"},
-	{"meeting-summary-schema", "internal/analyzer/response_schema.json"},
-	{"meeting-summary-topics-with-existing", "internal/analyzer/prompt_fragments/topics_with_existing.txt"},
-	{"meeting-summary-topics-empty", "internal/analyzer/prompt_fragments/topics_empty.txt"},
-	{"meeting-summary-source-with-path", "internal/analyzer/prompt_fragments/source_with_path.txt"},
-	{"meeting-summary-source-without-path", "internal/analyzer/prompt_fragments/source_without_path.txt"},
-	{"meeting-summary-language-known", "internal/analyzer/prompt_fragments/language_known.txt"},
-	{"meeting-summary-language-unknown", "internal/analyzer/prompt_fragments/language_unknown.txt"},
+	{"meeting-summary-analyzer", "internal/adapter/analyzer/prompt_template.txt"},
+	{"meeting-summary-schema", "internal/adapter/analyzer/response_schema.json"},
+	{"meeting-summary-topics-with-existing", "internal/adapter/analyzer/prompt_fragments/topics_with_existing.txt"},
+	{"meeting-summary-topics-empty", "internal/adapter/analyzer/prompt_fragments/topics_empty.txt"},
+	{"meeting-summary-source-with-path", "internal/adapter/analyzer/prompt_fragments/source_with_path.txt"},
+	{"meeting-summary-source-without-path", "internal/adapter/analyzer/prompt_fragments/source_without_path.txt"},
+	{"meeting-summary-language-known", "internal/adapter/analyzer/prompt_fragments/language_known.txt"},
+	{"meeting-summary-language-unknown", "internal/adapter/analyzer/prompt_fragments/language_unknown.txt"},
 }
 
 type promptResponse struct {

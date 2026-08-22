@@ -29,10 +29,10 @@ go vet ./...
 go test ./...
 
 # Run a single package's tests
-go test ./internal/analyzer/...
+go test ./internal/adapter/analyzer/...
 
 # Run a single test by name
-go test ./internal/analyzer/ -run TestParseResponse -v
+go test ./internal/adapter/analyzer/ -run TestParseResponse -v
 
 # Build the binary
 go build -o patro ./cmd/patro
@@ -55,24 +55,42 @@ Verify `knowledge/meetings/`, `knowledge/topics/`, and `knowledge/index.md` are 
 
 ```
 patro/
-├── cmd/patro/          # main package: CLI entry point + init wizard
+├── cmd/patro/                  # main package: CLI entry point + init wizard
 ├── internal/
-│   ├── types/          # shared data types
-│   ├── config/         # Config struct + config loading/search
-│   ├── state/          # persistent processed-files state
-│   ├── logging/        # shared logger
-│   ├── library/        # Markdown knowledge library writer
-│   ├── analyzer/       # prompt + shared parser; cli.go (kimi/claude subprocess); lemur.go
-│   ├── transcriber/     # AssemblyAI transcription (assemblyai-go-sdk)
-│   ├── watcher/        # fsnotify-based inbox watcher
-│   ├── web/            # on-demand local web viewer (goldmark) for the library
-│   ├── status/         # live processing state published to .state/status.json
-│   ├── setup/          # config writing + service install/update (shared by init and the settings TUI)
-│   ├── tui/            # synthwave TUIs: menu + dashboard + settings (bubbletea/huh) & shared theme
-│   └── pipeline/       # orchestration: ProcessVideo + mocks
-├── knowledge/           # generated knowledge library (index.md, topics/, meetings/, transcripts/)
-└── .state/processed.json  # deduplication state
+│   ├── domain/                 # what patro is about — no infrastructure imports
+│   │   ├── meeting/            # the domain model: transcript, analysis, topic
+│   │   └── knowledge/          # the Markdown knowledge library and topic reconciliation
+│   ├── app/                    # use cases
+│   │   ├── pipeline/           # orchestration: ProcessVideo + mocks
+│   │   ├── watcher/            # fsnotify-based inbox watcher
+│   │   ├── maintenance/        # ensure-index + reconcile flagged topics
+│   │   ├── migration/          # historical topic-merge migration
+│   │   └── search/             # reciprocal rank fusion over the retrieval legs
+│   ├── adapter/                # infrastructure, named for what it talks to
+│   │   ├── analyzer/           # local CLI + LeMUR analyzers; backend/ is the registry
+│   │   ├── transcriber/        # AssemblyAI transcription (assemblyai-go-sdk)
+│   │   ├── embed/              # embedding backends (cybertron)
+│   │   ├── vectors/            # multi-vector representation store
+│   │   ├── searchindex/        # BM25 index (bleve)
+│   │   ├── ledger/             # reconciliation audit trail
+│   │   ├── state/              # persistent processed-files state
+│   │   └── status/             # live processing state published to .state/status.json
+│   ├── delivery/               # the ways a human touches it
+│   │   ├── web/                # on-demand local web viewer (goldmark)
+│   │   ├── tui/                # synthwave TUIs: menu + dashboard + settings
+│   │   └── setup/              # config writing + service install/update
+│   └── platform/               # cross-cutting plumbing
+│       ├── config/             # Config struct + config loading/search
+│       ├── logging/            # shared logger
+│       └── layout/             # on-disk paths for the library and .state/
+├── tools/                      # release-time helpers; embedbench is its own module
+├── knowledge/                  # generated knowledge library (index.md, topics/, meetings/, transcripts/)
+└── .state/processed.json       # deduplication state
 ```
+
+The top level states the domain before any file is opened. `internal/domain`
+imports no infrastructure: it depends on `platform` and on ports it declares
+itself, and adapters are wired in by `app` and `cmd`.
 
 ## Configuration
 
@@ -102,27 +120,27 @@ Commands: `patro serve [--mock] [--config PATH]`, `patro process <file> [--mock]
 - **`serve`**: starts an fsnotify watcher on `config.inbox`; stable files are queued and processed sequentially; on startup, existing unprocessed videos in the inbox are scanned and enqueued; runs until SIGINT/SIGTERM; logs to `patro.log` and stdout.
 - **`process`**: processes a single file end to end and exits; skips the file if already recorded in `.state/processed.json` with the same name and size.
 - **`init`**: interactive setup wizard — asks for the AssemblyAI API key, inbox, library, and analyzer backend, locates the CLI binary, writes the config, and optionally installs/starts a user-level background service (systemd user unit on Linux with the key in `override.conf`, LaunchAgent plist on macOS). On an interactive terminal it runs a synthwave `huh` TUI (`runInitTUI`); with no TTY (piped/non-interactive) it falls back to the line-based prompt wizard (`runInitPrompt`).
-- **`run web`**: on-demand, foreground web viewer for the knowledge library (`internal/web`). Renders `.md` to HTML with goldmark, shows `.txt` transcripts as escaped preformatted text, serves everything else raw. Read-only, no external assets/JS, binds to `127.0.0.1:<port>` (default 8765), and shuts down gracefully on Ctrl+C. Not a background service — meant to be started when needed and stopped with Ctrl+C.
-- **`run tui`**: on-demand, foreground synthwave TUI (`internal/tui`). Opens a menu — **Dashboard**, **Settings**, **Quit** — navigated with `↑/↓`, `enter` to select, `q` to quit. `internal/tui/tui.go` holds the root Bubble Tea model: it routes keys to the active screen, forwards window sizes to every screen, and always forwards the dashboard's own messages so its poll keeps running in the background. `ctrl+c` quits from anywhere. Requires an interactive terminal.
+- **`run web`**: on-demand, foreground web viewer for the knowledge library (`internal/delivery/web`). Renders `.md` to HTML with goldmark, shows `.txt` transcripts as escaped preformatted text, serves everything else raw. Read-only, no external assets/JS, binds to `127.0.0.1:<port>` (default 8765), and shuts down gracefully on Ctrl+C. Not a background service — meant to be started when needed and stopped with Ctrl+C.
+- **`run tui`**: on-demand, foreground synthwave TUI (`internal/delivery/tui`). Opens a menu — **Dashboard**, **Settings**, **Quit** — navigated with `↑/↓`, `enter` to select, `q` to quit. `internal/delivery/tui/tui.go` holds the root Bubble Tea model: it routes keys to the active screen, forwards window sizes to every screen, and always forwards the dashboard's own messages so its poll keeps running in the background. `ctrl+c` quits from anywhere. Requires an interactive terminal.
   - **Dashboard** (Bubble Tea + Lipgloss): reads `.state/status.json`, `.state/processed.json`, the service state and the `patro.log` tail on a 1s tick; shows counters (processing/stage, queue, processed total+session, failed), the in-flight job, config + alerts, recent meetings, a focusable failures list, and a colorized follow/scroll log. The snapshot's PID is liveness-checked every tick: when `status.json` is missing or was written by a serve process that no longer runs, the dashboard raises an alert (e.g. service running an old binary), suppresses the stale queue/in-flight job, and falls back to counting unprocessed inbox videos for the queue card. Keys: `esc` back to menu, `q` quit, `tab` focus, `↑/↓` move, `enter` retry selected failure (spawns `patro process`), `f` follow, `r` refresh, `o`/`w` launch the web viewer.
-  - **Settings** (embedded `huh` forms): a three-step flow — **1** pick the backend (`kimi`, `claude`, `lemur`), **2** confirm the CLI path, **3** API key + save. `esc` walks back one step and leaves the screen from the first. Entering step 2 auto-detects the backend CLI with `exec.LookPath` and shows the result in a panel: when it is found the path field is **optional** (blank keeps the detected binary, which is shown as the placeholder); when detection fails the field is **required** and validated as an executable. `lemur` is hosted, so step 2 is skipped entirely and the flow is 2 steps. Saving writes the config through `internal/setup` and restarts the background service — a running `serve` loads the config once at startup, so the restart is what makes a backend change take effect. The API key goes **only** to the service environment, never to `config.yaml`.
+  - **Settings** (embedded `huh` forms): a three-step flow — **1** pick the backend (`kimi`, `claude`, `lemur`), **2** confirm the CLI path, **3** API key + save. `esc` walks back one step and leaves the screen from the first. Entering step 2 auto-detects the backend CLI with `exec.LookPath` and shows the result in a panel: when it is found the path field is **optional** (blank keeps the detected binary, which is shown as the placeholder); when detection fails the field is **required** and validated as an executable. `lemur` is hosted, so step 2 is skipped entirely and the flow is 2 steps. Saving writes the config through `internal/delivery/setup` and restarts the background service — a running `serve` loads the config once at startup, so the restart is what makes a backend change take effect. The API key goes **only** to the service environment, never to `config.yaml`.
 
     Two implementation constraints, both learned the hard way: every value bound into a form lives behind a pointer (`*settingsValues`), because Bubble Tea passes models by value and binding huh's accessors to model fields captures a copy that is discarded after the current `Update` — the form then writes the user's answers into a dead stack frame. And each step builds its **own** form when entered, rather than patching a form already on screen: a submitted or aborted `huh.Form` ignores later updates and renders an empty string, and huh reads a bound pointer only once, when `Value` is called.
 
-### Live status (`internal/status`)
+### Live status (`internal/adapter/status`)
 
 `serve` owns a `*status.Tracker` that records the live queue, in-flight file + pipeline stage, session processed/failed counts, recent meetings and failures, flushing atomically to `.state/status.json` on every change. It is threaded through the watcher (queue/dequeue/panic-fail) and `pipeline.ProcessVideo` (stage transitions + done); the serve worker reports pipeline failures. **All `Tracker` methods are nil-safe** — the one-shot `process` command passes a nil tracker. This file is the read-only data source for `run tui`'s dashboard.
 
-### Pipeline (`internal/pipeline`)
+### Pipeline (`internal/app/pipeline`)
 
 1. Transcribe the video via the injected transcriber (real AssemblyAI or a deterministic mock) — speaker labels, auto chapters, language detection.
 2. Analyze the transcript via the injected analyzer (backend from config, or a deterministic mock).
-3. Write results via `internal/library`: raw transcript under `knowledge/transcripts/<id>.txt`, meeting note under `knowledge/meetings/<YYYY-MM-DD>-<slug>.md`, topic updates under `knowledge/topics/<slug>.md`, regenerated `knowledge/index.md`.
+3. Write results via `internal/domain/knowledge`: raw transcript under `knowledge/transcripts/<id>.txt`, meeting note under `knowledge/meetings/<YYYY-MM-DD>-<slug>.md`, topic updates under `knowledge/topics/<slug>.md`, regenerated `knowledge/index.md`.
 4. Record the file in `.state/processed.json`.
 
 The pipeline receives transcriber/analyzer as injected functions so `--mock` requires no conditional logic inside the pipeline itself — keep this pattern when extending it.
 
-### Analyzer backends (`internal/analyzer`)
+### Analyzer backends (`internal/adapter/analyzer`)
 
 All backends share the same prompt schema and parser:
 
@@ -137,7 +155,7 @@ The analyzer JSON contract must stay stable — all backends depend on it.
 
 - Code, comments, and docs are in English; doc comments follow standard Go style.
 - Keep the code `gofmt`-clean and `go vet`-clean.
-- Logging goes through `internal/logging`; do not use `log`/`fmt` ad hoc in library packages.
+- Logging goes through `internal/platform/logging`; do not use `log`/`fmt` ad hoc in library packages.
 - Do not store secrets in `config.yaml`; use environment variables.
 - When writing files, create parent directories and write UTF-8.
 
