@@ -14,43 +14,29 @@ import (
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/setup"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // backendChoice is one analyzer backend as offered by the settings screen.
-type backendChoice struct {
-	value string
-	label string
-	// hosted backends run in AssemblyAI's cloud and need no local binary.
-	hosted bool
-}
-
 // backendChoices are the backends the settings screen offers, in display
 // order. The set must match config.ValidAnalyzerBackends.
-var backendChoices = []backendChoice{
-	{value: "kimi", label: "kimi   — local Kimi CLI"},
-	{value: "claude", label: "claude — local Claude CLI"},
-	{value: "codex", label: "codex  — local Codex CLI"},
-	{value: "lemur", label: "lemur  — hosted by AssemblyAI, no local CLI", hosted: true},
-}
 
 // backendOptions builds fresh huh options. huh mutates option state, so the
 // slice must not be shared between forms.
 func backendOptions() []huh.Option[string] {
-	opts := make([]huh.Option[string], 0, len(backendChoices))
-	for _, c := range backendChoices {
-		opts = append(opts, huh.NewOption(c.label, c.value))
+	all := backend.All()
+	opts := make([]huh.Option[string], 0, len(all))
+	for _, b := range all {
+		opts = append(opts, huh.NewOption(b.Label, b.Name))
 	}
 	return opts
 }
 
-// isHosted reports whether backend runs in the cloud and needs no CLI path.
-func isHosted(backend string) bool {
-	for _, c := range backendChoices {
-		if c.value == backend {
-			return c.hosted
-		}
-	}
-	return false
+// isHosted reports whether name runs in the cloud and needs no CLI path.
+func isHosted(name string) bool {
+	b, ok := backend.Get(name)
+	return ok && b.Hosted
 }
 
 // settingsStep is the stage of the settings flow currently on screen. Each
@@ -370,16 +356,7 @@ func (m settingsModel) binaryPath() string {
 
 // currentBinary returns the CLI path configured for cfg's backend.
 func currentBinary(cfg *config.Config) string {
-	switch cfg.AnalyzerBackend {
-	case "kimi":
-		return cfg.KimiPath
-	case "claude":
-		return cfg.ClaudePath
-	case "codex":
-		return cfg.CodexPath
-	default:
-		return ""
-	}
+	return cfg.BinaryPath(cfg.AnalyzerBackend)
 }
 
 func (m settingsModel) Init() tea.Cmd { return nil }

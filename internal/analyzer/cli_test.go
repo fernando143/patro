@@ -169,7 +169,7 @@ func TestAnalyzeCLISuccess(t *testing.T) {
 	kimiPath := writeFakeCLI(t, dir, "fake-kimi",
 		"#!/bin/sh\n{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\ncat \""+streamFile+"\"\n")
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", KimiPath: kimiPath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	tr := &types.TranscriptResult{
 		ID:       "mtg1",
 		Language: "en",
@@ -232,7 +232,7 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 		"echo '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromClaude\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"claude-topic\\\"}]}\"}]}}'\n"
 	claudePath := writeFakeCLI(t, dir, "fake-claude", script)
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "claude", ClaudePath: claudePath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "mtg-claude", Language: "en", Text: "transcript"}
 
 	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
@@ -262,7 +262,7 @@ func TestAnalyzeCLICodexUsesExecJSON(t *testing.T) {
 		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromCodex\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"codex-topic\\\"}]}\"}}'\n"
 	codexPath := writeFakeCLI(t, dir, "fake-codex", script)
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "codex", CodexPath: codexPath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"codex": codexPath}, Dir: dir, AnalyzerBackend: "codex"}
 	tr := &types.TranscriptResult{ID: "mtg-codex", Language: "en", Text: "transcript"}
 
 	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
@@ -292,36 +292,36 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	dir := t.TempDir()
 	tr := &types.TranscriptResult{ID: "m1", Text: "text"}
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", KimiPath: filepath.Join(dir, "no-such-kimi")}
+	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", BinaryPaths: map[string]string{"kimi": filepath.Join(dir, "no-such-kimi")}}
 	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {
 		t.Fatal("expected error for missing kimi binary")
 	}
 	want := fmt.Sprintf("'%s' executable not found. Install Kimi Code CLI "+
 		"(https://www.kimi.com/code), adjust kimi_path in config.yaml, "+
-		"or set analyzer_backend: lemur in config.yaml.", cfg.KimiPath)
+		"or set analyzer_backend: lemur in config.yaml.", cfg.BinaryPath("kimi"))
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)
 	}
 
-	cfg = &config.Config{Dir: dir, AnalyzerBackend: "claude", ClaudePath: filepath.Join(dir, "no-such-claude")}
+	cfg = &config.Config{Dir: dir, AnalyzerBackend: "claude", BinaryPaths: map[string]string{"claude": filepath.Join(dir, "no-such-claude")}}
 	_, err = AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {
 		t.Fatal("expected error for missing claude binary")
 	}
 	want = fmt.Sprintf("'%s' executable not found. Install Claude Code CLI, "+
-		"adjust claude_path in config.yaml, or switch analyzer_backend to kimi/lemur.", cfg.ClaudePath)
+		"adjust claude_path in config.yaml, or switch analyzer_backend to kimi/lemur.", cfg.BinaryPath("claude"))
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)
 	}
 
-	cfg = &config.Config{Dir: dir, AnalyzerBackend: "codex", CodexPath: filepath.Join(dir, "no-such-codex")}
+	cfg = &config.Config{Dir: dir, AnalyzerBackend: "codex", BinaryPaths: map[string]string{"codex": filepath.Join(dir, "no-such-codex")}}
 	_, err = AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {
 		t.Fatal("expected error for missing codex binary")
 	}
 	want = fmt.Sprintf("'%s' executable not found. Install Codex CLI, "+
-		"adjust codex_path in config.yaml, or switch analyzer_backend to kimi/claude/lemur.", cfg.CodexPath)
+		"adjust codex_path in config.yaml, or switch analyzer_backend to kimi/claude/lemur.", cfg.BinaryPath("codex"))
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)
 	}
@@ -332,7 +332,7 @@ func TestAnalyzeCLINonZeroExit(t *testing.T) {
 	kimiPath := writeFakeCLI(t, dir, "fake-kimi",
 		"#!/bin/sh\necho 'fatal: something broke' >&2\nexit 3\n")
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", KimiPath: kimiPath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	tr := &types.TranscriptResult{ID: "m2", Text: "text"}
 	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {
@@ -350,7 +350,7 @@ func TestAnalyzeCLIStderrTruncatedTo1000(t *testing.T) {
 		"exit 1\n"
 	claudePath := writeFakeCLI(t, dir, "fake-claude", script)
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "claude", ClaudePath: claudePath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "m3", Text: "text"}
 	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {
@@ -366,7 +366,7 @@ func TestAnalyzeCLINoAssistantText(t *testing.T) {
 	claudePath := writeFakeCLI(t, dir, "fake-claude",
 		"#!/bin/sh\necho '{\"role\":\"user\",\"content\":\"no assistant here\"}'\n")
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "claude", ClaudePath: claudePath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "m4", Text: "text"}
 	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
 	if err == nil {

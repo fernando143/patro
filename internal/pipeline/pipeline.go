@@ -30,6 +30,8 @@ import (
 	"github.com/fernando143/patro/internal/vectors"
 
 	"github.com/fernando143/patro/internal/layout"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
@@ -59,10 +61,10 @@ func RealTranscribe(ctx context.Context, videoPath string, cfg *config.Config) (
 }
 
 // MakeAnalyzeFunc returns the real analyzer selected by
-// cfg.AnalyzerBackend: "lemur" calls AssemblyAI's hosted LLM with the API
-// key from the environment; "kimi"/"claude"/"codex" shell out to a local CLI.
+// cfg.AnalyzerBackend: a hosted backend calls AssemblyAI's LLM with the API
+// key from the environment, and every other backend shells out to a local CLI.
 func MakeAnalyzeFunc(cfg *config.Config) AnalyzeFunc {
-	if cfg.AnalyzerBackend == "lemur" {
+	if b, ok := backend.Get(cfg.AnalyzerBackend); ok && b.Hosted {
 		return func(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
 			apiKey, err := cfg.APIKey()
 			if err != nil {
@@ -165,15 +167,16 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	// so this never needs its own separate config key. lemur (hosted, no
 	// local CLI) falls back to kimi_path, matching kimi's status as the
 	// project's default local CLI.
-	binaryPath := cfg.KimiPath
-	if cfg.AnalyzerBackend == "claude" {
-		binaryPath = cfg.ClaudePath
-	} else if cfg.AnalyzerBackend == "codex" {
-		binaryPath = cfg.CodexPath
+	grayZone, ok := backend.Get(cfg.AnalyzerBackend)
+	if !ok || grayZone.Hosted {
+		// lemur is hosted and has no local CLI, so the gray zone falls back
+		// to the project's default local binary.
+		grayZone, _ = backend.Get(backend.Default)
 	}
+	binaryPath := cfg.BinaryPath(grayZone.Name)
 
 	decide := library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second)
-	if cfg.AnalyzerBackend == "codex" {
+	if grayZone.CodexStyleStream {
 		decide = library.GrayZoneCodex(binaryPath, grayZoneTimeoutSeconds*time.Second)
 	}
 
