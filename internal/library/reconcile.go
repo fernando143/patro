@@ -26,7 +26,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
 
@@ -66,12 +65,24 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error)
 }
 
-type DocumentRepresenter interface {
-	Represent(context.Context, embed.Document) (*embed.Representation, error)
+// NearestTopic is the existing topic closest to a candidate, with the
+// similarity that ranked it. An empty Slug means there was nothing to
+// compare against — an empty library, or a store with no entries yet.
+type NearestTopic struct {
+	Slug  string
+	Score float64
 }
 
-type MultiVectorFinder interface {
-	NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
+// TopicSimilarity answers "which existing topic is this candidate most
+// like, and how much?".
+//
+// The domain states the question in its own vocabulary — topics and scores.
+// How an implementation answers it (embeddings, multi-vector chunking,
+// cosine similarity, some future index) is deliberately not visible from
+// here: this package decides what a topic *is*, and must stay readable
+// without knowing what a chunk vector is.
+type TopicSimilarity interface {
+	Nearest(ctx context.Context, candidate types.Topic) (NearestTopic, error)
 }
 
 // GrayZoneDecider answers "is candidate the same topic as nearest?" for a
@@ -85,8 +96,7 @@ type GrayZoneDecider func(ctx context.Context, candidate types.Topic, nearest ty
 // representations via a multi-vector backend + representation store, with a
 // single gray-zone LLM call as a tie-breaker (design D1/D2/D7).
 type SemanticReconciler struct {
-	Representer       DocumentRepresenter
-	MultiStore        MultiVectorFinder
+	Similarity        TopicSimilarity
 	MergeThreshold    float64
 	NewTopicThreshold float64
 	// Decide resolves the gray zone. A nil Decide always safe-fails a
@@ -104,26 +114,13 @@ type SemanticReconciler struct {
 func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error) {
 	proposed := Resolution{Slug: candidate.Slug, Name: candidate.Name, ProposedSlug: candidate.Slug}
 
-	var topID string
-	var topScore float64
-	var err error
-	if r.Representer == nil || r.MultiStore == nil {
+	if r.Similarity == nil {
 		res := r.failSafe(candidate, 0)
 		r.writeLedger(res)
 		return res, nil
 	}
-	var representation *embed.Representation
-	representation, err = r.Representer.Represent(ctx, embed.Document{ID: candidate.Slug, Text: "# " + candidate.Name + "\n\n" + candidate.Content})
-	if err == nil && representation == nil {
-		err = errors.New("library: representation backend returned nil representation")
-	}
-	if err == nil {
-		var results []embed.RankedResult
-		results, err = r.MultiStore.NearestRepresentations(ctx, *representation, embed.DirectedMode, 1)
-		if err == nil && len(results) > 0 {
-			topID, topScore = results[0].ID, results[0].Score
-		}
-	}
+
+	nearestTopic, err := r.Similarity.Nearest(ctx, candidate)
 	if err != nil {
 		// An unavailable or rebuilding representation store must never risk a
 		// wrong merge answered from a half-rebuilt/inconsistent snapshot —
@@ -133,11 +130,12 @@ func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topi
 		r.writeLedger(res)
 		return res, nil
 	}
-	if topID == "" {
+	if nearestTopic.Slug == "" {
 		return proposed, nil // nothing to compare against: new topic, unflagged
 	}
 
-	nearest := types.TopicRef{Slug: topID, Name: nameFor(existing, topID)}
+	topScore := nearestTopic.Score
+	nearest := types.TopicRef{Slug: nearestTopic.Slug, Name: nameFor(existing, nearestTopic.Slug)}
 
 	switch {
 	case topScore >= r.MergeThreshold:

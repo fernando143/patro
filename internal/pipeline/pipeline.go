@@ -181,8 +181,7 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	decide := analyzer.GrayZoneDecision(grayZone, binaryPath, grayZoneTimeoutSeconds*time.Second)
 
 	return &library.SemanticReconciler{
-		Representer:       embedder,
-		MultiStore:        v2,
+		Similarity:        representationSimilarity{representer: embedder, store: v2},
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,
 		Decide:            decide,

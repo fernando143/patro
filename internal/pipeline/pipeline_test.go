@@ -562,11 +562,8 @@ func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	if !ok {
 		t.Fatalf("newReconciler(cybertron) = %#v (%T), want *library.SemanticReconciler", r, r)
 	}
-	if sr.Representer == nil {
-		t.Error("SemanticReconciler.Representer = nil, want a document representer")
-	}
-	if sr.MultiStore == nil {
-		t.Error("SemanticReconciler.MultiStore = nil, want a multi-vector store")
+	if sr.Similarity == nil {
+		t.Error("SemanticReconciler.Similarity = nil, want a topic-similarity implementation")
 	}
 	if sr.MergeThreshold != 0.90 {
 		t.Errorf("MergeThreshold = %v, want 0.90", sr.MergeThreshold)
@@ -589,11 +586,15 @@ func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg.Library, "topics"), 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
 	}
-	v2, ok := sr.MultiStore.(*vectors.V2Store)
+	sim, ok := sr.Similarity.(representationSimilarity)
 	if !ok {
-		t.Fatalf("MultiStore = %T, want *vectors.V2Store", sr.MultiStore)
+		t.Fatalf("Similarity = %T, want representationSimilarity", sr.Similarity)
 	}
-	if err := v2.Sync(context.Background(), filepath.Join(cfg.Library, "topics"), sr.Representer); err != nil {
+	v2, ok := sim.store.(*vectors.V2Store)
+	if !ok {
+		t.Fatalf("store = %T, want *vectors.V2Store", sim.store)
+	}
+	if err := v2.Sync(context.Background(), filepath.Join(cfg.Library, "topics"), sim.representer); err != nil {
 		t.Fatalf("Sync error = %v", err)
 	}
 	if _, err := os.Stat(wantStore); err != nil {

@@ -9,26 +9,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
 
 	"github.com/fernando143/patro/internal/ledger"
 )
 
-type fakeMultiStore struct {
-	results []embed.RankedResult
-	err     error
+// fakeSimilarity is the whole test double now. Before the domain spoke its
+// own vocabulary these tests needed two fakes, both of which had to
+// construct chunk vectors and representation envelopes to say "0.95".
+type fakeSimilarity struct {
+	slug  string
+	score float64
+	err   error
 }
 
-func (f fakeMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
-	return f.results, f.err
-}
-
-type fakeRepresenter struct{}
-
-func (fakeRepresenter) Represent(context.Context, embed.Document) (*embed.Representation, error) {
-	return &embed.Representation{Chunks: []embed.Chunk{{Kind: "content", Ordinal: 0, TokenCount: 1, Vector: []float32{1, 0}}}}, nil
+func (f fakeSimilarity) Nearest(context.Context, types.Topic) (NearestTopic, error) {
+	if f.err != nil {
+		return NearestTopic{}, f.err
+	}
+	return NearestTopic{Slug: f.slug, Score: f.score}, nil
 }
 
 func staticDecider(same bool, err error) GrayZoneDecider {
@@ -90,8 +90,7 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 			}
 
 			r := &SemanticReconciler{
-				Representer:       fakeRepresenter{},
-				MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: tt.score}}},
+				Similarity:        fakeSimilarity{slug: "react-hooks", score: tt.score},
 				MergeThreshold:    0.90,
 				NewTopicThreshold: 0.70,
 				Decide:            decide,
@@ -126,8 +125,7 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 
 func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: nil},
+		Similarity:        fakeSimilarity{},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 	}
@@ -145,8 +143,7 @@ func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 
 func TestSemanticReconcilerUsesMultiVectorStoreWhenAvailable(t *testing.T) {
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 	}
@@ -163,8 +160,7 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	calls := 0
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.80}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.80},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		Decide: func(context.Context, types.Topic, types.TopicRef) (bool, error) {
@@ -206,8 +202,7 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 func TestSemanticReconcilerErrV2NeedsRebuildSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{err: vectors.ErrV2NeedsRebuild},
+		Similarity:        fakeSimilarity{err: vectors.ErrV2NeedsRebuild},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -238,8 +233,7 @@ func TestAddMeetingCtxMergeAnnotatesAndLedgers(t *testing.T) {
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.93}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.93},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -395,8 +389,7 @@ func TestReconcileFlaggedMergesOnNowMatchingScore(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -440,8 +433,7 @@ func TestReconcileFlaggedStillNoMatchLeavesTopicUntouched(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: nil}, // still nothing to compare against
+		Similarity:        fakeSimilarity{}, // still nothing to compare against
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -470,8 +462,7 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
