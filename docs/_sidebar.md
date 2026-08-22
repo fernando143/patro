@@ -1,0 +1,5 @@
+- **Patro**
+  - [Overview](README.md)
+  - [Search architecture](search-architecture.md)
+  - [QA runbook: `patro regenerate`](regenerate-qa-runbook.md)
+  - [Repository README](https://github.com/fernando143/patro#readme)

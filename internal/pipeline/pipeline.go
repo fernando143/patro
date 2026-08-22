@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
+	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/transcriber"
@@ -133,24 +135,15 @@ func MockAnalyze(_ context.Context, t *types.TranscriptResult, _ []types.TopicRe
 // ------------------------------------------------------------------ pipeline
 
 // newReconciler builds the production Reconciler wired to the configured
-// embedding backend and vector store (design D1/D2/D7/D9/D10). It returns
-// nil — never an error — on any construction failure (unknown/misconfigured
-// embedding_backend, or a vector store that cannot be opened): Library.
+// multi-vector representation backend and store (design D1/D2/D7/D9/D10).
+// It returns nil — never an error — on any construction failure
+// (unknown/misconfigured embedding_backend or a representation store that
+// cannot be initialized): Library.
 // Reconciler is nil-safe and falls back to today's exact-slug-only behavior
-// (design D1), so a missing/misconfigured embedding backend never blocks
-// video processing. This also means the pipeline never fails --mock runs or
-// tests that construct a *config.Config directly and leave
-// EmbeddingBackend unset: embed.New("") fails fast (a registry map lookup,
-// no weight loading), well before any vector store I/O is attempted.
-//
-// The vector store is rooted at cfg.StateDir()/vectors/topics.json (design
-// D10) and is only ever populated out of band by Rebuild — never
-// incrementally by the reconciler itself. That rebuild trigger
-// (`patro reconcile` / serve-startup integrity check) is Unit 7's scope,
-// not this one: wiring the reconciler here is safe before Unit 7 lands
-// because an empty or stale store degrades to "nothing to compare against"
-// (new, unflagged topic) or vectors.ErrRebuilding (new, flagged topic) —
-// both already-designed safe-fail paths, never a wrong merge.
+// (design D1), so a missing/misconfigured representation backend never blocks
+// video processing. A dirty or missing v2 snapshot remains wired and
+// safe-fails through vectors.ErrV2NeedsRebuild during reconciliation rather
+// than querying an incomplete representation set.
 // NewReconciler is the exported form of newReconciler, so cmd/patro can wire
 // the identical production Reconciler for "patro reconcile" (Unit 7) without
 // duplicating this construction logic.
@@ -166,39 +159,16 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	legacyStore, legacyErr := vectors.NewStore(storePath, embedder, embedder.Name())
-	if legacyErr != nil {
-		logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, legacyErr)
+	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	if err != nil {
+		logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", err)
 		return nil
 	}
-	var store library.NearestFinder = legacyStore
-	var representer library.DocumentRepresenter
-	var multiStore library.MultiVectorFinder
-	if candidate, ok := embedder.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	}); ok {
-		sample, sampleErr := candidate.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-		if sampleErr != nil {
-			logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", sampleErr)
-			return nil
-		}
-		v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		// A legacy store remains the safe compatibility path until the
-		// maintenance command has produced a current v2 snapshot.  Never
-		// query a dirty v2 store: it is intentionally unavailable while a
-		// rebuild is pending.
-		if !v2.NeedsSync() {
-			representer = candidate
-			multiStore = v2
-		}
-	} else {
-		legacy, storeErr := vectors.NewStore(storePath, embedder, embedder.Name())
-		if storeErr != nil {
-			logging.Warnf("reconciliation disabled: cannot open vector store at %s: %v", storePath, storeErr)
-			return nil
-		}
-		store = legacy
+	if sample == nil {
+		logging.Warnf("reconciliation disabled: representation backend returned nil identity")
+		return nil
 	}
+	v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
 	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
@@ -219,10 +189,8 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 
 	return &library.SemanticReconciler{
-		Embedder:          embedder,
-		Store:             store,
-		Representer:       representer,
-		MultiStore:        multiStore,
+		Representer:       embedder,
+		MultiStore:        v2,
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,
 		Decide:            decide,
@@ -262,6 +230,9 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 	if err != nil {
 		return "", err
 	}
+	if err := rebuildSearchIndex(ctx, cfg); err != nil {
+		return "", err
+	}
 
 	if err := st.MarkProcessed(videoPath, transcript.ID); err != nil {
 		return "", err
@@ -269,4 +240,25 @@ func ProcessVideo(ctx context.Context, videoPath string, cfg *config.Config, st 
 	logging.Infof("Done: %s -> %s", filepath.Base(videoPath), notePath)
 	tracker.Done(videoPath, analysis.Title)
 	return notePath, nil
+}
+
+// rebuildSearchIndex refreshes the derived BM25 index from the Markdown
+// library after a successful meeting write. The source files are written
+// before this call and the video is marked processed only after it succeeds,
+// so a failed rebuild leaves the video eligible for a retry.
+func rebuildSearchIndex(ctx context.Context, cfg *config.Config) error {
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		return fmt.Errorf("open search index: %w", err)
+	}
+
+	rebuildErr := idx.Rebuild(ctx, filepath.Join(cfg.Library, "topics"), filepath.Join(cfg.Library, "meetings"))
+	closeErr := idx.Close()
+	if rebuildErr != nil {
+		return fmt.Errorf("rebuild search index: %w", rebuildErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close search index: %w", closeErr)
+	}
+	return nil
 }

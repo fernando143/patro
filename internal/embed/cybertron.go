@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,20 +173,9 @@ func verifyCybertronWeights(fsys fs.FS) error {
 	return nil
 }
 
-// Embed returns the mean-pooled, L2-normalized sentence embedding for text.
-// Mean pooling (averaging the model's contextual last-hidden-states across
-// tokens) is the pooling strategy sentence-embedding models of the
-// MiniLM/BERT family are evaluated with; the model itself only guarantees a
-// dense vector, so normalization to unit length happens here to satisfy the
-// Embedder contract.
-func (c *cybertronEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	vec, err := c.EncodeWindow(ctx, text)
-	if err != nil {
-		return nil, err
-	}
-	return normalizeVector(vec), nil
-}
-
+// EncodeWindow produces one normalized chunk vector for the document
+// representer. It is intentionally a window-level primitive: callers must
+// use Represent to preserve the complete multi-vector document structure.
 func (c *cybertronEmbedder) EncodeWindow(ctx context.Context, text string) ([]float32, error) {
 	resp, err := c.model.Encode(ctx, text, int(bert.MeanPooling))
 	if err != nil {
@@ -198,19 +186,6 @@ func (c *cybertronEmbedder) EncodeWindow(ctx context.Context, text string) ([]fl
 	vec := make([]float32, len(data))
 	copy(vec, data)
 	return vec, nil
-}
-
-func normalizeVector(vector []float32) []float32 {
-	var sumSquares float64
-	for _, value := range vector {
-		sumSquares += float64(value) * float64(value)
-	}
-	if norm := math.Sqrt(sumSquares); norm > 0 {
-		for i := range vector {
-			vector[i] = float32(float64(vector[i]) / norm)
-		}
-	}
-	return vector
 }
 
 type cybertronTokenizer struct{ embedder *cybertronEmbedder }

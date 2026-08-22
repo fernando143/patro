@@ -8,29 +8,25 @@
 // internal/config.validAnalyzerBackends: every compiled-in backend is
 // visible by reading this one table.
 //
-// This file ships the Embedder contract, the registry, and a deterministic
-// no-op double for tests/--mock. Real backend adapters register themselves
-// in the registry table below (see cybertron.go); the shape of Embedder,
-// Available and New is unchanged since the registry skeleton landed, so
-// adapters can plug in without changing callers.
+// This file ships the multi-vector Embedder contract and the registry. Real
+// backend adapters register themselves in the registry table below (see
+// cybertron.go).
 package embed
 
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
-	"math"
 	"sort"
 	"strings"
 )
 
-// Embedder produces a vector embedding for a piece of text. Implementations
-// must return an L2-normalized (unit-length) vector so callers can compute
-// cosine similarity as a plain dot product.
+// Embedder produces a complete multi-vector representation for a Markdown
+// document. Implementations must preserve the document identity and return
+// normalized chunk vectors through Representation.
 type Embedder interface {
-	// Embed returns the vector embedding of text.
-	Embed(ctx context.Context, text string) ([]float32, error)
-	// Dim returns the dimensionality of vectors produced by Embed.
+	// Represent returns all title/content chunk vectors for a document.
+	Represent(ctx context.Context, document Document) (*Representation, error)
+	// Dim returns the dimensionality of chunk vectors produced by Represent.
 	Dim() int
 	// Name returns the backend's registry name.
 	Name() string
@@ -83,43 +79,3 @@ func New(name string) (Embedder, error) {
 	}
 	return e, nil
 }
-
-// nopEmbedder is a deterministic, dependency-free Embedder used by tests and
-// --mock runs. It performs no real inference and is deliberately not part of
-// the registry: it is a test double, not a config-selectable
-// embedding_backend value.
-type nopEmbedder struct {
-	dim int
-}
-
-// NewNop returns an Embedder that derives a deterministic, unit-length
-// pseudo-vector from the FNV hash of its input text. It has no external
-// dependency and needs no embedded weights, making it safe to use in tests
-// and in --mock pipeline runs.
-func NewNop(dim int) Embedder {
-	return nopEmbedder{dim: dim}
-}
-
-func (n nopEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
-	vec := make([]float32, n.dim)
-	var sumSquares float64
-	for i := range vec {
-		h := fnv.New64a()
-		fmt.Fprintf(h, "%d:%s", i, text)
-		// Map the hash into [-1, 1) for a mix of signs.
-		v := float64(h.Sum64()%2000001)/1000000.0 - 1.0
-		vec[i] = float32(v)
-		sumSquares += v * v
-	}
-	norm := math.Sqrt(sumSquares)
-	if norm > 0 {
-		for i := range vec {
-			vec[i] = float32(float64(vec[i]) / norm)
-		}
-	}
-	return vec, nil
-}
-
-func (n nopEmbedder) Dim() int { return n.dim }
-
-func (n nopEmbedder) Name() string { return "nop" }

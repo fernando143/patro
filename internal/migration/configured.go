@@ -21,31 +21,21 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 		LibraryRoot: cfg.Library,
 		StateDir:    cfg.StateDir(),
 		Threshold:   cfg.MergeThreshold,
-		Embedder:    embedder,
-	}
-	if representer, ok := embedder.(DocumentRepresenter); ok {
-		s.Representer = representer
+		Representer: embedder,
 	}
 	s.RebuildDerived = func(ctx context.Context) error {
 		storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
 		topicsDir := filepath.Join(cfg.Library, "topics")
-		if representer, ok := embedder.(DocumentRepresenter); ok {
-			sample, err := representer.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-			if err != nil {
-				return fmt.Errorf("migration: initializing representation identity: %w", err)
-			}
-			v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-			if err := v2.Sync(ctx, topicsDir, representer); err != nil {
-				return err
-			}
-		} else {
-			store, err := vectors.NewStore(storePath, embedder, embedder.Name())
-			if err != nil {
-				return err
-			}
-			if err := store.Rebuild(ctx, topicsDir, nil); err != nil {
-				return err
-			}
+		sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		if err != nil {
+			return fmt.Errorf("migration: initializing representation identity: %w", err)
+		}
+		if sample == nil {
+			return fmt.Errorf("migration: representation backend returned nil identity")
+		}
+		v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+		if err := v2.Sync(ctx, topicsDir, embedder); err != nil {
+			return err
 		}
 		idx, err := searchindex.Open(cfg.SearchIndexDir())
 		if err != nil {

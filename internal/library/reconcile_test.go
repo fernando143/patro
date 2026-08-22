@@ -15,24 +15,6 @@ import (
 	"github.com/fernando143/patro/internal/vectors"
 )
 
-// fakeEmbedder is a deterministic, dependency-free Embedder stub for tests.
-type fakeEmbedder struct {
-	vec []float32
-	err error
-}
-
-func (f fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
-	return f.vec, f.err
-}
-
-// fakeStore is a deterministic, dependency-free NearestFinder stub for
-// tests — it never touches internal/vectors' real (concurrent) store, so
-// ErrRebuilding and other failure modes can be simulated synchronously.
-type fakeStore struct {
-	results []vectors.Result
-	err     error
-}
-
 type fakeMultiStore struct {
 	results []embed.RankedResult
 	err     error
@@ -46,10 +28,6 @@ type fakeRepresenter struct{}
 
 func (fakeRepresenter) Represent(context.Context, embed.Document) (*embed.Representation, error) {
 	return &embed.Representation{Chunks: []embed.Chunk{{Kind: "content", Ordinal: 0, TokenCount: 1, Vector: []float32{1, 0}}}}, nil
-}
-
-func (f fakeStore) Nearest(_ []float32, _ int) ([]vectors.Result, error) {
-	return f.results, f.err
 }
 
 func staticDecider(same bool, err error) GrayZoneDecider {
@@ -111,8 +89,8 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 			}
 
 			r := &SemanticReconciler{
-				Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-				Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: tt.score}}},
+				Representer:       fakeRepresenter{},
+				MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: tt.score}}},
 				MergeThreshold:    0.90,
 				NewTopicThreshold: 0.70,
 				Decide:            decide,
@@ -147,8 +125,8 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 
 func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 	r := &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: nil},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: nil},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 	}
@@ -166,8 +144,6 @@ func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 
 func TestSemanticReconcilerUsesMultiVectorStoreWhenAvailable(t *testing.T) {
 	r := &SemanticReconciler{
-		Embedder:          fakeEmbedder{err: fmt.Errorf("legacy one-vector path must not run")},
-		Store:             fakeStore{err: fmt.Errorf("legacy store must not run")},
 		Representer:       fakeRepresenter{},
 		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
 		MergeThreshold:    0.90,
@@ -186,8 +162,8 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	calls := 0
 	r := &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.80}}},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.80}}},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		Decide: func(context.Context, types.Topic, types.TopicRef) (bool, error) {
@@ -226,11 +202,11 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 	}
 }
 
-func TestSemanticReconcilerErrRebuildingSafeFails(t *testing.T) {
+func TestSemanticReconcilerErrV2NeedsRebuildSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	r := &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{err: vectors.ErrRebuilding},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{err: vectors.ErrV2NeedsRebuild},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -241,17 +217,17 @@ func TestSemanticReconcilerErrRebuildingSafeFails(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if res.Merged {
-		t.Error("ErrRebuilding MUST NOT be treated as a merge signal")
+		t.Error("ErrV2NeedsRebuild MUST NOT be treated as a merge signal")
 	}
 	if !res.Flagged {
-		t.Error("ErrRebuilding MUST flag the new topic needs-reconciliation, so a later reconcile pass picks it up")
+		t.Error("ErrV2NeedsRebuild MUST flag the new topic needs-reconciliation, so a later reconcile pass picks it up")
 	}
 	if res.Slug != "x-y" {
 		t.Errorf("Slug = %q, want %q (no meeting lost during rebuild)", res.Slug, "x-y")
 	}
 
 	if _, err := os.Stat(ledgerPath); err != nil {
-		t.Errorf("ledger not written for the ErrRebuilding fail-safe path: %v", err)
+		t.Errorf("ledger not written for the ErrV2NeedsRebuild fail-safe path: %v", err)
 	}
 }
 
@@ -261,8 +237,8 @@ func TestAddMeetingCtxMergeAnnotatesAndLedgers(t *testing.T) {
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
 	l.Reconciler = &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.93}}},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.93}}},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -491,8 +467,8 @@ func TestReconcileFlaggedMergesOnNowMatchingScore(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.95}}},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -536,8 +512,8 @@ func TestReconcileFlaggedStillNoMatchLeavesTopicUntouched(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: nil}, // still nothing to compare against
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: nil}, // still nothing to compare against
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -566,8 +542,8 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Embedder:          fakeEmbedder{vec: []float32{1, 0}},
-		Store:             fakeStore{results: []vectors.Result{{ID: "react-hooks", Score: 0.95}}},
+		Representer:       fakeRepresenter{},
+		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,

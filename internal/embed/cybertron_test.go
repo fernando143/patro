@@ -104,92 +104,23 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func TestCybertronEmbedIsUnitNorm(t *testing.T) {
+func TestCybertronRepresentProducesCompleteDocument(t *testing.T) {
 	e := newTestCybertronEmbedder(t)
-
-	vec, err := e.Embed(context.Background(), "The cat sat on the mat.")
+	representation, err := e.Represent(context.Background(), Document{
+		ID:   "meeting",
+		Text: "# Product roadmap\n\nThe team discussed the next release.",
+	})
 	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
+		t.Fatalf("Represent() error: %v", err)
 	}
-	if len(vec) != e.Dim() {
-		t.Fatalf("Embed() returned %d dims, want %d", len(vec), e.Dim())
+	if representation.DocumentID != "meeting" {
+		t.Fatalf("DocumentID = %q, want meeting", representation.DocumentID)
 	}
-
-	var sumSquares float64
-	for _, f := range vec {
-		sumSquares += float64(f) * float64(f)
+	if len(representation.Chunks) < 2 {
+		t.Fatalf("chunks = %d, want title and content vectors", len(representation.Chunks))
 	}
-	if diff := sumSquares - 1.0; diff < -1e-3 || diff > 1e-3 {
-		t.Errorf("||Embed()|| = %v, want a unit vector (sum of squares ~1.0)", sumSquares)
-	}
-}
-
-// TestCybertronProducesGenuineContextualEmbeddings is the behavioral test
-// that distinguishes a real sentence encoder from a non-contextual
-// bag-of-token-embeddings average (the defect that disqualified the zerfoo
-// candidate, Unit 1c): a paraphrase must score a materially higher cosine
-// similarity than an unrelated sentence. A degenerate "average the static
-// token embedding table" implementation would only weakly separate these,
-// since it ignores word order, attention, and composition entirely.
-func TestCybertronProducesGenuineContextualEmbeddings(t *testing.T) {
-	e := newTestCybertronEmbedder(t)
-	ctx := context.Background()
-
-	base, err := e.Embed(ctx, "The cat sat on the mat.")
-	if err != nil {
-		t.Fatalf("Embed(base) error: %v", err)
-	}
-	paraphrase, err := e.Embed(ctx, "A feline rested on the rug.")
-	if err != nil {
-		t.Fatalf("Embed(paraphrase) error: %v", err)
-	}
-	unrelated, err := e.Embed(ctx, "The stock market crashed yesterday.")
-	if err != nil {
-		t.Fatalf("Embed(unrelated) error: %v", err)
-	}
-
-	cosParaphrase := dot(base, paraphrase) // unit-norm vectors: dot == cosine
-	cosUnrelated := dot(base, unrelated)
-
-	if cosParaphrase <= cosUnrelated {
-		t.Fatalf("cos(base,paraphrase) = %v, cos(base,unrelated) = %v; want paraphrase similarity strictly greater",
-			cosParaphrase, cosUnrelated)
-	}
-	// A near-degenerate encoder (e.g. static-table averaging) still passes
-	// the ordering check loosely; require a real margin to catch it.
-	if cosParaphrase-cosUnrelated < 0.2 {
-		t.Fatalf("similarity margin too small: cos(base,paraphrase)=%v cos(base,unrelated)=%v, want a margin >= 0.2",
-			cosParaphrase, cosUnrelated)
-	}
-}
-
-func dot(a, b []float32) float64 {
-	var sum float64
-	for i := range a {
-		sum += float64(a[i]) * float64(b[i])
-	}
-	return sum
-}
-
-func TestCybertronEmbedIsDeterministic(t *testing.T) {
-	e := newTestCybertronEmbedder(t)
-	ctx := context.Background()
-
-	v1, err := e.Embed(ctx, "deterministic check")
-	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
-	}
-	v2, err := e.Embed(ctx, "deterministic check")
-	if err != nil {
-		t.Fatalf("Embed() error: %v", err)
-	}
-	if len(v1) != len(v2) {
-		t.Fatalf("Embed() lengths differ: %d vs %d", len(v1), len(v2))
-	}
-	for i := range v1 {
-		if v1[i] != v2[i] {
-			t.Fatalf("Embed() is not deterministic: v1[%d]=%v v2[%d]=%v", i, v1[i], i, v2[i])
-		}
+	if representation.Dimension != e.Dim() {
+		t.Fatalf("Dimension = %d, want %d", representation.Dimension, e.Dim())
 	}
 }
 

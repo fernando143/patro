@@ -174,13 +174,7 @@ func report(ctx context.Context, a, b string) ([]reportRow, error) {
 }
 
 func represent(e embed.Embedder, ctx context.Context, side, text string) (*embed.Representation, error) {
-	representer, ok := e.(interface {
-		Represent(context.Context, embed.Document) (*embed.Representation, error)
-	})
-	if !ok {
-		return nil, fmt.Errorf("backend does not provide document representations for %s", side)
-	}
-	return representer.Represent(ctx, embed.Document{ID: side, Text: text})
+	return e.Represent(ctx, embed.Document{ID: side, Text: text})
 }
 
 func chunkCounts(r embed.Representation) (title, content int) {
@@ -199,19 +193,4 @@ func minFloat(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-// cosine returns the cosine similarity of two vectors. Embedder
-// implementations are contracted to return unit-norm (L2-normalized)
-// vectors, so this is a plain dot product (design D2).
-func cosine(a, b []float32) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	var dot float64
-	for i := 0; i < n; i++ {
-		dot += float64(a[i]) * float64(b[i])
-	}
-	return dot
 }

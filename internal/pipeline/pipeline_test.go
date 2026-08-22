@@ -13,6 +13,7 @@ import (
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
+	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
 	"github.com/fernando143/patro/internal/types"
@@ -38,9 +39,9 @@ func newTestCfg(t *testing.T) *config.Config {
 	// deliberately left unset: newReconciler then fails fast on
 	// embed.New("") and lib.Reconciler stays nil, preserving these tests'
 	// pre-existing exact-slug-only behavior without spinning up a real
-	// embedding backend or writing under a relative ".state" (Dir is also
-	// unset here).
-	return &config.Config{Library: filepath.Join(root, "library"), TopicPromptLimit: 50}
+	// embedding backend. Dir is rooted in the same temporary directory so the
+	// derived search index remains isolated from the repository.
+	return &config.Config{Dir: root, Library: filepath.Join(root, "library"), TopicPromptLimit: 50}
 }
 
 var errBoom = errors.New("boom")
@@ -71,6 +72,71 @@ func TestProcessVideoHappyPathMock(t *testing.T) {
 	}
 	if !st.IsProcessed(video) {
 		t.Error("state.IsProcessed = false after successful ProcessVideo, want true")
+	}
+}
+
+func TestProcessVideoRebuildsSearchIndexAfterEachVideo(t *testing.T) {
+	cfg := newTestCfg(t)
+	videoDir := t.TempDir()
+	st := state.New(t.TempDir())
+
+	firstVideo := newTestVideo(t, videoDir, "first.mkv")
+	firstAnalysis := func(context.Context, *types.TranscriptResult, []types.TopicRef) (*types.AnalysisResult, error) {
+		return &types.AnalysisResult{
+			Title:   "First planning session",
+			Summary: "alphaonly",
+			Topics:  []types.Topic{{Slug: "first-topic", Name: "First topic", Content: "First searchable detail."}},
+		}, nil
+	}
+	if _, err := ProcessVideo(context.Background(), firstVideo, cfg, st, nil, MockTranscribe, firstAnalysis); err != nil {
+		t.Fatalf("first ProcessVideo error = %v", err)
+	}
+
+	idx, err := searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		t.Fatalf("searchindex.Open after first video: %v", err)
+	}
+	hits, err := idx.Query("alphaonly", 10)
+	if err != nil {
+		idx.Close()
+		t.Fatalf("Query after first video: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Kind != searchindex.KindMeeting || hits[0].Title != "First planning session" {
+		idx.Close()
+		t.Fatalf("hits after first video = %+v, want first meeting", hits)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("Close after first query: %v", err)
+	}
+
+	secondVideo := newTestVideo(t, videoDir, "second.mkv")
+	secondAnalysis := func(context.Context, *types.TranscriptResult, []types.TopicRef) (*types.AnalysisResult, error) {
+		return &types.AnalysisResult{
+			Title:   "Second launch review",
+			Summary: "betaonly",
+			Topics:  []types.Topic{{Slug: "second-topic", Name: "Second topic", Content: "Second searchable detail."}},
+		}, nil
+	}
+	if _, err := ProcessVideo(context.Background(), secondVideo, cfg, st, nil, MockTranscribe, secondAnalysis); err != nil {
+		t.Fatalf("second ProcessVideo error = %v", err)
+	}
+
+	idx, err = searchindex.Open(cfg.SearchIndexDir())
+	if err != nil {
+		t.Fatalf("searchindex.Open after second video: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	hits, err = idx.Query("betaonly", 10)
+	if err != nil {
+		t.Fatalf("Query after second video: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Kind != searchindex.KindMeeting || hits[0].Title != "Second launch review" {
+		t.Fatalf("hits after second video = %+v, want second meeting", hits)
+	}
+	if hits, err := idx.Query("alphaonly", 10); err != nil {
+		t.Fatalf("Query for first video after second rebuild: %v", err)
+	} else if len(hits) != 1 || hits[0].Kind != searchindex.KindMeeting || hits[0].Title != "First planning session" {
+		t.Fatalf("first video missing after second rebuild: %+v", hits)
 	}
 }
 
@@ -476,15 +542,16 @@ func TestNewReconcilerEmptyBackendReturnsNil(t *testing.T) {
 }
 
 // TestNewReconcilerValidBackendWiresSemanticReconciler proves the real
-// wiring (the gap flagged by the Unit 4 implementer): a valid
-// embedding_backend must produce a *library.SemanticReconciler with a real
-// embedder, a vector store rooted at cfg.StateDir()/vectors/topics.json, the
-// configured thresholds, a non-nil gray-zone decider, and the ledger path
-// at cfg.StateDir()/reconciliation.json.
+// wiring: a valid embedding_backend must produce a
+// *library.SemanticReconciler with a document representer, a multi-vector
+// store rooted at cfg.StateDir()/vectors/topics.json, the configured
+// thresholds, a non-nil gray-zone decider, and the ledger path at
+// cfg.StateDir()/reconciliation.json.
 func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
 		Dir:               dir,
+		Library:           filepath.Join(dir, "library"),
 		EmbeddingBackend:  "cybertron",
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
@@ -497,11 +564,11 @@ func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	if !ok {
 		t.Fatalf("newReconciler(cybertron) = %#v (%T), want *library.SemanticReconciler", r, r)
 	}
-	if sr.Embedder == nil {
-		t.Error("SemanticReconciler.Embedder = nil, want a real embedder")
+	if sr.Representer == nil {
+		t.Error("SemanticReconciler.Representer = nil, want a document representer")
 	}
-	if sr.Store == nil {
-		t.Error("SemanticReconciler.Store = nil, want a real vector store")
+	if sr.MultiStore == nil {
+		t.Error("SemanticReconciler.MultiStore = nil, want a multi-vector store")
 	}
 	if sr.MergeThreshold != 0.90 {
 		t.Errorf("MergeThreshold = %v, want 0.90", sr.MergeThreshold)
@@ -518,18 +585,18 @@ func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	}
 
 	// The store must be reachable at the documented, stable path (design
-	// D10: ".state/vectors/topics.json") so a later Unit 7 rebuild
-	// populates the exact same store this reconciler queries. NewStore
-	// does not create the directory eagerly (lazy, mirrors vectors' own
-	// on-first-flush behavior) — Upsert exercises the same path and
-	// proves it is writable.
+	// D10: ".state/vectors/topics.json") so a representation sync populates
+	// the exact same store this reconciler queries.
 	wantStore := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	vec, err := sr.Embedder.Embed(context.Background(), "probe")
-	if err != nil {
-		t.Fatalf("Embed error = %v", err)
+	if err := os.MkdirAll(filepath.Join(cfg.Library, "topics"), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
 	}
-	if err := sr.Store.(*vectors.Store).Upsert("probe", vec); err != nil {
-		t.Fatalf("Upsert error = %v", err)
+	v2, ok := sr.MultiStore.(*vectors.V2Store)
+	if !ok {
+		t.Fatalf("MultiStore = %T, want *vectors.V2Store", sr.MultiStore)
+	}
+	if err := v2.Sync(context.Background(), filepath.Join(cfg.Library, "topics"), sr.Representer); err != nil {
+		t.Fatalf("Sync error = %v", err)
 	}
 	if _, err := os.Stat(wantStore); err != nil {
 		t.Errorf("vector store file %s not written after Upsert: %v", wantStore, err)
@@ -569,18 +636,14 @@ func TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend(t *testing.T) {
 
 // TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate is the runtime
 // harness for the reconciler-wiring gap: it exercises ProcessVideo end to
-// end with the real cybertron embedder and a real *vectors.Store rooted at
-// the exact path newReconciler constructs, proving lib.Reconciler is
+// end with the real cybertron representer and a real *vectors.V2Store rooted
+// at the exact path newReconciler constructs, proving lib.Reconciler is
 // genuinely wired (not left nil) and AddMeetingCtx (not the legacy
 // AddMeeting) is called.
 //
-// Per Unit 4's design (D10), the vector store is only ever populated by an
-// out-of-band Rebuild — never incrementally by the reconciler itself — and
-// that trigger belongs to Unit 7 (`patro reconcile` / serve-startup
-// integrity check), not this unit. So this test pre-seeds the store exactly
-// as a prior Rebuild would have, at the same path/backend/model_version
-// newReconciler uses, to prove the plumbing this unit owns is correct
-// without reimplementing Unit 7's rebuild trigger.
+// The test pre-seeds the representation store exactly as a prior sync would
+// have, at the same path/backend/model_version newReconciler uses, to prove
+// the plumbing this unit owns is correct without reimplementing maintenance.
 func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
@@ -603,7 +666,7 @@ func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 		existingName = "Product roadmap"
 		content      = "We discussed shipping the new dashboard feature next quarter."
 	)
-	if err := os.WriteFile(filepath.Join(lib.TopicsDir, existingSlug+".md"), []byte("# "+existingName+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(lib.TopicsDir, existingSlug+".md"), []byte("# "+existingName+"\n\n"+content+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}
 
@@ -612,16 +675,13 @@ func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 		t.Fatalf("embed.New error = %v", err)
 	}
 	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	store, err := vectors.NewStore(storePath, embedder, embedder.Name())
+	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
-		t.Fatalf("vectors.NewStore error = %v", err)
+		t.Fatalf("Represent identity error = %v", err)
 	}
-	vec, err := embedder.Embed(context.Background(), existingName+"\n"+content)
-	if err != nil {
-		t.Fatalf("Embed error = %v", err)
-	}
-	if err := store.Upsert(existingSlug, vec); err != nil {
-		t.Fatalf("Upsert error = %v", err)
+	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+	if err := store.Sync(context.Background(), lib.TopicsDir, embedder); err != nil {
+		t.Fatalf("Sync error = %v", err)
 	}
 
 	video := newTestVideo(t, dir, "meeting.mkv")

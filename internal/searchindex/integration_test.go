@@ -6,16 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/searchindex"
-	"github.com/fernando143/patro/internal/vectors"
 )
 
-// Task 3.6 — Rebuild() must reconstruct BOTH indexes from markdown alone
-// after deleting .state/{vectors,search-index}: they are genuinely
-// derived/reconstructable stores, not sources of truth, exactly like the
-// existing knowledge library's own index.md.
-func TestBothIndexesRecoverFromMarkdownAfterStateDeletion(t *testing.T) {
+// Rebuild() must reconstruct the BM25 index from markdown alone after
+// deleting its derived state directory; the knowledge library remains the
+// source of truth.
+func TestSearchIndexRecoversFromMarkdownAfterStateDeletion(t *testing.T) {
 	root := t.TempDir()
 	topicsDir := filepath.Join(root, "topics")
 	meetingsDir := filepath.Join(root, "meetings")
@@ -30,18 +27,9 @@ func TestBothIndexesRecoverFromMarkdownAfterStateDeletion(t *testing.T) {
 	writeMD(t, meetingsDir, "2026-01-05-standup", "Standup", "Discussed the roadmap.")
 
 	stateDir := filepath.Join(root, ".state")
-	vectorsPath := filepath.Join(stateDir, "vectors", "topics.json")
 	searchIndexPath := filepath.Join(stateDir, "search-index")
 
-	// First-time build: both stores start empty, get rebuilt from markdown.
-	vs, err := vectors.NewStore(vectorsPath, embed.NewNop(4), "v1")
-	if err != nil {
-		t.Fatalf("vectors.NewStore: %v", err)
-	}
-	if err := vs.Rebuild(context.Background(), topicsDir, nil); err != nil {
-		t.Fatalf("vectors Rebuild: %v", err)
-	}
-
+	// First-time build: the store starts empty and is rebuilt from markdown.
 	si, err := searchindex.Open(searchIndexPath)
 	if err != nil {
 		t.Fatalf("searchindex.Open: %v", err)
@@ -53,37 +41,10 @@ func TestBothIndexesRecoverFromMarkdownAfterStateDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate an operator (or corruption recovery) deleting both derived
-	// state directories entirely, per the design's rollback story.
-	if err := os.RemoveAll(filepath.Join(stateDir, "vectors")); err != nil {
-		t.Fatal(err)
-	}
+	// Simulate an operator (or corruption recovery) deleting the derived
+	// state directory entirely.
 	if err := os.RemoveAll(searchIndexPath); err != nil {
 		t.Fatal(err)
-	}
-
-	// Reopen (fresh, empty) and rebuild both — full state must recover from
-	// topics/*.md and meetings/*.md alone, with no other input.
-	vs2, err := vectors.NewStore(vectorsPath, embed.NewNop(4), "v1")
-	if err != nil {
-		t.Fatalf("vectors.NewStore (after deletion): %v", err)
-	}
-	if !vs2.NeedsRebuild() {
-		t.Fatal("vectors NeedsRebuild() after deletion = false, want true")
-	}
-	if err := vs2.Rebuild(context.Background(), topicsDir, nil); err != nil {
-		t.Fatalf("vectors Rebuild (recovery): %v", err)
-	}
-	vresults, err := vs2.Nearest([]float32{1, 0, 0, 0}, 10)
-	if err != nil {
-		t.Fatalf("vectors Nearest: %v", err)
-	}
-	vids := map[string]bool{}
-	for _, r := range vresults {
-		vids[r.ID] = true
-	}
-	if !vids["roadmap"] || !vids["onboarding"] {
-		t.Fatalf("vectors recovered = %+v, want roadmap and onboarding", vresults)
 	}
 
 	si2, err := searchindex.Open(searchIndexPath)
