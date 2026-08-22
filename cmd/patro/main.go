@@ -60,6 +60,8 @@ import (
 	"github.com/fernando143/patro/internal/layout"
 
 	"github.com/fernando143/patro/internal/analyzer/backend"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -579,11 +581,11 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	}
 
 	ledgerPath := layout.State(cfg.StateDir()).Ledger()
-	entries, err := library.ReadLedger(ledgerPath)
+	entries, err := ledger.Read(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
 	}
-	if flaggedTotal := library.CountFlagged(entries); flaggedTotal > 0 {
+	if flaggedTotal := ledger.CountFlagged(entries); flaggedTotal > 0 {
 		tracker.MaintenanceStart(status.PhaseReconciling, flaggedTotal)
 		_, reconcileErr := lib.ReconcileFlagged(ctx, ledgerPath, func(done, _ int) {
 			tracker.MaintenanceProgress(done)

@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/status"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // deadPID returns the PID of a process that has already exited and been
@@ -263,8 +264,8 @@ func TestCountFlaggedTopicsCorruptLedgerDegradesToZero(t *testing.T) {
 func TestCountFlaggedTopicsCountsLatestPerSlug(t *testing.T) {
 	dir := t.TempDir()
 	entries := struct {
-		Entries []library.LedgerEntry `json:"entries"`
-	}{Entries: []library.LedgerEntry{
+		Entries []ledger.Entry `json:"entries"`
+	}{Entries: []ledger.Entry{
 		{Slug: "a", Flagged: true},
 		{Slug: "b", Flagged: true},
 	}}
@@ -285,8 +286,8 @@ func TestCountFlaggedTopicsCountsLatestPerSlug(t *testing.T) {
 func TestLoadDataSurfacesFlaggedCountAndClearsStaleMaintenance(t *testing.T) {
 	cfg := testConfig(t)
 	entries := struct {
-		Entries []library.LedgerEntry `json:"entries"`
-	}{Entries: []library.LedgerEntry{{Slug: "x", Flagged: true}}}
+		Entries []ledger.Entry `json:"entries"`
+	}{Entries: []ledger.Entry{{Slug: "x", Flagged: true}}}
 	raw, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
