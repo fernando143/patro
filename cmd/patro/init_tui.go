@@ -12,10 +12,10 @@ import (
 	"github.com/charmbracelet/huh"
 	"golang.org/x/term"
 
-	"github.com/fernando143/patro/internal/setup"
-	"github.com/fernando143/patro/internal/tui"
+	"github.com/fernando143/patro/internal/delivery/setup"
+	"github.com/fernando143/patro/internal/delivery/tui"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
 )
 
 // runInit picks the wizard flavor based on whether we have a real terminal.

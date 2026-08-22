@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/adapter/embed"
 )
 
 type calibrationCase struct {

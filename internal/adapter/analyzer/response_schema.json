@@ -1,0 +1,16 @@
+{
+  "meeting": {
+    "title": "short descriptive title",
+    "summary": "2-4 sentence summary of the meeting",
+    "key_points": ["point 1", "point 2"],
+    "decisions": ["decision 1"],
+    "action_items": [{"owner": "person name or 'unassigned'", "task": "what must be done"}]
+  },
+  "topics": [
+    {
+      "slug": "kebab-case-slug",
+      "name": "Human readable name",
+      "content": "Markdown with what was newly learned about this topic in this meeting"
+    }
+  ]
+}

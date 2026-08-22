@@ -1,0 +1,16 @@
+You are analyzing a meeting transcript to distill it into a personal knowledge library.
+
+{{source}}
+
+{{topics}}
+
+Respond with ONLY a valid JSON object (no prose, no markdown fences) matching exactly this schema:
+{{schema}}
+
+Rules:
+- Slugs must be lowercase kebab-case, ASCII, no accents.
+- "content" of each topic is Markdown: what was newly learned about that topic in THIS meeting (facts, decisions, context), not a meeting summary.
+- 1 to 5 topics, each focused on a single subject.
+- {{language_rule}}
+- If a list would be empty, use an empty array.
+- Your final message must contain ONLY the JSON object, nothing else.

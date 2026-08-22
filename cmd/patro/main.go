@@ -40,23 +40,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/logging"
-	"github.com/fernando143/patro/internal/migration"
-	"github.com/fernando143/patro/internal/pipeline"
-	"github.com/fernando143/patro/internal/setup"
-	"github.com/fernando143/patro/internal/state"
-	"github.com/fernando143/patro/internal/status"
-	"github.com/fernando143/patro/internal/tui"
-	"github.com/fernando143/patro/internal/vectors"
-	"github.com/fernando143/patro/internal/watcher"
-	"github.com/fernando143/patro/internal/web"
+	"github.com/fernando143/patro/internal/adapter/state"
+	"github.com/fernando143/patro/internal/adapter/status"
+	"github.com/fernando143/patro/internal/adapter/vectors"
+	"github.com/fernando143/patro/internal/app/migration"
+	"github.com/fernando143/patro/internal/app/pipeline"
+	"github.com/fernando143/patro/internal/app/watcher"
+	"github.com/fernando143/patro/internal/delivery/setup"
+	"github.com/fernando143/patro/internal/delivery/tui"
+	"github.com/fernando143/patro/internal/delivery/web"
+	"github.com/fernando143/patro/internal/platform/config"
+	"github.com/fernando143/patro/internal/platform/logging"
 
 	"golang.org/x/term"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
 
-	"github.com/fernando143/patro/internal/maintenance"
+	"github.com/fernando143/patro/internal/app/maintenance"
 )
 
 // version is overridden by release builds via -X main.version=...

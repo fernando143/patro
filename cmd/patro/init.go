@@ -17,9 +17,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/fernando143/patro/internal/setup"
+	"github.com/fernando143/patro/internal/delivery/setup"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
 )
 
 // runInitPrompt runs the line-based setup wizard used as a fallback when
