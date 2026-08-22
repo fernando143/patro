@@ -603,20 +603,17 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 // derived BM25 index per request, so a long-running viewer does not hold
 // Bleve's lock while `patro process` publishes a replacement. Embedding setup
 // is best effort: a failure disables only the semantic leg and leaves BM25
-// available. It returns a cleanup func to keep the caller's lifecycle
-// contract unchanged.
-func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
+// available.
+func wireSearch(srv *web.Server, cfg *config.Config) {
 	srv.SearchIndexPath = cfg.SearchIndexDir()
-	closeFn = func() {}
 
 	store, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
 		logging.Warnf("multi-vector search is disabled: %v", err)
-		return closeFn
+		return
 	}
 	srv.MultiVectors = store
 	srv.Representer = embedder
-	return closeFn
 }
 
 // runWeb starts the local knowledge-library web viewer and blocks until
@@ -638,8 +635,7 @@ func runWeb(opts *cliOptions) int {
 	}
 
 	srv := web.NewServer(cfg.Library)
-	closeSearch := wireSearch(srv, cfg)
-	defer closeSearch()
+	wireSearch(srv, cfg)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
 	server := &http.Server{Addr: addr, Handler: srv}
