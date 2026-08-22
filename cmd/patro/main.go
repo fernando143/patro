@@ -42,7 +42,6 @@ import (
 	"time"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/migration"
@@ -532,22 +531,12 @@ func printMigrationPlan(plan migration.Plan) {
 // otherwise left alone rather than paying a full re-embed/reindex cost on
 // every single serve startup or reconcile call.
 func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tracker) error {
-	embedder, err := embed.New(cfg.EmbeddingBackend)
-	if err != nil {
-		return fmt.Errorf("maintenance: embedding backend unavailable: %w", err)
-	}
-
-	storePath := layout.State(cfg.StateDir()).VectorStore()
 	libPaths := layout.Library(cfg.Library)
 	topicsDir := libPaths.Topics()
-	sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+	store, embedder, err := vectors.OpenRepresentationStore(ctx, cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		return fmt.Errorf("maintenance: initializing representation identity: %w", err)
+		return fmt.Errorf("maintenance: %w", err)
 	}
-	if sample == nil {
-		return fmt.Errorf("maintenance: representation backend returned nil identity")
-	}
-	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 	if store.NeedsSync() {
 		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
 		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
@@ -616,23 +605,12 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 	srv.SearchIndexPath = cfg.SearchIndexDir()
 	closeFn = func() {}
 
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	store, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		logging.Warnf("embedding backend unavailable, multi-vector search is disabled: %v", err)
+		logging.Warnf("multi-vector search is disabled: %v", err)
 		return closeFn
 	}
-
-	storePath := layout.State(cfg.StateDir()).VectorStore()
-	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		logging.Warnf("representation backend unavailable, multi-vector search is disabled: %v", err)
-		return closeFn
-	}
-	if sample == nil {
-		logging.Warnf("representation backend returned nil identity, multi-vector search is disabled")
-		return closeFn
-	}
-	srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+	srv.MultiVectors = store
 	srv.Representer = embedder
 	return closeFn
 }

@@ -20,7 +20,6 @@ import (
 
 	"github.com/fernando143/patro/internal/analyzer"
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
@@ -154,23 +153,11 @@ func NewReconciler(cfg *config.Config) library.Reconciler {
 }
 
 func newReconciler(cfg *config.Config) library.Reconciler {
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	v2, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
 		logging.Warnf("reconciliation disabled: %v", err)
 		return nil
 	}
-
-	storePath := layout.State(cfg.StateDir()).VectorStore()
-	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", err)
-		return nil
-	}
-	if sample == nil {
-		logging.Warnf("reconciliation disabled: representation backend returned nil identity")
-		return nil
-	}
-	v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
 	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
