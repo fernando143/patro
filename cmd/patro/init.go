@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/fernando143/patro/internal/setup"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // runInitPrompt runs the line-based setup wizard used as a fallback when
@@ -48,13 +50,16 @@ func runInitPrompt(flagConfig string) int {
 	libraryDir := p.promptPath("Enter the path to your knowledge library folder", "./knowledge")
 	fmt.Println()
 
-	backend := p.promptBackend()
-	binaryPath := p.promptBinary(backend)
+	selected := p.promptBackend()
+	binaryPath := ""
+	if !selected.Hosted {
+		binaryPath = p.promptBinary(selected.DefaultBinary)
+	}
 	fmt.Println()
 
 	configPath := setup.ConfigPath(flagConfig)
 	if err := setup.WriteConfig(configPath, setup.Values{
-		Inbox: inbox, Library: libraryDir, Backend: backend, BinaryPath: binaryPath,
+		Inbox: inbox, Library: libraryDir, Backend: selected.Name, BinaryPath: binaryPath,
 	}); err != nil {
 		fmt.Printf("Error: cannot write %s: %v\n", configPath, err)
 		return 1
@@ -179,14 +184,15 @@ func (p *prompter) promptPath(label, def string) string {
 	}
 }
 
-// promptBackend asks which local AI CLI should write the notes.
-func (p *prompter) promptBackend() string {
+// promptBackend asks which AI should write the notes, offering every
+// backend the registry knows about.
+func (p *prompter) promptBackend() backend.Backend {
 	for {
-		backend := strings.ToLower(p.ask("Which local AI should write the knowledge library? (kimi/claude)", "kimi"))
-		if backend == "kimi" || backend == "claude" {
-			return backend
+		answer := p.ask(backendPromptLabel(), backend.Default)
+		if b, ok := backend.Get(answer); ok {
+			return b
 		}
-		fmt.Println("Please answer 'kimi' or 'claude'.")
+		fmt.Printf("Please answer one of: %s.\n", strings.Join(backend.Names(), ", "))
 	}
 }
 
