@@ -12,11 +12,11 @@ import (
 // representationSimilarity answers the domain's "which existing topic is
 // this most like?" using multi-vector representations.
 //
-// It lives here rather than in internal/library because it is the adapter
+// It lives here rather than in internal/domain/knowledge because it is the adapter
 // side of that port: the knowledge domain states the question, and this
 // composition layer — which already knows about embedders and vector stores
 // — supplies an implementation. It lives here rather than in
-// internal/vectors because rendering a candidate topic as Markdown is
+// internal/adapter/vectors because rendering a candidate topic as Markdown is
 // library's convention, not the store's.
 type representationSimilarity struct {
 	representer embed.Embedder

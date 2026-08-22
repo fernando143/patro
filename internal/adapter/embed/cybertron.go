@@ -17,7 +17,7 @@ import (
 )
 
 // cybertronName is the registry name for the cybertron backend, and the
-// value validated by internal/config.validEmbeddingBackends.
+// value validated by internal/platform/config.validEmbeddingBackends.
 const cybertronName = "cybertron"
 
 // cybertronWeights embeds the local, pre-converted spaGO/cybertron

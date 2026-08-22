@@ -14,7 +14,7 @@ import (
 )
 
 // These tests moved here with the code. They previously lived in
-// internal/library, which is the knowledge domain and had no business
+// internal/domain/knowledge, which is the knowledge domain and had no business
 // shelling out to a CLI.
 
 func writeGrayZoneScript(t *testing.T, dir, body string) string {

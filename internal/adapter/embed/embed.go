@@ -5,7 +5,7 @@
 // (go:embed), so producing an embedding never requires a network call or a
 // runtime secret. Backends are wired into a small explicit registry rather
 // than self-registering through init(), mirroring
-// internal/config.validAnalyzerBackends: every compiled-in backend is
+// internal/platform/config.validAnalyzerBackends: every compiled-in backend is
 // visible by reading this one table.
 //
 // This file ships the multi-vector Embedder contract and the registry. Real

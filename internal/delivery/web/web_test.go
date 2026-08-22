@@ -298,7 +298,7 @@ func TestMeetingNavigationLinksAdjacentDates(t *testing.T) {
 }
 
 // setupSearchLibrary builds a library plus a BM25 index over its topics and
-// meetings, mirroring the shape internal/searchindex proves in its rebuild
+// meetings, mirroring the shape internal/adapter/searchindex proves in its rebuild
 // tests.
 func setupSearchLibrary(t *testing.T) (root string, idx *searchindex.Index) {
 	t.Helper()

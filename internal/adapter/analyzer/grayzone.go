@@ -18,7 +18,7 @@ import (
 // neighbour?
 //
 // This is a subprocess adapter, so it belongs here beside the analyzer's
-// other CLI plumbing rather than inside internal/library, where two
+// other CLI plumbing rather than inside internal/domain/knowledge, where two
 // near-identical copies of it used to live — one for kimi and claude, one
 // for codex, differing only in how the command was invoked and how its
 // answer was read back. Both facts are in the registry, so one function

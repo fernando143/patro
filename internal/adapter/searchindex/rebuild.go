@@ -18,7 +18,7 @@ import (
 // deletable; markdown is the source of truth).
 //
 // Rebuild is single-flight: a second call while one is already running
-// returns immediately (nil error) as a no-op, mirroring internal/vectors.
+// returns immediately (nil error) as a no-op, mirroring internal/adapter/vectors.
 func (i *Index) Rebuild(ctx context.Context, topicsDir, meetingsDir string) error {
 	if !i.rebuilding.CompareAndSwap(false, true) {
 		return nil // a rebuild is already in flight: single-flight no-op

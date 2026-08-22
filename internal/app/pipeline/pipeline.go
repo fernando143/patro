@@ -37,7 +37,7 @@ import (
 // grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
 // (analyzer.GrayZoneDecision): a short yes/no question about two topics, not a
 // full transcript analysis, so it uses a much smaller budget than the
-// analyzer's own CLI timeout (internal/analyzer/cli.go's cliTimeoutSeconds
+// analyzer's own CLI timeout (internal/adapter/analyzer/cli.go's cliTimeoutSeconds
 // = 600s).
 const grayZoneTimeoutSeconds = 60
 
@@ -171,7 +171,7 @@ func newReconciler(cfg *config.Config) knowledge.Reconciler {
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
 	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
-	// populated with a default (internal/config),
+	// populated with a default (internal/platform/config),
 	// so this never needs its own separate config key. lemur (hosted, no
 	// local CLI) falls back to kimi_path, matching kimi's status as the
 	// project's default local CLI.

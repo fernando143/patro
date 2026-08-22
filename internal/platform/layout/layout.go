@@ -5,11 +5,11 @@
 // Before this package the same joins — "topics", "meetings",
 // "vectors/topics.json", "reconciliation.json" — were spelled out in eleven
 // files across seven packages, so renaming a directory meant finding every
-// copy. internal/status set the precedent this package follows: declare the
+// copy. internal/adapter/status set the precedent this package follows: declare the
 // name once, expose an accessor, and let callers stop knowing the string.
 //
 // Paths come in as plain strings rather than a *config.Config so this
-// package stays below internal/config and remains usable from
+// package stays below internal/platform/config and remains usable from
 // migration.Service, which holds bare roots of its own.
 package layout
 

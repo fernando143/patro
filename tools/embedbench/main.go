@@ -18,10 +18,10 @@
 // This file previously held only the Unit 1a compile-verify spike: proving
 // that a nested module rooted here, with its own go.mod and a
 // `replace github.com/fernando143/patro => ../..` directive, can import
-// internal/embed across the module boundary. Go's internal-package rule is
+// internal/adapter/embed across the module boundary. Go's internal-package rule is
 // enforced by import-path prefix, not module boundary: the importer
 // github.com/fernando143/patro/tools/embedbench sits under the
-// github.com/fernando143/patro prefix that owns internal/embed, so the
+// github.com/fernando143/patro prefix that owns internal/adapter/embed, so the
 // import is legal despite tools/embedbench being a separate module. Unit 2
 // replaces that spike with the real form+server.
 package main
