@@ -35,7 +35,7 @@ import (
 )
 
 // grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
-// (library.GrayZoneCLI): a short yes/no question about two topics, not a
+// (analyzer.GrayZoneDecision): a short yes/no question about two topics, not a
 // full transcript analysis, so it uses a much smaller budget than the
 // analyzer's own CLI timeout (internal/analyzer/cli.go's cliTimeoutSeconds
 // = 600s).
@@ -178,10 +178,7 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 	}
 	binaryPath := cfg.BinaryPath(grayZone.Name)
 
-	decide := library.GrayZoneCLI(binaryPath, grayZoneTimeoutSeconds*time.Second)
-	if grayZone.CodexStyleStream {
-		decide = library.GrayZoneCodex(binaryPath, grayZoneTimeoutSeconds*time.Second)
-	}
+	decide := analyzer.GrayZoneDecision(grayZone, binaryPath, grayZoneTimeoutSeconds*time.Second)
 
 	return &library.SemanticReconciler{
 		Representer:       embedder,

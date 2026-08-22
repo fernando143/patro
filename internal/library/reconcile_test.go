@@ -2,7 +2,6 @@ package library
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -318,79 +317,6 @@ func TestExistingTopicsRecent(t *testing.T) {
 	}
 }
 
-// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
-
-func writeScript(t *testing.T, dir, body string) string {
-	t.Helper()
-	path := filepath.Join(dir, "fake-cli.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func TestGrayZoneCLIYes(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo "yes"`)
-	decide := GrayZoneCLI(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if !same {
-		t.Error("same = false, want true for a \"yes\" answer")
-	}
-}
-
-func TestGrayZoneCodexYes(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo '{"type":"item.completed","item":{"type":"agent_message","text":"yes"}}'`)
-	decide := GrayZoneCodex(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if !same {
-		t.Error("same = false, want true for a Codex \"yes\" answer")
-	}
-}
-
-func TestGrayZoneCLINo(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo "no"`)
-	decide := GrayZoneCLI(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if same {
-		t.Error("same = true, want false for a \"no\" answer")
-	}
-}
-
-func TestGrayZoneCLINonZeroExit(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `exit 1`)
-	decide := GrayZoneCLI(script, time.Second)
-	if _, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"}); err == nil {
-		t.Fatal("decide() error = nil, want an error on non-zero exit")
-	}
-}
-
-func TestGrayZoneCLITimeout(t *testing.T) {
-	// exec (rather than a plain "sleep 5") replaces the shell with sleep
-	// itself, so SIGKILL on context timeout reaches the process actually
-	// holding stdout/stderr open and the test returns promptly instead of
-	// blocking for the full sleep duration.
-	script := writeScript(t, t.TempDir(), `exec sleep 5`)
-	decide := GrayZoneCLI(script, 50*time.Millisecond)
-	_, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err == nil {
-		t.Fatal("decide() error = nil, want a timeout error")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error = %q, want it to mention a timeout", err)
-	}
-}
-
-// --- ReadLedger / ReconcileFlagged ("patro reconcile", Unit 7) ---
-
 func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
 	entries, err := ReadLedger(filepath.Join(t.TempDir(), "reconciliation.json"))
 	if err != nil {
@@ -555,27 +481,5 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	}
 	if merged != 0 {
 		t.Errorf("merged = %d, want 0: a missing flagged topic file must be skipped, not error", merged)
-	}
-}
-
-func TestGrayZoneCLIArgvNotShellInterpreted(t *testing.T) {
-	dir := t.TempDir()
-	promptFile := filepath.Join(dir, "prompt.txt")
-	script := writeScript(t, dir, fmt.Sprintf(`echo "$2" > %s`, promptFile))
-
-	dangerous := "candidate `touch " + filepath.Join(dir, "pwned") + "` $(touch " + filepath.Join(dir, "pwned2") + ")"
-	decide := GrayZoneCLI(script, time.Second)
-	if _, err := decide(context.Background(), types.Topic{Name: dangerous, Content: "c"}, types.TopicRef{Name: "Y", Slug: "y"}); err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-
-	got := readFile(t, promptFile)
-	if !strings.Contains(got, dangerous) {
-		t.Errorf("prompt argument was not passed through verbatim:\ngot:  %q\nwant substring: %q", got, dangerous)
-	}
-	for _, pwned := range []string{filepath.Join(dir, "pwned"), filepath.Join(dir, "pwned2")} {
-		if _, err := os.Stat(pwned); err == nil {
-			t.Errorf("shell metacharacters in the prompt were interpreted; %s was created", pwned)
-		}
 	}
 }
