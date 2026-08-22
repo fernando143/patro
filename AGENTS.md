@@ -39,15 +39,26 @@ patro/
 │   └── release.yml             # tag-triggered release automation
 ├── cmd/patro/                  # main package: CLI entry point + init wizard
 ├── internal/
-│   ├── types/                  # shared data types
-│   ├── config/                 # Config struct + config loading/search
-│   ├── state/                  # persistent processed-files state
-│   ├── logging/                # shared logger
-│   ├── library/                # Markdown knowledge library writer
-│   ├── analyzer/               # prompt + shared parser; cli.go (kimi/claude subprocess); lemur.go
-│   ├── transcriber/            # AssemblyAI transcription (assemblyai-go-sdk)
-│   ├── watcher/                # fsnotify-based inbox watcher
-│   └── pipeline/               # orchestration: ProcessVideo + mocks
+│   ├── domain/                 # what patro is about — no infrastructure imports
+│   │   ├── meeting/            # the domain model: transcript, analysis, topic
+│   │   └── knowledge/          # the Markdown knowledge library and reconciliation
+│   ├── app/                    # use cases
+│   │   ├── pipeline/           # orchestration: ProcessVideo + mocks
+│   │   ├── watcher/            # fsnotify-based inbox watcher
+│   │   ├── maintenance/        # ensure-index + reconcile flagged topics
+│   │   ├── migration/          # historical topic-merge migration
+│   │   └── search/             # reciprocal rank fusion over the retrieval legs
+│   ├── adapter/                # infrastructure, named for what it talks to
+│   │   ├── analyzer/           # prompt + parser; local CLIs and LeMUR; backend/ registry
+│   │   ├── transcriber/        # AssemblyAI transcription (assemblyai-go-sdk)
+│   │   ├── embed/              # embedding backends (cybertron)
+│   │   ├── vectors/            # multi-vector representation store
+│   │   ├── searchindex/        # BM25 index (bleve)
+│   │   ├── ledger/             # reconciliation audit trail
+│   │   ├── state/              # persistent processed-files state
+│   │   └── status/             # live processing state (.state/status.json)
+│   ├── delivery/               # web viewer, TUIs, setup wizard plumbing
+│   └── platform/               # config, logging, on-disk layout
 ├── knowledge/                  # generated knowledge library
 │   ├── index.md
 │   ├── topics/<slug>.md
@@ -120,7 +131,7 @@ patro --version
 
 ### Analyzer backends
 
-All backends share the same prompt schema and parser in `internal/analyzer`:
+All backends share the same prompt schema and parser in `internal/adapter/analyzer`:
 
 - The prompt builder optionally points to a transcript file on disk.
 - The parser extracts a JSON object from the model response and falls back to a minimal `general` topic if parsing fails.
@@ -132,7 +143,7 @@ All backends share the same prompt schema and parser in `internal/analyzer`:
 - Code, comments, and docs are in English; doc comments follow standard Go style.
 - Keep the code `gofmt`-clean and `go vet`-clean.
 - Tests use the stdlib `testing` package, table-driven style.
-- Logging goes through `internal/logging`; do not use `log`/`fmt` ad hoc in library packages.
+- Logging goes through `internal/platform/logging`; do not use `log`/`fmt` ad hoc in library packages.
 - Keep the analyzer JSON contract stable; all backends depend on it.
 - Keep the pipeline injectable: it receives transcriber/analyzer functions so `--mock` does not require conditional logic inside the pipeline.
 - Do not store secrets in `config.yaml`; use environment variables.
