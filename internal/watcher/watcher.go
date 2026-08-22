@@ -54,7 +54,7 @@ func WaitUntilStable(path string, checks int, interval time.Duration) bool {
 // Watcher watches the inbox directory and feeds stable video files to
 // processFn one at a time.
 type Watcher struct {
-	cfg       *config.Config
+	opts      Options
 	processFn func(path string)
 
 	// Tracker publishes queue/processing state for the dashboard. It is
@@ -73,17 +73,39 @@ type Watcher struct {
 }
 
 // New returns a Watcher that calls processFn for each stable video file
-// appearing in cfg.Inbox.
-func New(cfg *config.Config, processFn func(path string)) *Watcher {
+// appearing in w.opts.Inbox.
+// Options is everything the watcher needs from configuration: where to
+// look, what counts as a video, and how long a file must stop growing
+// before OBS is assumed to be done writing it.
+type Options struct {
+	Inbox                    string
+	IsVideo                  func(path string) bool
+	VideoExtensions          []string
+	StabilityChecks          int
+	StabilityIntervalSeconds int
+}
+
+// OptionsFrom adapts the application config to what the watcher consumes.
+func OptionsFrom(cfg *config.Config) Options {
+	return Options{
+		Inbox:                    cfg.Inbox,
+		IsVideo:                  cfg.IsVideo,
+		VideoExtensions:          cfg.VideoExtensions,
+		StabilityChecks:          cfg.StabilityChecks,
+		StabilityIntervalSeconds: cfg.StabilityIntervalSeconds,
+	}
+}
+
+func New(opts Options, processFn func(path string)) *Watcher {
 	return &Watcher{
-		cfg:       cfg,
+		opts:      opts,
 		processFn: processFn,
 		queue:     make(chan string),
 		pending:   map[string]struct{}{},
 	}
 }
 
-// Run watches cfg.Inbox until ctx is cancelled.
+// Run watches w.opts.Inbox until ctx is cancelled.
 //
 // The inbox is created if missing. Per-file failures (vanished files,
 // processFn errors or panics) are logged, never returned; only setup
@@ -92,22 +114,22 @@ func New(cfg *config.Config, processFn func(path string)) *Watcher {
 // queued files to finish before returning nil, so a blocked processFn
 // delays shutdown.
 func (w *Watcher) Run(ctx context.Context) error {
-	if err := os.MkdirAll(w.cfg.Inbox, 0o755); err != nil {
-		return fmt.Errorf("watcher: cannot create inbox %s: %w", w.cfg.Inbox, err)
+	if err := os.MkdirAll(w.opts.Inbox, 0o755); err != nil {
+		return fmt.Errorf("watcher: cannot create inbox %s: %w", w.opts.Inbox, err)
 	}
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("watcher: %w", err)
 	}
-	if err := fsw.Add(w.cfg.Inbox); err != nil {
+	if err := fsw.Add(w.opts.Inbox); err != nil {
 		fsw.Close()
-		return fmt.Errorf("watcher: cannot watch %s: %w", w.cfg.Inbox, err)
+		return fmt.Errorf("watcher: cannot watch %s: %w", w.opts.Inbox, err)
 	}
 
 	w.workerWG.Add(1)
 	go w.worker()
 
-	logging.Infof("Watching %s for %s files ...", w.cfg.Inbox, strings.Join(w.cfg.VideoExtensions, ", "))
+	logging.Infof("Watching %s for %s files ...", w.opts.Inbox, strings.Join(w.opts.VideoExtensions, ", "))
 	w.scanExisting()
 
 loop:
@@ -152,7 +174,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 		return
 	}
-	if w.cfg.IsVideo(event.Name) {
+	if w.opts.IsVideo(event.Name) {
 		w.submitAsync(event.Name)
 	}
 }
@@ -160,17 +182,17 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 // scanExisting submits video files already sitting in the inbox. os.ReadDir
 // returns entries sorted by name, matching Python's sorted() scan.
 func (w *Watcher) scanExisting() {
-	entries, err := os.ReadDir(w.cfg.Inbox)
+	entries, err := os.ReadDir(w.opts.Inbox)
 	if err != nil {
-		logging.Errorf("Cannot scan inbox %s: %v", w.cfg.Inbox, err)
+		logging.Errorf("Cannot scan inbox %s: %v", w.opts.Inbox, err)
 		return
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		path := filepath.Join(w.cfg.Inbox, entry.Name())
-		if w.cfg.IsVideo(path) {
+		path := filepath.Join(w.opts.Inbox, entry.Name())
+		if w.opts.IsVideo(path) {
 			w.submitAsync(path)
 		}
 	}
@@ -198,7 +220,7 @@ func (w *Watcher) submitAsync(path string) {
 
 		name := filepath.Base(path)
 		logging.Infof("New recording detected: %s (waiting for it to finish writing)", name)
-		if WaitUntilStable(path, w.cfg.StabilityChecks, w.stabilityInterval()) {
+		if WaitUntilStable(path, w.opts.StabilityChecks, w.stabilityInterval()) {
 			logging.Infof("File stable, enqueueing: %s", name)
 			w.Tracker.Enqueue(path)
 			w.queue <- path
@@ -232,5 +254,5 @@ func (w *Watcher) stabilityInterval() time.Duration {
 	if w.interval > 0 {
 		return w.interval
 	}
-	return time.Duration(w.cfg.StabilityIntervalSeconds) * time.Second
+	return time.Duration(w.opts.StabilityIntervalSeconds) * time.Second
 }

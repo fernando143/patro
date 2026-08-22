@@ -74,7 +74,12 @@ func MakeAnalyzeFunc(cfg *config.Config) AnalyzeFunc {
 		}
 	}
 	return func(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef) (*types.AnalysisResult, error) {
-		return analyzer.AnalyzeCLI(ctx, t, existing, cfg)
+		return analyzer.AnalyzeCLI(ctx, t, existing, analyzer.CLIOptions{
+			Backend:    cfg.AnalyzerBackend,
+			BinaryPath: cfg.BinaryPath(cfg.AnalyzerBackend),
+			WorkDir:    cfg.Dir,
+			StateDir:   cfg.StateDir(),
+		})
 	}
 }
 
