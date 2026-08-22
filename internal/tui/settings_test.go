@@ -49,9 +49,8 @@ func newTestSettingsSized(t *testing.T, cfg *config.Config, w, h int) settingsMo
 
 func kimiCfg(t *testing.T) *config.Config {
 	t.Helper()
-	return &config.Config{
+	return &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi"},
 		AnalyzerBackend: "kimi",
-		KimiPath:        "/bin/kimi",
 		Path:            filepath.Join(t.TempDir(), "config.yaml"),
 	}
 }
@@ -63,12 +62,14 @@ func TestSettingsInitIsNil(t *testing.T) {
 	}
 }
 
-// The settings screen must offer exactly the backends config accepts —
-// as a set, since the two deliberately use different display orders.
+// The settings screen and config validation now read the same registry, so
+// this asserts the derivation rather than comparing two hand-kept lists.
+// The invariant it used to guard by hand — a comment asking maintainers to
+// keep backendChoices in sync with config.ValidAnalyzerBackends — is gone.
 func TestSettingsBackendOptionsMatchConfig(t *testing.T) {
 	var got []string
-	for _, c := range backendChoices {
-		got = append(got, c.value)
+	for _, opt := range backendOptions() {
+		got = append(got, opt.Value)
 	}
 	want := config.ValidAnalyzerBackends()
 	sort.Strings(got)
@@ -79,14 +80,12 @@ func TestSettingsBackendOptionsMatchConfig(t *testing.T) {
 	}
 	for i := range got {
 		if got[i] != want[i] {
-			t.Fatalf("settings offers %v, config accepts %v", got, want)
+			t.Errorf("settings offers %v, config accepts %v", got, want)
+			break
 		}
 	}
 }
 
-// Bubble Tea passes models by value, so huh accessors must be bound to
-// storage that survives the copy. Binding them to model fields silently
-// discarded every answer the user gave.
 func TestSettingsBindingsSurviveModelCopy(t *testing.T) {
 	m := newTestSettings(t, kimiCfg(t))
 
@@ -202,10 +201,10 @@ func TestCurrentBinary(t *testing.T) {
 		cfg  *config.Config
 		want string
 	}{
-		{"kimi", &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", ClaudePath: "/bin/claude"}, "/bin/kimi"},
-		{"claude", &config.Config{AnalyzerBackend: "claude", KimiPath: "/bin/kimi", ClaudePath: "/bin/claude"}, "/bin/claude"},
-		{"codex", &config.Config{AnalyzerBackend: "codex", CodexPath: "/bin/codex"}, "/bin/codex"},
-		{"lemur is hosted", &config.Config{AnalyzerBackend: "lemur", KimiPath: "/bin/kimi"}, ""},
+		{"kimi", &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi", "claude": "/bin/claude"}, AnalyzerBackend: "kimi"}, "/bin/kimi"},
+		{"claude", &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi", "claude": "/bin/claude"}, AnalyzerBackend: "claude"}, "/bin/claude"},
+		{"codex", &config.Config{BinaryPaths: map[string]string{"codex": "/bin/codex"}, AnalyzerBackend: "codex"}, "/bin/codex"},
+		{"lemur is hosted", &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi"}, AnalyzerBackend: "lemur"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,7 +218,7 @@ func TestCurrentBinary(t *testing.T) {
 // newSettings must target the file config.Load resolved, not re-derive one:
 // writing to a different path can move the state dir out from under serve.
 func TestNewSettingsTargetsResolvedConfigPath(t *testing.T) {
-	cfg := &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", Path: "/etc/patro/config.yaml"}
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi"}, AnalyzerBackend: "kimi", Path: "/etc/patro/config.yaml"}
 	m := newTestSettings(t, cfg)
 
 	if m.target != "/etc/patro/config.yaml" {
@@ -232,7 +231,7 @@ func TestNewSettingsTargetsResolvedConfigPath(t *testing.T) {
 
 func TestSettingsViewShowsResolvedConfigPath(t *testing.T) {
 	path := "/home/test/.config/patro/config.yaml"
-	cfg := &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", Path: path}
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi"}, AnalyzerBackend: "kimi", Path: path}
 	m := newTestSettings(t, cfg)
 
 	if got := m.View(); !strings.Contains(got, path) {
@@ -340,7 +339,7 @@ func TestSettingsThresholdsStepPersistsToConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte("analyzer_backend: kimi\nkimi_path: /bin/kimi\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{AnalyzerBackend: "kimi", KimiPath: "/bin/kimi", Path: path,
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": "/bin/kimi"}, AnalyzerBackend: "kimi", Path: path,
 		MergeThreshold: 0.90, NewTopicThreshold: 0.70, TopicPromptLimit: 50}
 
 	m := newTestSettings(t, cfg)

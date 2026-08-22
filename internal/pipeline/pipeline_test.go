@@ -407,7 +407,7 @@ func TestMakeAnalyzeFuncCLIBackendDelegatesToAnalyzeCLI(t *testing.T) {
 		t.Fatalf("WriteFile error = %v", err)
 	}
 
-	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", KimiPath: kimiPath}
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	af := MakeAnalyzeFunc(cfg)
 
 	result, err := af(context.Background(), &types.TranscriptResult{ID: "mtg1", Language: "en"}, nil)
@@ -548,14 +548,13 @@ func TestNewReconcilerEmptyBackendReturnsNil(t *testing.T) {
 // cfg.StateDir()/reconciliation.json.
 func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": "kimi"},
 		Dir:               dir,
 		Library:           filepath.Join(dir, "library"),
 		EmbeddingBackend:  "cybertron",
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		AnalyzerBackend:   "kimi",
-		KimiPath:          "kimi",
 	}
 
 	r := newReconciler(cfg)
@@ -611,12 +610,10 @@ func TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend(t *testing.T) {
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho yes\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}
-	cfg := &config.Config{
+	cfg := &config.Config{BinaryPaths: map[string]string{"claude": scriptPath, "kimi": "kimi-should-not-be-used"},
 		Dir:              dir,
 		EmbeddingBackend: "cybertron",
 		AnalyzerBackend:  "claude",
-		ClaudePath:       scriptPath,
-		KimiPath:         "kimi-should-not-be-used",
 	}
 
 	r := newReconciler(cfg)
@@ -645,7 +642,7 @@ func TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend(t *testing.T) {
 // the plumbing this unit owns is correct without reimplementing maintenance.
 func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{
+	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": "kimi"},
 		Dir:               dir,
 		Library:           filepath.Join(dir, "library"),
 		EmbeddingBackend:  "cybertron",
@@ -653,7 +650,6 @@ func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 		NewTopicThreshold: 0.70,
 		TopicPromptLimit:  50,
 		AnalyzerBackend:   "kimi",
-		KimiPath:          "kimi",
 	}
 
 	lib, err := library.NewLibrary(cfg.Library)
