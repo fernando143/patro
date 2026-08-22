@@ -15,6 +15,8 @@ import (
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/state"
 	"github.com/fernando143/patro/internal/status"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // serviceHealth is the tri-state health of the background service.
@@ -84,7 +86,7 @@ func loadData(cfg *config.Config, logTailLines int) dashboardData {
 		d.inboxBacklog = countInboxBacklog(cfg, stateDir)
 	}
 
-	d.processedTotal = countProcessed(filepath.Join(stateDir, "processed.json"))
+	d.processedTotal = countProcessed(layout.State(stateDir).Processed())
 	d.flaggedCount = countFlaggedTopics(stateDir)
 	d.log = tailLog(cfg.LogFile(), logTailLines)
 	d.service = serviceStatus()
@@ -98,7 +100,7 @@ func loadData(cfg *config.Config, logTailLines int) dashboardData {
 // this file (countProcessed, countInboxBacklog) rather than surfacing as an
 // error the dashboard would need a new alert for.
 func countFlaggedTopics(stateDir string) int {
-	entries, err := library.ReadLedger(filepath.Join(stateDir, "reconciliation.json"))
+	entries, err := library.ReadLedger(layout.State(stateDir).Ledger())
 	if err != nil {
 		return 0
 	}

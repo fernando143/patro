@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/blevesearch/bleve/v2"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // Rebuild walks topicsDir/*.md and meetingsDir/*.md and atomically
@@ -97,11 +99,11 @@ func collectDocs(topicsDir, topicsKind, meetingsDir, meetingsKind string) ([]Doc
 			if err != nil {
 				continue // best-effort: skip unreadable entries
 			}
-			id := pair.kind + ":" + stem(f)
+			id := pair.kind + ":" + layout.Stem(f)
 			docs = append(docs, Document{
 				ID:      id,
 				Kind:    pair.kind,
-				Title:   titleOf(string(data), stem(f)),
+				Title:   titleOf(string(data), layout.Stem(f)),
 				Content: string(data),
 			})
 		}
@@ -110,12 +112,6 @@ func collectDocs(topicsDir, topicsKind, meetingsDir, meetingsKind string) ([]Doc
 }
 
 // stem returns the file name without its final extension.
-func stem(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	return base[:len(base)-len(ext)]
-}
-
 // titleOf extracts the first "# " heading from markdown text, falling back
 // to fallback when there is none.
 func titleOf(text, fallback string) string {

@@ -3,12 +3,13 @@ package migration
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/vectors"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // ConfiguredService builds a migration service from the active application config.
@@ -24,8 +25,9 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 		Representer: embedder,
 	}
 	s.RebuildDerived = func(ctx context.Context) error {
-		storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-		topicsDir := filepath.Join(cfg.Library, "topics")
+		storePath := layout.State(cfg.StateDir()).VectorStore()
+		lib := layout.Library(cfg.Library)
+		topicsDir := lib.Topics()
 		sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 		if err != nil {
 			return fmt.Errorf("migration: initializing representation identity: %w", err)
@@ -42,7 +44,7 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 			return err
 		}
 		defer idx.Close()
-		return idx.Rebuild(ctx, filepath.Join(cfg.Library, "topics"), filepath.Join(cfg.Library, "meetings"))
+		return idx.Rebuild(ctx, lib.Topics(), lib.Meetings())
 	}
 	return s, nil
 }

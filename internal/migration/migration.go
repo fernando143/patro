@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/fernando143/patro/internal/embed"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // ErrStalePlan means at least one accepted topic changed after preview.
@@ -83,7 +85,7 @@ func (s *Service) BuildPlan(ctx context.Context) (Plan, error) {
 	if s.Representer == nil {
 		return Plan{}, errors.New("migration: multi-vector representation backend is unavailable")
 	}
-	files, err := filepath.Glob(filepath.Join(s.LibraryRoot, "topics", "*.md"))
+	files, err := filepath.Glob(filepath.Join(layout.Library(s.LibraryRoot).Topics(), "*.md"))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -197,7 +199,7 @@ func (s *Service) Apply(ctx context.Context, plan Plan, accepted []Proposal) (Re
 	for _, p := range accepted {
 		touched[p.SourcePath], touched[p.TargetPath] = true, true
 	}
-	indexPath := filepath.Join(s.LibraryRoot, "index.md")
+	indexPath := layout.Library(s.LibraryRoot).Index()
 	touched[indexPath] = true
 	if err := backupFiles(backupDir, s.LibraryRoot, touched); err != nil {
 		return Result{}, fmt.Errorf("migration: create backup: %w", err)

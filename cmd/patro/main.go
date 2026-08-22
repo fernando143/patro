@@ -57,6 +57,8 @@ import (
 	"github.com/fernando143/patro/internal/web"
 
 	"golang.org/x/term"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -535,8 +537,9 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 		return fmt.Errorf("maintenance: embedding backend unavailable: %w", err)
 	}
 
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	topicsDir := filepath.Join(cfg.Library, "topics")
+	storePath := layout.State(cfg.StateDir()).VectorStore()
+	libPaths := layout.Library(cfg.Library)
+	topicsDir := libPaths.Topics()
 	sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		return fmt.Errorf("maintenance: initializing representation identity: %w", err)
@@ -570,7 +573,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	}()
 
 	if !searchIndexExisted {
-		if err := searchIdx.Rebuild(ctx, topicsDir, filepath.Join(cfg.Library, "meetings")); err != nil {
+		if err := searchIdx.Rebuild(ctx, topicsDir, libPaths.Meetings()); err != nil {
 			return fmt.Errorf("maintenance: rebuilding search index: %w", err)
 		}
 	}
@@ -584,7 +587,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 		return nil // reconciliation disabled (e.g. unknown embedding backend): nothing more to do
 	}
 
-	ledgerPath := filepath.Join(cfg.StateDir(), "reconciliation.json")
+	ledgerPath := layout.State(cfg.StateDir()).Ledger()
 	entries, err := library.ReadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
@@ -619,7 +622,7 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 		return closeFn
 	}
 
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
+	storePath := layout.State(cfg.StateDir()).VectorStore()
 	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
 	if err != nil {
 		logging.Warnf("representation backend unavailable, multi-vector search is disabled: %v", err)
