@@ -2,7 +2,6 @@ package library
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,24 +9,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
-type fakeMultiStore struct {
-	results []embed.RankedResult
-	err     error
+// fakeSimilarity is the whole test double now. Before the domain spoke its
+// own vocabulary these tests needed two fakes, both of which had to
+// construct chunk vectors and representation envelopes to say "0.95".
+type fakeSimilarity struct {
+	slug  string
+	score float64
+	err   error
 }
 
-func (f fakeMultiStore) NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error) {
-	return f.results, f.err
-}
-
-type fakeRepresenter struct{}
-
-func (fakeRepresenter) Represent(context.Context, embed.Document) (*embed.Representation, error) {
-	return &embed.Representation{Chunks: []embed.Chunk{{Kind: "content", Ordinal: 0, TokenCount: 1, Vector: []float32{1, 0}}}}, nil
+func (f fakeSimilarity) Nearest(context.Context, types.Topic) (NearestTopic, error) {
+	if f.err != nil {
+		return NearestTopic{}, f.err
+	}
+	return NearestTopic{Slug: f.slug, Score: f.score}, nil
 }
 
 func staticDecider(same bool, err error) GrayZoneDecider {
@@ -89,8 +90,7 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 			}
 
 			r := &SemanticReconciler{
-				Representer:       fakeRepresenter{},
-				MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: tt.score}}},
+				Similarity:        fakeSimilarity{slug: "react-hooks", score: tt.score},
 				MergeThreshold:    0.90,
 				NewTopicThreshold: 0.70,
 				Decide:            decide,
@@ -125,8 +125,7 @@ func TestSemanticReconcilerThreeBand(t *testing.T) {
 
 func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: nil},
+		Similarity:        fakeSimilarity{},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 	}
@@ -144,8 +143,7 @@ func TestSemanticReconcilerNoExistingTopicsIsNewUnflagged(t *testing.T) {
 
 func TestSemanticReconcilerUsesMultiVectorStoreWhenAvailable(t *testing.T) {
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 	}
@@ -162,8 +160,7 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	calls := 0
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.80}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.80},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		Decide: func(context.Context, types.Topic, types.TopicRef) (bool, error) {
@@ -205,8 +202,7 @@ func TestSemanticReconcilerGrayZoneErrorSafeFails(t *testing.T) {
 func TestSemanticReconcilerErrV2NeedsRebuildSafeFails(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "reconciliation.json")
 	r := &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{err: vectors.ErrV2NeedsRebuild},
+		Similarity:        fakeSimilarity{err: vectors.ErrV2NeedsRebuild},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -237,8 +233,7 @@ func TestAddMeetingCtxMergeAnnotatesAndLedgers(t *testing.T) {
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.93}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.93},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -318,81 +313,8 @@ func TestExistingTopicsRecent(t *testing.T) {
 	}
 }
 
-// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
-
-func writeScript(t *testing.T, dir, body string) string {
-	t.Helper()
-	path := filepath.Join(dir, "fake-cli.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func TestGrayZoneCLIYes(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo "yes"`)
-	decide := GrayZoneCLI(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if !same {
-		t.Error("same = false, want true for a \"yes\" answer")
-	}
-}
-
-func TestGrayZoneCodexYes(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo '{"type":"item.completed","item":{"type":"agent_message","text":"yes"}}'`)
-	decide := GrayZoneCodex(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if !same {
-		t.Error("same = false, want true for a Codex \"yes\" answer")
-	}
-}
-
-func TestGrayZoneCLINo(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `echo "no"`)
-	decide := GrayZoneCLI(script, time.Second)
-	same, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-	if same {
-		t.Error("same = true, want false for a \"no\" answer")
-	}
-}
-
-func TestGrayZoneCLINonZeroExit(t *testing.T) {
-	script := writeScript(t, t.TempDir(), `exit 1`)
-	decide := GrayZoneCLI(script, time.Second)
-	if _, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"}); err == nil {
-		t.Fatal("decide() error = nil, want an error on non-zero exit")
-	}
-}
-
-func TestGrayZoneCLITimeout(t *testing.T) {
-	// exec (rather than a plain "sleep 5") replaces the shell with sleep
-	// itself, so SIGKILL on context timeout reaches the process actually
-	// holding stdout/stderr open and the test returns promptly instead of
-	// blocking for the full sleep duration.
-	script := writeScript(t, t.TempDir(), `exec sleep 5`)
-	decide := GrayZoneCLI(script, 50*time.Millisecond)
-	_, err := decide(context.Background(), types.Topic{Name: "X"}, types.TopicRef{Name: "Y", Slug: "y"})
-	if err == nil {
-		t.Fatal("decide() error = nil, want a timeout error")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error = %q, want it to mention a timeout", err)
-	}
-}
-
-// --- ReadLedger / ReconcileFlagged ("patro reconcile", Unit 7) ---
-
 func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
-	entries, err := ReadLedger(filepath.Join(t.TempDir(), "reconciliation.json"))
+	entries, err := ledger.Read(filepath.Join(t.TempDir(), "reconciliation.json"))
 	if err != nil {
 		t.Fatalf("ReadLedger: %v", err)
 	}
@@ -403,12 +325,12 @@ func TestReadLedgerMissingFileReturnsEmpty(t *testing.T) {
 
 func TestReadLedgerRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reconciliation.json")
-	want := LedgerEntry{Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Score: 0.5, Flagged: true, Timestamp: time.Now().UTC()}
-	if err := appendLedger(path, want); err != nil {
+	want := ledger.Entry{Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Score: 0.5, Flagged: true, Timestamp: time.Now().UTC()}
+	if err := ledger.Append(path, want); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
-	got, err := ReadLedger(path)
+	got, err := ledger.Read(path)
 	if err != nil {
 		t.Fatalf("ReadLedger: %v", err)
 	}
@@ -420,8 +342,8 @@ func TestReadLedgerRoundTrip(t *testing.T) {
 func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reconciliation.json")
 	writeFile(t, path, "{not json")
-	if _, err := ReadLedger(path); err == nil {
-		t.Error("ReadLedger() error = nil, want an error for corrupt JSON")
+	if _, err := ledger.Read(path); err == nil {
+		t.Error("ledger.Read() error = nil, want an error for corrupt JSON")
 	}
 }
 
@@ -429,17 +351,17 @@ func TestReadLedgerCorruptFileReturnsError(t *testing.T) {
 // record superseded by a later merge (or a later reflag) must not be
 // double-counted or counted as still-pending.
 func TestCountFlagged(t *testing.T) {
-	entries := []LedgerEntry{
+	entries := []ledger.Entry{
 		{Slug: "a", Flagged: true, Timestamp: time.Unix(1, 0)},
 		{Slug: "a", Flagged: false, Timestamp: time.Unix(2, 0)}, // later: merged, no longer flagged
 		{Slug: "b", Flagged: true, Timestamp: time.Unix(1, 0)},
 		{Slug: "c", Flagged: false, Timestamp: time.Unix(1, 0)},
 	}
-	if got := CountFlagged(entries); got != 1 {
-		t.Errorf("CountFlagged() = %d, want 1 (only slug b is still flagged)", got)
+	if got := ledger.CountFlagged(entries); got != 1 {
+		t.Errorf("ledger.CountFlagged() = %d, want 1 (only slug b is still flagged)", got)
 	}
-	if got := CountFlagged(nil); got != 0 {
-		t.Errorf("CountFlagged(nil) = %d, want 0", got)
+	if got := ledger.CountFlagged(nil); got != 0 {
+		t.Errorf("ledger.CountFlagged(nil) = %d, want 0", got)
 	}
 }
 
@@ -460,15 +382,14 @@ func TestReconcileFlaggedMergesOnNowMatchingScore(t *testing.T) {
 	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome flagged content\n")
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -505,15 +426,14 @@ func TestReconcileFlaggedStillNoMatchLeavesTopicUntouched(t *testing.T) {
 	writeFile(t, filepath.Join(l.TopicsDir, "x-y.md"), "# X Y\n\nsome content\n")
 
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: nil}, // still nothing to compare against
+		Similarity:        fakeSimilarity{}, // still nothing to compare against
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -535,15 +455,14 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	l := newTestLibrary(t)
 	// No x-y.md on disk: it was already merged/removed by an earlier pass.
 	ledgerPath := filepath.Join(l.Root, ".state", "reconciliation.json")
-	if err := appendLedger(ledgerPath, LedgerEntry{
+	if err := ledger.Append(ledgerPath, ledger.Entry{
 		Slug: "x-y", Name: "X Y", ProposedSlug: "x-y", Flagged: true, Timestamp: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
 	l.Reconciler = &SemanticReconciler{
-		Representer:       fakeRepresenter{},
-		MultiStore:        fakeMultiStore{results: []embed.RankedResult{{ID: "react-hooks", Score: 0.95}}},
+		Similarity:        fakeSimilarity{slug: "react-hooks", score: 0.95},
 		MergeThreshold:    0.90,
 		NewTopicThreshold: 0.70,
 		LedgerPath:        ledgerPath,
@@ -555,27 +474,5 @@ func TestReconcileFlaggedSkipsAlreadyRemovedTopicFile(t *testing.T) {
 	}
 	if merged != 0 {
 		t.Errorf("merged = %d, want 0: a missing flagged topic file must be skipped, not error", merged)
-	}
-}
-
-func TestGrayZoneCLIArgvNotShellInterpreted(t *testing.T) {
-	dir := t.TempDir()
-	promptFile := filepath.Join(dir, "prompt.txt")
-	script := writeScript(t, dir, fmt.Sprintf(`echo "$2" > %s`, promptFile))
-
-	dangerous := "candidate `touch " + filepath.Join(dir, "pwned") + "` $(touch " + filepath.Join(dir, "pwned2") + ")"
-	decide := GrayZoneCLI(script, time.Second)
-	if _, err := decide(context.Background(), types.Topic{Name: dangerous, Content: "c"}, types.TopicRef{Name: "Y", Slug: "y"}); err != nil {
-		t.Fatalf("decide: %v", err)
-	}
-
-	got := readFile(t, promptFile)
-	if !strings.Contains(got, dangerous) {
-		t.Errorf("prompt argument was not passed through verbatim:\ngot:  %q\nwant substring: %q", got, dangerous)
-	}
-	for _, pwned := range []string{filepath.Join(dir, "pwned"), filepath.Join(dir, "pwned2")} {
-		if _, err := os.Stat(pwned); err == nil {
-			t.Errorf("shell metacharacters in the prompt were interpreted; %s was created", pwned)
-		}
 	}
 }

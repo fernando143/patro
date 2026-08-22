@@ -14,6 +14,17 @@ import (
 	"github.com/fernando143/patro/internal/types"
 )
 
+// optionsFrom keeps these tests expressing intent as a *config.Config while
+// AnalyzeCLI takes only the four values it actually uses.
+func optionsFrom(cfg *config.Config) CLIOptions {
+	return CLIOptions{
+		Backend:    cfg.AnalyzerBackend,
+		BinaryPath: cfg.BinaryPath(cfg.AnalyzerBackend),
+		WorkDir:    cfg.Dir,
+		StateDir:   cfg.StateDir(),
+	}
+}
+
 func TestAssistantTextStringContent(t *testing.T) {
 	stream := `{"role":"assistant","content":"first"}
 {"role":"assistant","content":"second"}`
@@ -178,7 +189,7 @@ func TestAnalyzeCLISuccess(t *testing.T) {
 		},
 	}
 
-	result, err := AnalyzeCLI(context.Background(), tr, []types.TopicRef{{Slug: "old", Name: "Old"}}, cfg)
+	result, err := AnalyzeCLI(context.Background(), tr, []types.TopicRef{{Slug: "old", Name: "Old"}}, optionsFrom(cfg))
 	if err != nil {
 		t.Fatalf("AnalyzeCLI: %v", err)
 	}
@@ -235,7 +246,7 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "mtg-claude", Language: "en", Text: "transcript"}
 
-	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	result, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err != nil {
 		t.Fatalf("AnalyzeCLI: %v", err)
 	}
@@ -265,7 +276,7 @@ func TestAnalyzeCLICodexUsesExecJSON(t *testing.T) {
 	cfg := &config.Config{BinaryPaths: map[string]string{"codex": codexPath}, Dir: dir, AnalyzerBackend: "codex"}
 	tr := &types.TranscriptResult{ID: "mtg-codex", Language: "en", Text: "transcript"}
 
-	result, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	result, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err != nil {
 		t.Fatalf("AnalyzeCLI: %v", err)
 	}
@@ -293,7 +304,7 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	tr := &types.TranscriptResult{ID: "m1", Text: "text"}
 
 	cfg := &config.Config{Dir: dir, AnalyzerBackend: "kimi", BinaryPaths: map[string]string{"kimi": filepath.Join(dir, "no-such-kimi")}}
-	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for missing kimi binary")
 	}
@@ -305,7 +316,7 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	}
 
 	cfg = &config.Config{Dir: dir, AnalyzerBackend: "claude", BinaryPaths: map[string]string{"claude": filepath.Join(dir, "no-such-claude")}}
-	_, err = AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err = AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for missing claude binary")
 	}
@@ -316,7 +327,7 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 	}
 
 	cfg = &config.Config{Dir: dir, AnalyzerBackend: "codex", BinaryPaths: map[string]string{"codex": filepath.Join(dir, "no-such-codex")}}
-	_, err = AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err = AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for missing codex binary")
 	}
@@ -334,7 +345,7 @@ func TestAnalyzeCLINonZeroExit(t *testing.T) {
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	tr := &types.TranscriptResult{ID: "m2", Text: "text"}
-	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -352,7 +363,7 @@ func TestAnalyzeCLIStderrTruncatedTo1000(t *testing.T) {
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "m3", Text: "text"}
-	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -368,7 +379,7 @@ func TestAnalyzeCLINoAssistantText(t *testing.T) {
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &types.TranscriptResult{ID: "m4", Text: "text"}
-	_, err := AnalyzeCLI(context.Background(), tr, nil, cfg)
+	_, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg))
 	if err == nil {
 		t.Fatal("expected error for empty assistant text")
 	}
@@ -387,7 +398,7 @@ func TestAnalyzeCLIUnknownBackend(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{Dir: dir, AnalyzerBackend: "lemur"}
 	tr := &types.TranscriptResult{ID: "m5", Text: "text"}
-	if _, err := AnalyzeCLI(context.Background(), tr, nil, cfg); err == nil {
+	if _, err := AnalyzeCLI(context.Background(), tr, nil, optionsFrom(cfg)); err == nil {
 		t.Fatal("expected error for non-CLI backend")
 	}
 }

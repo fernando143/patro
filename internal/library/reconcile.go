@@ -22,21 +22,14 @@
 package library
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // Resolution is the outcome of reconciling one LLM-proposed candidate topic
@@ -72,12 +65,24 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error)
 }
 
-type DocumentRepresenter interface {
-	Represent(context.Context, embed.Document) (*embed.Representation, error)
+// NearestTopic is the existing topic closest to a candidate, with the
+// similarity that ranked it. An empty Slug means there was nothing to
+// compare against — an empty library, or a store with no entries yet.
+type NearestTopic struct {
+	Slug  string
+	Score float64
 }
 
-type MultiVectorFinder interface {
-	NearestRepresentations(context.Context, embed.Representation, embed.ScoreMode, int) ([]embed.RankedResult, error)
+// TopicSimilarity answers "which existing topic is this candidate most
+// like, and how much?".
+//
+// The domain states the question in its own vocabulary — topics and scores.
+// How an implementation answers it (embeddings, multi-vector chunking,
+// cosine similarity, some future index) is deliberately not visible from
+// here: this package decides what a topic *is*, and must stay readable
+// without knowing what a chunk vector is.
+type TopicSimilarity interface {
+	Nearest(ctx context.Context, candidate types.Topic) (NearestTopic, error)
 }
 
 // GrayZoneDecider answers "is candidate the same topic as nearest?" for a
@@ -91,8 +96,7 @@ type GrayZoneDecider func(ctx context.Context, candidate types.Topic, nearest ty
 // representations via a multi-vector backend + representation store, with a
 // single gray-zone LLM call as a tie-breaker (design D1/D2/D7).
 type SemanticReconciler struct {
-	Representer       DocumentRepresenter
-	MultiStore        MultiVectorFinder
+	Similarity        TopicSimilarity
 	MergeThreshold    float64
 	NewTopicThreshold float64
 	// Decide resolves the gray zone. A nil Decide always safe-fails a
@@ -110,26 +114,13 @@ type SemanticReconciler struct {
 func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topic, existing []types.TopicRef) (Resolution, error) {
 	proposed := Resolution{Slug: candidate.Slug, Name: candidate.Name, ProposedSlug: candidate.Slug}
 
-	var topID string
-	var topScore float64
-	var err error
-	if r.Representer == nil || r.MultiStore == nil {
+	if r.Similarity == nil {
 		res := r.failSafe(candidate, 0)
 		r.writeLedger(res)
 		return res, nil
 	}
-	var representation *embed.Representation
-	representation, err = r.Representer.Represent(ctx, embed.Document{ID: candidate.Slug, Text: "# " + candidate.Name + "\n\n" + candidate.Content})
-	if err == nil && representation == nil {
-		err = errors.New("library: representation backend returned nil representation")
-	}
-	if err == nil {
-		var results []embed.RankedResult
-		results, err = r.MultiStore.NearestRepresentations(ctx, *representation, embed.DirectedMode, 1)
-		if err == nil && len(results) > 0 {
-			topID, topScore = results[0].ID, results[0].Score
-		}
-	}
+
+	nearestTopic, err := r.Similarity.Nearest(ctx, candidate)
 	if err != nil {
 		// An unavailable or rebuilding representation store must never risk a
 		// wrong merge answered from a half-rebuilt/inconsistent snapshot —
@@ -139,11 +130,12 @@ func (r *SemanticReconciler) Reconcile(ctx context.Context, candidate types.Topi
 		r.writeLedger(res)
 		return res, nil
 	}
-	if topID == "" {
+	if nearestTopic.Slug == "" {
 		return proposed, nil // nothing to compare against: new topic, unflagged
 	}
 
-	nearest := types.TopicRef{Slug: topID, Name: nameFor(existing, topID)}
+	topScore := nearestTopic.Score
+	nearest := types.TopicRef{Slug: nearestTopic.Slug, Name: nameFor(existing, nearestTopic.Slug)}
 
 	switch {
 	case topScore >= r.MergeThreshold:
@@ -210,38 +202,13 @@ func nameFor(existing []types.TopicRef, slug string) string {
 	return slug
 }
 
-// --- Audit trail: .state/reconciliation.json (design D4) ---
+// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
 
-// LedgerEntry is one record in the derived, deletable reconciliation
-// ledger. It mirrors the markdown annotation written alongside every merge,
-// plus flagged safe-fail outcomes, so a later TUI can surface "work
-// pending" (design D4/D8).
-type LedgerEntry struct {
-	Slug         string    `json:"slug"`
-	Name         string    `json:"name"`
-	ProposedSlug string    `json:"proposed_slug"`
-	Score        float64   `json:"score"`
-	Merged       bool      `json:"merged"`
-	Flagged      bool      `json:"flagged"`
-	Timestamp    time.Time `json:"timestamp"`
-}
-
-type ledgerFile struct {
-	Entries []LedgerEntry `json:"entries"`
-}
-
-// ledgerMu serializes ledger read-modify-write cycles across reconcilers
-// sharing the same path within one process.
-var ledgerMu sync.Mutex
-
-// writeLedger appends one entry to r.LedgerPath, best-effort: a failure is
-// logged, never propagated, since losing the audit trail must not lose the
-// meeting itself.
 func (r *SemanticReconciler) writeLedger(res Resolution) {
 	if r.LedgerPath == "" || (!res.Merged && !res.Flagged) {
 		return
 	}
-	entry := LedgerEntry{
+	entry := ledger.Entry{
 		Slug:         res.Slug,
 		Name:         res.Name,
 		ProposedSlug: res.ProposedSlug,
@@ -250,198 +217,7 @@ func (r *SemanticReconciler) writeLedger(res Resolution) {
 		Flagged:      res.Flagged,
 		Timestamp:    time.Now().UTC(),
 	}
-	if err := appendLedger(r.LedgerPath, entry); err != nil {
+	if err := ledger.Append(r.LedgerPath, entry); err != nil {
 		logging.Warnf("reconciliation ledger write failed: %v", err)
 	}
-}
-
-// ReadLedger reads every entry recorded in path, the derived, deletable
-// ledger written by writeLedger/appendLedger (design D4). A missing file
-// returns an empty, non-nil slice and a nil error — nothing has ever been
-// merged or flagged is not an error condition, matching appendLedger's own
-// create-on-first-write semantics. It is the reader half of Unit 7's
-// "patro reconcile", which re-attempts reconciliation for every flagged
-// entry (Library.ReconcileFlagged).
-func ReadLedger(path string) ([]LedgerEntry, error) {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []LedgerEntry{}, nil
-		}
-		return nil, err
-	}
-	var lf ledgerFile
-	if err := json.Unmarshal(data, &lf); err != nil {
-		return nil, fmt.Errorf("library: parsing ledger %s: %w", path, err)
-	}
-	if lf.Entries == nil {
-		lf.Entries = []LedgerEntry{}
-	}
-	return lf.Entries, nil
-}
-
-// CountFlagged returns the number of distinct slugs whose most recent ledger
-// record is flagged, i.e. the number of topics genuinely awaiting
-// reconciliation right now. It dedupes to the latest record per slug — an
-// older flagged record superseded by a later merge or reflag does not count
-// — matching ReconcileFlagged's own dedupe, so callers (patro reconcile's
-// Maintenance.Total, the TUI dashboard's flagged-count card) agree with what
-// a reconcile pass will actually process.
-func CountFlagged(entries []LedgerEntry) int {
-	latest := map[string]bool{}
-	for _, e := range entries {
-		latest[e.Slug] = e.Flagged
-	}
-	total := 0
-	for _, flagged := range latest {
-		if flagged {
-			total++
-		}
-	}
-	return total
-}
-
-// appendLedger reads path (if present), appends entry, and writes the
-// result back atomically (temp file + rename), mirroring internal/vectors'
-// flush pattern.
-func appendLedger(path string, entry LedgerEntry) error {
-	ledgerMu.Lock()
-	defer ledgerMu.Unlock()
-
-	var lf ledgerFile
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &lf) // best-effort; a corrupt ledger starts fresh
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	lf.Entries = append(lf.Entries, entry)
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".reconciliation-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(lf); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
-}
-
-// --- GrayZoneCLI: the concrete, subprocess-based gray-zone decider ---
-
-// GrayZoneCLI builds a GrayZoneDecider that shells out to a local CLI
-// backend (mirrors internal/analyzer's kimi/claude subprocess pattern) and
-// asks it whether candidate is the same topic as nearest.
-//
-// Threat matrix (subprocess arg composition): binaryPath is invoked with an
-// explicit argv slice via exec.CommandContext — never a shell string — so
-// nothing in candidate's name/content can be interpreted as shell syntax.
-// The call is bounded by timeout; both a non-zero exit and a timeout
-// surface as a returned error, which the caller (SemanticReconciler.Decide)
-// treats as "no match, flag for review", never an implicit merge.
-func GrayZoneCLI(binaryPath string, timeout time.Duration) GrayZoneDecider {
-	return func(ctx context.Context, candidate types.Topic, nearest types.TopicRef) (bool, error) {
-		runCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-
-		prompt := fmt.Sprintf(
-			"Existing topic: %q (slug %q).\n"+
-				"Candidate topic: %q.\n%s\n"+
-				"Is the candidate the SAME topic as the existing one? "+
-				"Answer with exactly one word: yes or no.",
-			nearest.Name, nearest.Slug, candidate.Name, strings.TrimSpace(candidate.Content),
-		)
-
-		cmd := exec.CommandContext(runCtx, binaryPath, "-p", prompt)
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-
-		err := cmd.Run()
-		if runCtx.Err() == context.DeadlineExceeded {
-			return false, fmt.Errorf("library: reconciliation LLM call timed out after %s", timeout)
-		}
-		if err != nil {
-			return false, fmt.Errorf("library: reconciliation LLM call failed: %w", err)
-		}
-
-		answer := strings.ToLower(strings.TrimSpace(out.String()))
-		return strings.HasPrefix(answer, "yes"), nil
-	}
-}
-
-// GrayZoneCodex builds a gray-zone decider for the Codex CLI. Codex's
-// non-interactive interface is `codex exec --json`, so its JSONL agent_message
-// events need to be decoded before the yes/no answer can be evaluated.
-func GrayZoneCodex(binaryPath string, timeout time.Duration) GrayZoneDecider {
-	return func(ctx context.Context, candidate types.Topic, nearest types.TopicRef) (bool, error) {
-		runCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-
-		prompt := fmt.Sprintf(
-			"Existing topic: %q (slug %q).\n"+
-				"Candidate topic: %q.\n%s\n"+
-				"Is the candidate the SAME topic as the existing one? "+
-				"Answer with exactly one word: yes or no.",
-			nearest.Name, nearest.Slug, candidate.Name, strings.TrimSpace(candidate.Content),
-		)
-		cmd := exec.CommandContext(runCtx, binaryPath,
-			"exec", "--json", "--ephemeral", "--skip-git-repo-check",
-			"--sandbox", "read-only", prompt,
-		)
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-
-		err := cmd.Run()
-		if runCtx.Err() == context.DeadlineExceeded {
-			return false, fmt.Errorf("library: reconciliation LLM call timed out after %s", timeout)
-		}
-		if err != nil {
-			return false, fmt.Errorf("library: reconciliation LLM call failed: %w", err)
-		}
-
-		answer := strings.ToLower(strings.TrimSpace(codexAgentText(out.String())))
-		return strings.HasPrefix(answer, "yes"), nil
-	}
-}
-
-func codexAgentText(streamJSON string) string {
-	var chunks []string
-	for _, line := range strings.Split(streamJSON, "\n") {
-		var event map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &event); err != nil {
-			continue
-		}
-		item, ok := event["item"].(map[string]any)
-		if !ok {
-			continue
-		}
-		if typ, _ := item["type"].(string); typ != "agent_message" {
-			continue
-		}
-		if text, _ := item["text"].(string); text != "" {
-			chunks = append(chunks, text)
-		}
-	}
-	return strings.Join(chunks, "\n")
 }

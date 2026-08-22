@@ -30,13 +30,7 @@ type Values struct {
 // WriteConfig writes the wizard answers as YAML. An existing file is updated
 // in place: unknown keys already present are preserved.
 func WriteConfig(path string, v Values) error {
-	data := map[string]any{}
-	if raw, err := os.ReadFile(path); err == nil {
-		_ = yaml.Unmarshal(raw, &data)
-	}
-	if data == nil {
-		data = map[string]any{}
-	}
+	data := loadLenient(path)
 	data["inbox"] = v.Inbox
 	data["library"] = v.Library
 	data["analyzer_backend"] = v.Backend
@@ -71,16 +65,9 @@ func WriteConfig(path string, v Values) error {
 // other key in the file is preserved, and a malformed existing file is an
 // error rather than something to silently overwrite.
 func SetThresholds(path string, merge, newTopic float64, promptLimit int) error {
-	data := map[string]any{}
-	if raw, err := os.ReadFile(path); err == nil {
-		if err := yaml.Unmarshal(raw, &data); err != nil {
-			return fmt.Errorf("cannot parse %s: %w", path, err)
-		}
-	} else if !os.IsNotExist(err) {
+	data, err := loadStrict(path)
+	if err != nil {
 		return err
-	}
-	if data == nil {
-		data = map[string]any{}
 	}
 	data["merge_threshold"] = merge
 	data["new_topic_threshold"] = newTopic
@@ -97,16 +84,9 @@ func SetThresholds(path string, merge, newTopic float64, promptLimit int) error 
 // written by hand, so a malformed YAML file is an error rather than something
 // to silently overwrite.
 func SetBackend(path, name, binaryPath string) error {
-	data := map[string]any{}
-	if raw, err := os.ReadFile(path); err == nil {
-		if err := yaml.Unmarshal(raw, &data); err != nil {
-			return fmt.Errorf("cannot parse %s: %w", path, err)
-		}
-	} else if !os.IsNotExist(err) {
+	data, err := loadStrict(path)
+	if err != nil {
 		return err
-	}
-	if data == nil {
-		data = map[string]any{}
 	}
 
 	selected, ok := backend.Get(name)
@@ -122,6 +102,42 @@ func SetBackend(path, name, binaryPath string) error {
 	data["analyzer_backend"] = selected.Name
 
 	return writeYAML(path, data)
+}
+
+// The three writers above differ in exactly one way, and it matters:
+// WriteConfig runs from the setup wizard and is entitled to replace a file
+// that will not parse, while the partial editors must refuse rather than
+// silently discard keys they cannot see.
+
+// loadLenient reads path into a map, treating an unreadable or malformed
+// file as empty. The caller is about to write a complete config over it.
+func loadLenient(path string) map[string]any {
+	data := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = yaml.Unmarshal(raw, &data)
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	return data
+}
+
+// loadStrict reads path into a map for a partial edit. A missing file is an
+// empty map; a malformed one is an error, because rewriting it would drop
+// every key the parser could not read.
+func loadStrict(path string) (map[string]any, error) {
+	data := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return nil, fmt.Errorf("cannot parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	return data, nil
 }
 
 // writeYAML marshals data to path, creating parent directories as needed.

@@ -36,6 +36,8 @@ import (
 	"github.com/fernando143/patro/internal/types"
 
 	"github.com/fernando143/patro/internal/layout"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 var (
@@ -530,7 +532,7 @@ func (l *Library) ReconcileFlagged(ctx context.Context, ledgerPath string, onPro
 		return 0, nil
 	}
 
-	entries, err := ReadLedger(ledgerPath)
+	entries, err := ledger.Read(ledgerPath)
 	if err != nil {
 		return 0, err
 	}
@@ -538,7 +540,7 @@ func (l *Library) ReconcileFlagged(ctx context.Context, ledgerPath string, onPro
 	// Only the latest flagged record per slug matters: an older flagged
 	// record for a slug later resolved (merged, or reflagged again) is
 	// superseded.
-	latest := map[string]LedgerEntry{}
+	latest := map[string]ledger.Entry{}
 	var order []string
 	for _, e := range entries {
 		if !e.Flagged {
@@ -578,7 +580,7 @@ func (l *Library) ReconcileFlagged(ctx context.Context, ledgerPath string, onPro
 // genuine merge into a *different* topic — moves the content over and
 // removes the redundant standalone file. It reports whether a merge
 // happened.
-func (l *Library) tryMergeFlagged(ctx context.Context, entry LedgerEntry) (bool, error) {
+func (l *Library) tryMergeFlagged(ctx context.Context, entry ledger.Entry) (bool, error) {
 	path := filepath.Join(l.TopicsDir, entry.Slug+".md")
 	data, err := os.ReadFile(path)
 	if err != nil {
