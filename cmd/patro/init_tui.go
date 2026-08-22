@@ -14,6 +14,8 @@ import (
 
 	"github.com/fernando143/patro/internal/setup"
 	"github.com/fernando143/patro/internal/tui"
+
+	"github.com/fernando143/patro/internal/analyzer/backend"
 )
 
 // runInit picks the wizard flavor based on whether we have a real terminal.
@@ -25,11 +27,21 @@ func runInit(flagConfig string) int {
 }
 
 // runInitTUI drives the synthwave huh wizard.
+// backendSelectOptions builds the wizard's backend menu from the registry.
+func backendSelectOptions() []huh.Option[string] {
+	all := backend.All()
+	opts := make([]huh.Option[string], 0, len(all))
+	for _, b := range all {
+		opts = append(opts, huh.NewOption(b.Label, b.Name))
+	}
+	return opts
+}
+
 func runInitTUI(flagConfig string) int {
 	apiKey := ""
 	inbox := "~/Videos/obs"
 	library := "./knowledge"
-	backend := "kimi"
+	selected := backend.Default
 	installSvc := true
 
 	form := huh.NewForm(
@@ -60,13 +72,10 @@ func runInitTUI(flagConfig string) int {
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Local AI backend").
-				Description("Which local CLI writes the notes.").
-				Options(
-					huh.NewOption("kimi (default)", "kimi"),
-					huh.NewOption("claude", "claude"),
-				).
-				Value(&backend),
+				Title("AI backend").
+				Description("Which AI writes the notes.").
+				Options(backendSelectOptions()...).
+				Value(&selected),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -93,14 +102,21 @@ func runInitTUI(flagConfig string) int {
 		}
 	}
 
-	binaryPath, ok := resolveBinaryTUI(backend)
+	chosen, ok := backend.Get(selected)
 	if !ok {
+		fmt.Fprintf(os.Stderr, "patro: unknown analyzer backend %q\n", selected)
 		return 1
+	}
+	binaryPath := ""
+	if !chosen.Hosted {
+		if binaryPath, ok = resolveBinaryTUI(chosen.DefaultBinary); !ok {
+			return 1
+		}
 	}
 
 	configPath := setup.ConfigPath(flagConfig)
 	if err := setup.WriteConfig(configPath, setup.Values{
-		Inbox: inboxPath, Library: libraryPath, Backend: backend, BinaryPath: binaryPath,
+		Inbox: inboxPath, Library: libraryPath, Backend: chosen.Name, BinaryPath: binaryPath,
 	}); err != nil {
 		fmt.Printf("Error: cannot write %s: %v\n", configPath, err)
 		return 1
@@ -123,8 +139,8 @@ func runInitTUI(flagConfig string) int {
 // resolveBinaryTUI locates the backend CLI, prompting for an absolute path
 // (via a small huh form) when it is not on PATH. The bool is false when the
 // user aborts.
-func resolveBinaryTUI(backend string) (string, bool) {
-	if found, err := setup.ResolveBinary(backend); err == nil {
+func resolveBinaryTUI(name string) (string, bool) {
+	if found, err := setup.ResolveBinary(name); err == nil {
 		return found, true
 	}
 
@@ -132,8 +148,8 @@ func resolveBinaryTUI(backend string) (string, bool) {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title(fmt.Sprintf("Path to the '%s' executable", backend)).
-				Description(fmt.Sprintf("'%s' was not found on PATH. Enter its absolute path.", backend)).
+				Title(fmt.Sprintf("Path to the '%s' executable", name)).
+				Description(fmt.Sprintf("'%s' was not found on PATH. Enter its absolute path.", name)).
 				Value(&path).
 				Validate(executableValidate),
 		),
