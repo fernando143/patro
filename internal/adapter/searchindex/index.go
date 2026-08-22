@@ -4,7 +4,7 @@
 // types: those require the `vectors` build tag, which pulls in
 // blevesearch/go-faiss — a cgo binding — and would break this project's
 // CGO_ENABLED=0 cross-compiled builds (design D3). Semantic similarity is
-// handled entirely by the separate, pure-Go internal/vectors package;
+// handled entirely by the separate, pure-Go internal/adapter/vectors package;
 // searchindex only ever uses bleve's default, pure-Go BM25 scoring path
 // (bleve.New/Open + query.QueryStringQuery), which is unaffected by the
 // vectors tag.
@@ -20,7 +20,7 @@ import (
 )
 
 // ErrRebuilding is returned by Index and Query while a Rebuild is in
-// flight, mirroring internal/vectors' fail-fast contract: never a partial
+// flight, mirroring internal/adapter/vectors' fail-fast contract: never a partial
 // or stale result while the index is being reconstructed.
 var ErrRebuilding = errors.New("searchindex: rebuild in progress")
 
@@ -53,7 +53,7 @@ type Index struct {
 	idx  bleve.Index
 
 	// rebuilding gates Index/Query (fail fast) and single-flights Rebuild,
-	// mirroring internal/vectors' Store.
+	// mirroring internal/adapter/vectors' Store.
 	rebuilding atomic.Bool
 }
 

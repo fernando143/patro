@@ -5,7 +5,7 @@
 // was left standing alone — long after the run. The file is derived and
 // deletable: losing it costs the audit trail, never the knowledge library.
 //
-// This lived inside internal/library, which made the knowledge domain
+// This lived inside internal/domain/knowledge, which made the knowledge domain
 // responsible for its own JSON file format on disk.
 package ledger
 
@@ -94,7 +94,7 @@ func CountFlagged(entries []Entry) int {
 }
 
 // appendLedger reads path (if present), appends entry, and writes the
-// result back atomically (temp file + rename), mirroring internal/vectors'
+// result back atomically (temp file + rename), mirroring internal/adapter/vectors'
 // flush pattern.
 func Append(path string, entry Entry) error {
 	ledgerMu.Lock()

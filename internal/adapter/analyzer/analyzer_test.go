@@ -423,7 +423,7 @@ func TestPyStr(t *testing.T) {
 }
 
 // TestResponseSchemaMatchesParser is the build-time contract check: it
-// fails if internal/analyzer/response_schema.json (authored in Langfuse,
+// fails if internal/adapter/analyzer/response_schema.json (authored in Langfuse,
 // synced by tools/promptsync) drifts from the exact keys parseResponse
 // reads. parseResponse degrades gracefully on missing keys instead of
 // erroring, so a schema edit that renames or drops a field would otherwise

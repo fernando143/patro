@@ -12,7 +12,7 @@ import (
 )
 
 // pageTemplate renders the embedbench form and, once a report has been
-// computed, a results table. Mirrors internal/web's shape: one inlined
+// computed, a results table. Mirrors internal/delivery/web's shape: one inlined
 // template.Must page, no external assets, no JavaScript.
 //
 // Scope note: this was originally designed as a cross-backend agreement

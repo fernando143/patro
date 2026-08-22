@@ -47,9 +47,9 @@ const (
 
 var (
 	defaultVideoExtensions = []string{".mkv", ".mp4", ".mov", ".webm"}
-	// validEmbeddingBackends mirrors internal/embed's compiled-in adapters
+	// validEmbeddingBackends mirrors internal/adapter/embed's compiled-in adapters
 	// (design D9 amendment). It is a separate, explicit list here rather
-	// than a call into internal/embed so config validation has no
+	// than a call into internal/adapter/embed so config validation has no
 	// dependency on the embed package, matching the validAnalyzerBackends
 	// precedent. Kept in sync by hand as adapters land.
 	// go-sentex was dropped (D9 revision 4): its LoadModel() downloads
@@ -282,7 +282,7 @@ func (c *Config) StateDir() string {
 }
 
 // SearchIndexDir returns the directory holding the BM25 full-text index
-// (design D3, internal/searchindex). It is a derived, deletable artifact —
+// (design D3, internal/adapter/searchindex). It is a derived, deletable artifact —
 // never the source of truth.
 func (c *Config) SearchIndexDir() string {
 	return filepath.Join(c.StateDir(), "search-index")

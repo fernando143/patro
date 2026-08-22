@@ -9,7 +9,7 @@
 // by silently falling two backends behind.
 //
 // This package holds no dependencies of its own so every one of those
-// callers can read from it, including internal/config, which the analyzer
+// callers can read from it, including internal/platform/config, which the analyzer
 // itself imports.
 package backend
 
