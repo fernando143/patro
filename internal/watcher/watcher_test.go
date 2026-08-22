@@ -100,7 +100,7 @@ func newTestWatcher(inbox string) (*Watcher, chan string) {
 		StabilityChecks: 1,
 	}
 	processed := make(chan string, 10)
-	w := New(cfg, func(path string) { processed <- path })
+	w := New(OptionsFrom(cfg), func(path string) { processed <- path })
 	w.interval = 20 * time.Millisecond // Config only stores whole seconds.
 	return w, processed
 }
@@ -182,7 +182,7 @@ func TestWatcherRecoversProcessPanic(t *testing.T) {
 
 	firstCall := make(chan struct{})
 	processed := make(chan string, 1)
-	w := New(cfg, func(path string) {
+	w := New(OptionsFrom(cfg), func(path string) {
 		select {
 		case <-firstCall:
 			// Second call: delivered normally.
@@ -228,7 +228,7 @@ func TestScanExistingMissingInboxLogsAndReturns(t *testing.T) {
 		VideoExtensions: []string{".mkv"},
 	}
 	called := false
-	w := New(cfg, func(string) { called = true })
+	w := New(OptionsFrom(cfg), func(string) { called = true })
 
 	w.scanExisting()
 
@@ -239,7 +239,7 @@ func TestScanExistingMissingInboxLogsAndReturns(t *testing.T) {
 
 func TestStabilityIntervalUsesConfigWhenNoOverride(t *testing.T) {
 	cfg := &config.Config{StabilityIntervalSeconds: 7}
-	w := New(cfg, func(string) {})
+	w := New(OptionsFrom(cfg), func(string) {})
 
 	if got := w.stabilityInterval(); got != 7*time.Second {
 		t.Errorf("stabilityInterval() = %v, want 7s from config", got)
@@ -248,7 +248,7 @@ func TestStabilityIntervalUsesConfigWhenNoOverride(t *testing.T) {
 
 func TestStabilityIntervalPrefersOverride(t *testing.T) {
 	cfg := &config.Config{StabilityIntervalSeconds: 7}
-	w := New(cfg, func(string) {})
+	w := New(OptionsFrom(cfg), func(string) {})
 	w.interval = 50 * time.Millisecond
 
 	if got := w.stabilityInterval(); got != 50*time.Millisecond {
@@ -265,7 +265,7 @@ func TestRunSetupFailure(t *testing.T) {
 		Inbox:           filepath.Join(blocker, "inbox"),
 		VideoExtensions: []string{".mkv"},
 	}
-	w := New(cfg, func(string) {})
+	w := New(OptionsFrom(cfg), func(string) {})
 	if err := w.Run(context.Background()); err == nil {
 		t.Error("Run() = nil with an uncreatable inbox, want a setup error")
 	}

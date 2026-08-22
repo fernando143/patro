@@ -317,7 +317,7 @@ func runPipeline(opts *cliOptions) int {
 		}
 	}()
 
-	w := watcher.New(cfg, func(path string) {
+	w := watcher.New(watcher.OptionsFrom(cfg), func(path string) {
 		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, tracker, transcribeFn, analyzeFn); err != nil {
 			logging.Errorf("Failed to process %s: %v", path, err)
 			tracker.Fail(path, err.Error())

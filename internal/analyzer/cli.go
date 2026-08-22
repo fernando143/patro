@@ -31,7 +31,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fernando143/patro/internal/config"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
 
@@ -42,18 +41,36 @@ import (
 // KIMI_TIMEOUT_SECONDS / CLAUDE_TIMEOUT_SECONDS in the Python backends.
 const cliTimeoutSeconds = 600
 
-// AnalyzeCLI runs the local CLI backend selected by cfg.AnalyzerBackend
+// CLIOptions is everything AnalyzeCLI needs from configuration. Naming the
+// four values keeps this package independent of the application's whole
+// config struct, so it can be exercised without constructing one.
+type CLIOptions struct {
+	// Backend is the analyzer_backend name, e.g. "kimi".
+	Backend string
+	// BinaryPath is the CLI to run. Empty falls back to the registry's
+	// default binary name, resolved on PATH.
+	BinaryPath string
+	// WorkDir is the working directory for the subprocess.
+	WorkDir string
+	// StateDir is where the transcript is staged for the CLI to read.
+	StateDir string
+}
+
+// AnalyzeCLI runs the local CLI backend selected by opts.Backend
 // over the transcript and parses its answer. Which binary to run, how to
 // invoke it and what to say when it is missing all come from the backend
 // registry.
-func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef, cfg *config.Config) (*types.AnalysisResult, error) {
-	b, ok := backend.Get(cfg.AnalyzerBackend)
+func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types.TopicRef, opts CLIOptions) (*types.AnalysisResult, error) {
+	b, ok := backend.Get(opts.Backend)
 	if !ok || b.Hosted {
-		return nil, fmt.Errorf("unknown CLI analyzer backend %q", cfg.AnalyzerBackend)
+		return nil, fmt.Errorf("unknown CLI analyzer backend %q", opts.Backend)
 	}
-	binaryPath := cfg.BinaryPath(b.Name)
+	binaryPath := opts.BinaryPath
+	if binaryPath == "" {
+		binaryPath = b.DefaultBinary
+	}
 
-	transcriptFile, err := writeTranscriptFile(t, cfg.StateDir())
+	transcriptFile, err := writeTranscriptFile(t, opts.StateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +79,7 @@ func AnalyzeCLI(ctx context.Context, t *types.TranscriptResult, existing []types
 	prompt := BuildPrompt(existing, t.Language, transcriptFile)
 	logging.Infof("Running %s analysis over transcript %s (%s) ...", b.DisplayName, t.ID, transcriptFile)
 
-	stdout, err := runCLI(ctx, binaryPath, b.Argv(prompt), cfg.Dir, b.Name, b.NotFoundHelp(binaryPath))
+	stdout, err := runCLI(ctx, binaryPath, b.Argv(prompt), opts.WorkDir, b.Name, b.NotFoundHelp(binaryPath))
 	if err != nil {
 		return nil, err
 	}
