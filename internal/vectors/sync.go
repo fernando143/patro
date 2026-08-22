@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/fernando143/patro/internal/embed"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 type SyncState string
@@ -126,12 +128,6 @@ type V2Store struct {
 
 // stem returns the file name without its final extension, e.g.
 // "topics/foo.md" -> "foo".
-func stem(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	return base[:len(base)-len(ext)]
-}
-
 func (s *V2Store) NearestRepresentations(ctx context.Context, query embed.Representation, mode embed.ScoreMode, limit int) ([]embed.RankedResult, error) {
 	s.mu.Lock()
 	if s.state != StateCurrent {
@@ -216,7 +212,7 @@ func (s *V2Store) Sync(ctx context.Context, source string, representer DocumentR
 		if err != nil {
 			return s.failDirty(err)
 		}
-		id := stem(path)
+		id := layout.Stem(path)
 		sourceHash := sourceHash(string(data))
 		if old, ok := oldEntries[id]; ok && old.SourceHash == sourceHash {
 			next[id] = old

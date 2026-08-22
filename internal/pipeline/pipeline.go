@@ -20,7 +20,6 @@ import (
 
 	"github.com/fernando143/patro/internal/analyzer"
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
@@ -29,6 +28,8 @@ import (
 	"github.com/fernando143/patro/internal/transcriber"
 	"github.com/fernando143/patro/internal/types"
 	"github.com/fernando143/patro/internal/vectors"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // grayZoneTimeoutSeconds bounds a single gray-zone reconciliation LLM call
@@ -152,23 +153,11 @@ func NewReconciler(cfg *config.Config) library.Reconciler {
 }
 
 func newReconciler(cfg *config.Config) library.Reconciler {
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	v2, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
 		logging.Warnf("reconciliation disabled: %v", err)
 		return nil
 	}
-
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		logging.Warnf("reconciliation disabled: cannot initialize representation identity: %v", err)
-		return nil
-	}
-	if sample == nil {
-		logging.Warnf("reconciliation disabled: representation backend returned nil identity")
-		return nil
-	}
-	v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 
 	// The gray-zone LLM binary follows the configured analyzer backend,
 	// mirroring MakeAnalyzeFunc's own CLI choice: *_path values are always
@@ -194,7 +183,7 @@ func newReconciler(cfg *config.Config) library.Reconciler {
 		MergeThreshold:    cfg.MergeThreshold,
 		NewTopicThreshold: cfg.NewTopicThreshold,
 		Decide:            decide,
-		LedgerPath:        filepath.Join(cfg.StateDir(), "reconciliation.json"),
+		LedgerPath:        layout.State(cfg.StateDir()).Ledger(),
 	}
 }
 
@@ -252,7 +241,8 @@ func rebuildSearchIndex(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("open search index: %w", err)
 	}
 
-	rebuildErr := idx.Rebuild(ctx, filepath.Join(cfg.Library, "topics"), filepath.Join(cfg.Library, "meetings"))
+	lib := layout.Library(cfg.Library)
+	rebuildErr := idx.Rebuild(ctx, lib.Topics(), lib.Meetings())
 	closeErr := idx.Close()
 	if rebuildErr != nil {
 		return fmt.Errorf("rebuild search index: %w", rebuildErr)

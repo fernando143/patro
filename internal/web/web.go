@@ -25,6 +25,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 
 	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/layout"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/searchindex"
 )
@@ -167,6 +168,14 @@ th, td { border: 1px solid var(--border); padding: .4rem .6rem; }
 </body>
 </html>`))
 
+// URL prefixes for the two collections the viewer publishes. They are
+// built from layout's URL segments, never from its directory names, so a
+// future directory rename cannot silently change a published link.
+const (
+	topicsURL   = "/" + layout.TopicsURLSegment + "/"
+	meetingsURL = "/" + layout.MeetingsURLSegment + "/"
+)
+
 // Server renders and serves the knowledge library rooted at Root.
 type Server struct {
 	Root string
@@ -210,17 +219,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
 
 	switch rel {
-	case "", "index.md":
+	case "", layout.IndexFileName:
 		s.handleHome(w, r)
 		return
 	case "search":
 		s.handleSearch(w, r)
 		return
-	case "topics":
-		s.handleCollection(w, r, "topics", "Topics", false)
+	case layout.TopicsURLSegment:
+		s.handleCollection(w, r, layout.TopicsDirName, "Topics", false)
 		return
-	case "meetings":
-		s.handleCollection(w, r, "meetings", "Meetings", true)
+	case layout.MeetingsURLSegment:
+		s.handleCollection(w, r, layout.MeetingsDirName, "Meetings", true)
 		return
 	}
 
@@ -257,19 +266,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // complete generated index. Full collections remain available under their
 // own routes.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	topics := s.listSection("topics", false)
+	topics := s.listSection(layout.TopicsDirName, false)
 	sort.SliceStable(topics, func(i, j int) bool {
 		if topics[i].Meta == topics[j].Meta {
 			return topics[i].Label < topics[j].Label
 		}
 		return topics[i].Meta > topics[j].Meta
 	})
-	meetings := s.listSection("meetings", true)
+	meetings := s.listSection(layout.MeetingsDirName, true)
 
 	var b strings.Builder
 	b.WriteString(`<h1>Knowledge library</h1><p class="lede">Find decisions, action items, and context from your recorded meetings.</p>`)
-	s.writeOverviewSection(&b, "Recent meetings", "/meetings/", meetings, 6)
-	s.writeOverviewSection(&b, "Recently updated topics", "/topics/", topics, 6)
+	s.writeOverviewSection(&b, "Recent meetings", meetingsURL, meetings, 6)
+	s.writeOverviewSection(&b, "Recently updated topics", topicsURL, topics, 6)
 	s.render(w, r, "Knowledge library", template.HTML(b.String()))
 }
 
@@ -324,7 +333,7 @@ func (s *Server) handleCollection(w http.ResponseWriter, r *http.Request, dir, t
 // serveDir renders the directory's index.md when present, otherwise a
 // simple listing of the entries.
 func (s *Server) serveDir(w http.ResponseWriter, r *http.Request, full, rel string) {
-	index := filepath.Join(full, "index.md")
+	index := filepath.Join(full, layout.IndexFileName)
 	if _, err := os.Stat(index); err == nil {
 		s.serveMarkdown(w, r, index)
 		return
@@ -375,7 +384,7 @@ func (s *Server) serveMarkdown(w http.ResponseWriter, r *http.Request, full stri
 
 func (s *Server) decorateMarkdown(full string, rendered template.HTML) template.HTML {
 	dir := filepath.Base(filepath.Dir(full))
-	if dir != "topics" && dir != "meetings" {
+	if dir != layout.TopicsDirName && dir != layout.MeetingsDirName {
 		return rendered
 	}
 
@@ -384,9 +393,9 @@ func (s *Server) decorateMarkdown(full string, rendered template.HTML) template.
 		template.HTMLEscapeString(dir) + `/">` + template.HTMLEscapeString(strings.ToUpper(dir[:1])+dir[1:]) + `</a></nav>`)
 	b.WriteString(string(rendered))
 
-	relatedDir := "topics"
-	if dir == "topics" {
-		relatedDir = "meetings"
+	relatedDir := layout.TopicsDirName
+	if dir == layout.TopicsDirName {
+		relatedDir = layout.MeetingsDirName
 	}
 	related := s.relatedItems(full, dir, relatedDir)
 	if len(related) > 0 {
@@ -400,14 +409,14 @@ func (s *Server) decorateMarkdown(full string, rendered template.HTML) template.
 		}
 		b.WriteString(`</ul></section>`)
 	}
-	if dir == "meetings" {
+	if dir == layout.MeetingsDirName {
 		s.writeMeetingNavigation(&b, full)
 	}
 	return template.HTML(b.String())
 }
 
 func (s *Server) relatedItems(sourceFull, sourceDir, targetDir string) []navItem {
-	items := s.listSection(targetDir, targetDir == "meetings")
+	items := s.listSection(targetDir, targetDir == layout.MeetingsDirName)
 	sourceData, err := os.ReadFile(sourceFull)
 	if err != nil {
 		return nil
@@ -416,7 +425,7 @@ func (s *Server) relatedItems(sourceFull, sourceDir, targetDir string) []navItem
 	result := make([]navItem, 0)
 	for _, item := range items {
 		candidateName := filepath.Base(item.URL)
-		if sourceDir == "topics" {
+		if sourceDir == layout.TopicsDirName {
 			if strings.Contains(string(sourceData), candidateName) {
 				result = append(result, item)
 			}
@@ -431,8 +440,8 @@ func (s *Server) relatedItems(sourceFull, sourceDir, targetDir string) []navItem
 }
 
 func (s *Server) writeMeetingNavigation(b *strings.Builder, full string) {
-	items := s.listSection("meetings", true)
-	currentURL := "/meetings/" + filepath.Base(full)
+	items := s.listSection(layout.MeetingsDirName, true)
+	currentURL := meetingsURL + filepath.Base(full)
 	for i, item := range items {
 		if item.URL != currentURL {
 			continue
@@ -766,10 +775,10 @@ func (s *Server) buildSidebar(active string) template.HTML {
 	}
 	var b strings.Builder
 	b.WriteString(`<a` + homeClass + ` href="/">Overview</a>`)
-	topics := s.listSection("topics", false)
+	topics := s.listSection(layout.TopicsDirName, false)
 	sort.SliceStable(topics, func(i, j int) bool { return topics[i].Meta > topics[j].Meta })
-	s.writeSection(&b, "Topics", "/topics/", topics, active, 8)
-	s.writeSection(&b, "Meetings", "/meetings/", s.listSection("meetings", true), active, 6)
+	s.writeSection(&b, "Topics", topicsURL, topics, active, 8)
+	s.writeSection(&b, "Meetings", meetingsURL, s.listSection(layout.MeetingsDirName, true), active, 6)
 	return template.HTML(b.String())
 }
 
@@ -818,7 +827,7 @@ func (s *Server) listSection(dir string, newestFirst bool) []navItem {
 	items := make([]navItem, 0, len(files))
 	for _, f := range files {
 		meta := latestSectionDate(f)
-		if dir == "meetings" {
+		if dir == layout.MeetingsDirName {
 			base := filepath.Base(f)
 			if len(base) >= len("2006-01-02") {
 				meta = base[:len("2006-01-02")]

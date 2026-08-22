@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/state"
@@ -670,16 +669,10 @@ func TestProcessVideoWiresRealReconcilerMergesSemanticDuplicate(t *testing.T) {
 		t.Fatalf("WriteFile error = %v", err)
 	}
 
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	store, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		t.Fatalf("embed.New error = %v", err)
+		t.Fatalf("OpenRepresentationStore error = %v", err)
 	}
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		t.Fatalf("Represent identity error = %v", err)
-	}
-	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 	if err := store.Sync(context.Background(), lib.TopicsDir, embedder); err != nil {
 		t.Fatalf("Sync error = %v", err)
 	}
