@@ -13,5 +13,5 @@ coverage:
 # so there is no meaningful local logic to unit test without hitting the
 # live API.
 ignore:
-  - "internal/analyzer/lemur.go"
-  - "internal/transcriber/transcriber.go"
+  - "internal/adapter/analyzer/lemur.go"
+  - "internal/adapter/transcriber/transcriber.go"
