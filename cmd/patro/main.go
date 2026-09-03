@@ -60,6 +60,8 @@ import (
 	"github.com/fernando143/patro/internal/layout"
 
 	"github.com/fernando143/patro/internal/analyzer/backend"
+
+	"github.com/fernando143/patro/internal/ledger"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -315,7 +317,7 @@ func runPipeline(opts *cliOptions) int {
 		}
 	}()
 
-	w := watcher.New(cfg, func(path string) {
+	w := watcher.New(watcher.OptionsFrom(cfg), func(path string) {
 		if _, err := pipeline.ProcessVideo(ctx, path, cfg, st, tracker, transcribeFn, analyzeFn); err != nil {
 			logging.Errorf("Failed to process %s: %v", path, err)
 			tracker.Fail(path, err.Error())
@@ -579,11 +581,11 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	}
 
 	ledgerPath := layout.State(cfg.StateDir()).Ledger()
-	entries, err := library.ReadLedger(ledgerPath)
+	entries, err := ledger.Read(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
 	}
-	if flaggedTotal := library.CountFlagged(entries); flaggedTotal > 0 {
+	if flaggedTotal := ledger.CountFlagged(entries); flaggedTotal > 0 {
 		tracker.MaintenanceStart(status.PhaseReconciling, flaggedTotal)
 		_, reconcileErr := lib.ReconcileFlagged(ctx, ledgerPath, func(done, _ int) {
 			tracker.MaintenanceProgress(done)
@@ -601,20 +603,17 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 // derived BM25 index per request, so a long-running viewer does not hold
 // Bleve's lock while `patro process` publishes a replacement. Embedding setup
 // is best effort: a failure disables only the semantic leg and leaves BM25
-// available. It returns a cleanup func to keep the caller's lifecycle
-// contract unchanged.
-func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
+// available.
+func wireSearch(srv *web.Server, cfg *config.Config) {
 	srv.SearchIndexPath = cfg.SearchIndexDir()
-	closeFn = func() {}
 
 	store, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
 		logging.Warnf("multi-vector search is disabled: %v", err)
-		return closeFn
+		return
 	}
 	srv.MultiVectors = store
 	srv.Representer = embedder
-	return closeFn
 }
 
 // runWeb starts the local knowledge-library web viewer and blocks until
@@ -636,8 +635,7 @@ func runWeb(opts *cliOptions) int {
 	}
 
 	srv := web.NewServer(cfg.Library)
-	closeSearch := wireSearch(srv, cfg)
-	defer closeSearch()
+	wireSearch(srv, cfg)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
 	server := &http.Server{Addr: addr, Handler: srv}
