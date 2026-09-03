@@ -42,7 +42,6 @@ import (
 	"time"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/library"
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/migration"
@@ -57,6 +56,8 @@ import (
 	"github.com/fernando143/patro/internal/web"
 
 	"golang.org/x/term"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -530,21 +531,12 @@ func printMigrationPlan(plan migration.Plan) {
 // otherwise left alone rather than paying a full re-embed/reindex cost on
 // every single serve startup or reconcile call.
 func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tracker) error {
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	libPaths := layout.Library(cfg.Library)
+	topicsDir := libPaths.Topics()
+	store, embedder, err := vectors.OpenRepresentationStore(ctx, cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		return fmt.Errorf("maintenance: embedding backend unavailable: %w", err)
+		return fmt.Errorf("maintenance: %w", err)
 	}
-
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	topicsDir := filepath.Join(cfg.Library, "topics")
-	sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		return fmt.Errorf("maintenance: initializing representation identity: %w", err)
-	}
-	if sample == nil {
-		return fmt.Errorf("maintenance: representation backend returned nil identity")
-	}
-	store := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
 	if store.NeedsSync() {
 		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
 		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
@@ -570,7 +562,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 	}()
 
 	if !searchIndexExisted {
-		if err := searchIdx.Rebuild(ctx, topicsDir, filepath.Join(cfg.Library, "meetings")); err != nil {
+		if err := searchIdx.Rebuild(ctx, topicsDir, libPaths.Meetings()); err != nil {
 			return fmt.Errorf("maintenance: rebuilding search index: %w", err)
 		}
 	}
@@ -584,7 +576,7 @@ func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tra
 		return nil // reconciliation disabled (e.g. unknown embedding backend): nothing more to do
 	}
 
-	ledgerPath := filepath.Join(cfg.StateDir(), "reconciliation.json")
+	ledgerPath := layout.State(cfg.StateDir()).Ledger()
 	entries, err := library.ReadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
@@ -613,23 +605,12 @@ func wireSearch(srv *web.Server, cfg *config.Config) (closeFn func()) {
 	srv.SearchIndexPath = cfg.SearchIndexDir()
 	closeFn = func() {}
 
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	store, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		logging.Warnf("embedding backend unavailable, multi-vector search is disabled: %v", err)
+		logging.Warnf("multi-vector search is disabled: %v", err)
 		return closeFn
 	}
-
-	storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-	sample, err := embedder.Represent(context.Background(), embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
-	if err != nil {
-		logging.Warnf("representation backend unavailable, multi-vector search is disabled: %v", err)
-		return closeFn
-	}
-	if sample == nil {
-		logging.Warnf("representation backend returned nil identity, multi-vector search is disabled")
-		return closeFn
-	}
-	srv.MultiVectors = vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
+	srv.MultiVectors = store
 	srv.Representer = embedder
 	return closeFn
 }

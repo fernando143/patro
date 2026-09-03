@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // record is a single processed-file entry in processed.json.
@@ -38,7 +40,7 @@ type State struct {
 func New(dir string) *State {
 	s := &State{
 		dir:  dir,
-		file: filepath.Join(dir, "processed.json"),
+		file: layout.State(dir).Processed(),
 		data: map[string]record{},
 	}
 	s.load()

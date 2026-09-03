@@ -34,6 +34,8 @@ import (
 
 	"github.com/fernando143/patro/internal/logging"
 	"github.com/fernando143/patro/internal/types"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 var (
@@ -96,11 +98,12 @@ type Library struct {
 // NewLibrary creates the library directory layout under root and returns
 // the Library handle.
 func NewLibrary(root string) (*Library, error) {
+	lib := layout.Library(root)
 	l := &Library{
 		Root:           root,
-		TopicsDir:      filepath.Join(root, "topics"),
-		MeetingsDir:    filepath.Join(root, "meetings"),
-		TranscriptsDir: filepath.Join(root, "transcripts"),
+		TopicsDir:      lib.Topics(),
+		MeetingsDir:    lib.Meetings(),
+		TranscriptsDir: lib.Transcripts(),
 	}
 	for _, d := range []string{l.TopicsDir, l.MeetingsDir, l.TranscriptsDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -119,7 +122,7 @@ func (l *Library) ExistingTopics() []types.TopicRef {
 	}
 	topics := make([]types.TopicRef, 0, len(files))
 	for _, path := range files {
-		slug := stem(path)
+		slug := layout.Stem(path)
 		name, _ := topicInfo(path, slug)
 		topics = append(topics, types.TopicRef{Slug: slug, Name: name})
 	}
@@ -142,7 +145,7 @@ func (l *Library) ExistingTopicsRecent(n int) []types.TopicRef {
 	}
 	entries := make([]entry, 0, len(files))
 	for _, path := range files {
-		slug := stem(path)
+		slug := layout.Stem(path)
 		name, lastUpdate := topicInfo(path, slug)
 		entries = append(entries, entry{types.TopicRef{Slug: slug, Name: name}, lastUpdate})
 	}
@@ -294,7 +297,7 @@ func (l *Library) ResolveTranscriptID(path string) (id string, external bool, er
 		return "", false, err
 	}
 	if filepath.Dir(absPath) == absTranscriptsDir {
-		return stem(absPath), false, nil
+		return layout.Stem(absPath), false, nil
 	}
 
 	data, err := os.ReadFile(path)
@@ -396,7 +399,7 @@ func (l *Library) RebuildIndex() (string, error) {
 	}
 	topics := make([]topicEntry, 0, len(topicFiles))
 	for _, path := range topicFiles {
-		slug := stem(path)
+		slug := layout.Stem(path)
 		name, lastUpdate := topicInfo(path, slug)
 		topics = append(topics, topicEntry{slug, name, lastUpdate})
 	}
@@ -422,7 +425,7 @@ func (l *Library) RebuildIndex() (string, error) {
 	lines = append(lines, "", "## Meetings", "")
 	if len(meetings) > 0 {
 		for _, path := range meetings {
-			stemName := stem(path)
+			stemName := layout.Stem(path)
 			title := stemName
 			if data, err := os.ReadFile(path); err == nil {
 				if line, ok := firstLine(string(data)); ok && strings.HasPrefix(line, "# ") {
@@ -436,7 +439,7 @@ func (l *Library) RebuildIndex() (string, error) {
 	}
 	lines = append(lines, "")
 
-	indexPath := filepath.Join(l.Root, "index.md")
+	indexPath := layout.Library(l.Root).Index()
 	if err := os.WriteFile(indexPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
 		return "", err
 	}
@@ -643,11 +646,6 @@ func (l *Library) appendReconciledSection(target types.Topic, sourceSlug, annota
 
 // stem returns the file name without its final extension (Python's
 // Path.stem).
-func stem(path string) string {
-	base := filepath.Base(path)
-	return strings.TrimSuffix(base, filepath.Ext(base))
-}
-
 // firstLine returns the first line of text, or false when text is empty.
 func firstLine(text string) (string, bool) {
 	if text == "" {

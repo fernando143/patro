@@ -3,19 +3,19 @@ package migration
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/embed"
 	"github.com/fernando143/patro/internal/searchindex"
 	"github.com/fernando143/patro/internal/vectors"
+
+	"github.com/fernando143/patro/internal/layout"
 )
 
 // ConfiguredService builds a migration service from the active application config.
 func ConfiguredService(cfg *config.Config) (*Service, error) {
-	embedder, err := embed.New(cfg.EmbeddingBackend)
+	_, embedder, err := vectors.OpenRepresentationStore(context.Background(), cfg.StateDir(), cfg.EmbeddingBackend)
 	if err != nil {
-		return nil, fmt.Errorf("migration: embedding backend unavailable: %w", err)
+		return nil, fmt.Errorf("migration: %w", err)
 	}
 	s := &Service{
 		LibraryRoot: cfg.Library,
@@ -24,17 +24,15 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 		Representer: embedder,
 	}
 	s.RebuildDerived = func(ctx context.Context) error {
-		storePath := filepath.Join(cfg.StateDir(), "vectors", "topics.json")
-		topicsDir := filepath.Join(cfg.Library, "topics")
-		sample, err := embedder.Represent(ctx, embed.Document{ID: "identity", Text: "# Identity\n\nidentity"})
+		lib := layout.Library(cfg.Library)
+		topicsDir := lib.Topics()
+		// The store and the embedder that syncs it must be the same pair:
+		// the store stamps its snapshot with that embedder's identity.
+		v2, syncEmbedder, err := vectors.OpenRepresentationStore(ctx, cfg.StateDir(), cfg.EmbeddingBackend)
 		if err != nil {
-			return fmt.Errorf("migration: initializing representation identity: %w", err)
+			return fmt.Errorf("migration: %w", err)
 		}
-		if sample == nil {
-			return fmt.Errorf("migration: representation backend returned nil identity")
-		}
-		v2 := vectors.NewV2Store(storePath, sample.Identity(), vectors.OSCommitFS{})
-		if err := v2.Sync(ctx, topicsDir, embedder); err != nil {
+		if err := v2.Sync(ctx, topicsDir, syncEmbedder); err != nil {
 			return err
 		}
 		idx, err := searchindex.Open(cfg.SearchIndexDir())
@@ -42,7 +40,7 @@ func ConfiguredService(cfg *config.Config) (*Service, error) {
 			return err
 		}
 		defer idx.Close()
-		return idx.Rebuild(ctx, filepath.Join(cfg.Library, "topics"), filepath.Join(cfg.Library, "meetings"))
+		return idx.Rebuild(ctx, lib.Topics(), lib.Meetings())
 	}
 	return s, nil
 }
