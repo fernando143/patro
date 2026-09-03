@@ -170,6 +170,16 @@ Make sure the CLI is installed and that `config.yaml` points to the absolute pat
 
 Requires Go 1.26 or newer.
 
+### Documentation
+
+The project documentation is served from `docs/` with Docsify. Install the
+CLI once and start the local server from the repository root:
+
+```bash
+npm install --global docsify-cli@5
+docsify serve docs
+```
+
 ```bash
 git clone https://github.com/fernando143/patro.git
 cd patro

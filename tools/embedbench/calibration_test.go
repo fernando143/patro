@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fernando143/patro/internal/embed"
+	"github.com/fernando143/patro/internal/adapter/embed"
 )
 
 func TestCalibrationProfilesAreSeparateAndCanonical(t *testing.T) {

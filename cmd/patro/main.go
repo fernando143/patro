@@ -35,33 +35,28 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/fernando143/patro/internal/config"
-	"github.com/fernando143/patro/internal/library"
-	"github.com/fernando143/patro/internal/logging"
-	"github.com/fernando143/patro/internal/migration"
-	"github.com/fernando143/patro/internal/pipeline"
-	"github.com/fernando143/patro/internal/searchindex"
-	"github.com/fernando143/patro/internal/setup"
-	"github.com/fernando143/patro/internal/state"
-	"github.com/fernando143/patro/internal/status"
-	"github.com/fernando143/patro/internal/tui"
-	"github.com/fernando143/patro/internal/vectors"
-	"github.com/fernando143/patro/internal/watcher"
-	"github.com/fernando143/patro/internal/web"
+	"github.com/fernando143/patro/internal/adapter/state"
+	"github.com/fernando143/patro/internal/adapter/status"
+	"github.com/fernando143/patro/internal/adapter/vectors"
+	"github.com/fernando143/patro/internal/app/migration"
+	"github.com/fernando143/patro/internal/app/pipeline"
+	"github.com/fernando143/patro/internal/app/watcher"
+	"github.com/fernando143/patro/internal/delivery/setup"
+	"github.com/fernando143/patro/internal/delivery/tui"
+	"github.com/fernando143/patro/internal/delivery/web"
+	"github.com/fernando143/patro/internal/platform/config"
+	"github.com/fernando143/patro/internal/platform/logging"
 
 	"golang.org/x/term"
 
-	"github.com/fernando143/patro/internal/layout"
+	"github.com/fernando143/patro/internal/adapter/analyzer/backend"
 
-	"github.com/fernando143/patro/internal/analyzer/backend"
-
-	"github.com/fernando143/patro/internal/ledger"
+	"github.com/fernando143/patro/internal/app/maintenance"
 )
 
 // version is overridden by release builds via -X main.version=...
@@ -312,7 +307,7 @@ func runPipeline(opts *cliOptions) int {
 	// (ErrV2NeedsRebuild -> new+flagged) for the rebuild's duration, which is
 	// already-designed behavior (Unit 3/4), not new machinery here.
 	go func() {
-		if err := runMaintenance(ctx, cfg, tracker); err != nil {
+		if err := maintenance.Run(ctx, cfg, tracker); err != nil {
 			logging.Warnf("startup maintenance: %v", err)
 		}
 	}()
@@ -487,7 +482,7 @@ func runReconcile(opts *cliOptions) int {
 		logging.Warnf("Cannot write status file (the tui dashboard will be unavailable): %v", err)
 	}
 
-	if err := runMaintenance(ctx, cfg, tracker); err != nil {
+	if err := maintenance.Run(ctx, cfg, tracker); err != nil {
 		logging.Errorf("reconcile: %v", err)
 		return 1
 	}
@@ -517,85 +512,6 @@ func printMigrationPlan(plan migration.Plan) {
 		fmt.Printf("   target: %s [%d bytes, %d sections, sha256 %s]\n", p.TargetPath, p.TargetBytes, p.TargetSections, p.TargetHash)
 	}
 	fmt.Println("\nDry run only: no knowledge, state, or index files were changed. Use 'patro run tui' -> Migrate to approve or reject each proposal.")
-}
-
-// runMaintenance performs ensure-index (rebuild the multi-vector
-// representation store and/or the BM25 search index when missing or
-// model-version-mismatched — design D10) and then re-attempts reconciliation
-// for every flagged topic against the now-current store. Both "patro
-// reconcile" (on demand) and serve's own startup integrity check drive
-// through this one function, reporting progress through
-// tracker.Maintenance* — tracker may be nil (e.g. status.json could not be
-// opened), which every Tracker method already tolerates.
-//
-// The representation store's self-invalidating tag (design D10) is exactly
-// NeedsSync(); bleve's BM25 index has no equivalent backend/model concept
-// to mismatch, so its ensure-index trigger is simply "the index directory
-// did not exist yet" (first run / pre-Unit-7 library) — Rebuild is
-// otherwise left alone rather than paying a full re-embed/reindex cost on
-// every single serve startup or reconcile call.
-func runMaintenance(ctx context.Context, cfg *config.Config, tracker *status.Tracker) error {
-	libPaths := layout.Library(cfg.Library)
-	topicsDir := libPaths.Topics()
-	store, embedder, err := vectors.OpenRepresentationStore(ctx, cfg.StateDir(), cfg.EmbeddingBackend)
-	if err != nil {
-		return fmt.Errorf("maintenance: %w", err)
-	}
-	if store.NeedsSync() {
-		files, _ := filepath.Glob(filepath.Join(topicsDir, "*.md"))
-		tracker.MaintenanceStart(status.PhaseRebuildingIndex, len(files))
-		rebuildErr := store.Sync(ctx, topicsDir, embedder)
-		tracker.MaintenanceDone()
-		if rebuildErr != nil {
-			return fmt.Errorf("maintenance: rebuilding vector representations: %w", rebuildErr)
-		}
-	}
-
-	searchIndexPath := cfg.SearchIndexDir()
-	_, statErr := os.Stat(searchIndexPath)
-	searchIndexExisted := statErr == nil
-
-	searchIdx, err := searchindex.Open(searchIndexPath)
-	if err != nil {
-		return fmt.Errorf("maintenance: opening search index: %w", err)
-	}
-	defer func() {
-		if err := searchIdx.Close(); err != nil {
-			logging.Warnf("maintenance: closing search index: %v", err)
-		}
-	}()
-
-	if !searchIndexExisted {
-		if err := searchIdx.Rebuild(ctx, topicsDir, libPaths.Meetings()); err != nil {
-			return fmt.Errorf("maintenance: rebuilding search index: %w", err)
-		}
-	}
-
-	lib, err := library.NewLibrary(cfg.Library)
-	if err != nil {
-		return fmt.Errorf("maintenance: opening library: %w", err)
-	}
-	lib.Reconciler = pipeline.NewReconciler(cfg)
-	if lib.Reconciler == nil {
-		return nil // reconciliation disabled (e.g. unknown embedding backend): nothing more to do
-	}
-
-	ledgerPath := layout.State(cfg.StateDir()).Ledger()
-	entries, err := ledger.Read(ledgerPath)
-	if err != nil {
-		return fmt.Errorf("maintenance: reading reconciliation ledger: %w", err)
-	}
-	if flaggedTotal := ledger.CountFlagged(entries); flaggedTotal > 0 {
-		tracker.MaintenanceStart(status.PhaseReconciling, flaggedTotal)
-		_, reconcileErr := lib.ReconcileFlagged(ctx, ledgerPath, func(done, _ int) {
-			tracker.MaintenanceProgress(done)
-		})
-		tracker.MaintenanceDone()
-		if reconcileErr != nil {
-			return fmt.Errorf("maintenance: reconciling flagged topics: %w", reconcileErr)
-		}
-	}
-	return nil
 }
 
 // wireSearch configures the BM25 index path and semantic store that power the

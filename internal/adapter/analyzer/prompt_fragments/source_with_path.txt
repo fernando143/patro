@@ -1,0 +1,2 @@
+First, read the meeting transcript from this file using your file reading tool: {{transcript_path}}
+Base your entire analysis on its contents.
