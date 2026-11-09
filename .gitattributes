@@ -1,1 +1,2 @@
+internal/adapter/embed/weights/cybertron/** -text
 internal/adapter/embed/weights/cybertron/spago_model.bin filter=lfs diff=lfs merge=lfs -text
