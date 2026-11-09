@@ -2,10 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,99 @@ import (
 	"github.com/fernando143/patro/internal/domain/meeting"
 	"github.com/fernando143/patro/internal/platform/config"
 )
+
+// ---- Fake analyzer CLI infrastructure --------------------------------------
+//
+// Same helper as in internal/adapter/analyzer's tests, reduced to what these
+// tests need: a fake kimi/claude binary that streams canned output. On Unix
+// it is a shell script; on Windows a `#!` script cannot be started, so the
+// helper re-executes this test binary in a control-file-driven helper mode
+// (TestMain / runFakeAnalyzer).
+
+const fakeControlEnv = "PATRO_FAKE_CLI_CONTROL"
+
+type fakeControl struct {
+	Stdout     string // exact bytes written to stdout (a newline is appended)
+	StdoutFile string // file whose contents are copied verbatim to stdout
+	Exit       int    // process exit code
+}
+
+func TestMain(m *testing.M) {
+	if controlFile := os.Getenv(fakeControlEnv); controlFile != "" {
+		os.Exit(runFakeAnalyzer(controlFile))
+	}
+	os.Exit(m.Run())
+}
+
+// fakeCLI materializes an executable fake analyzer CLI in dir and returns
+// its path.
+func fakeCLI(t *testing.T, dir, name string, ctrl fakeControl) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return fakeCLIHelper(t, ctrl)
+	}
+	return fakeCLIScript(t, dir, name, ctrl)
+}
+
+func fakeCLIHelper(t *testing.T, ctrl fakeControl) string {
+	t.Helper()
+	controlFile := filepath.Join(t.TempDir(), "fake-cli-control.json")
+	data, err := json.Marshal(ctrl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(controlFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeControlEnv, controlFile)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+func fakeCLIScript(t *testing.T, dir, name string, ctrl fakeControl) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	if ctrl.StdoutFile != "" {
+		b.WriteString("cat \"" + ctrl.StdoutFile + "\"\n")
+	}
+	if ctrl.Stdout != "" {
+		b.WriteString("printf '%s\\n' '" + ctrl.Stdout + "'\n")
+	}
+	if ctrl.Exit != 0 {
+		b.WriteString(fmt.Sprintf("exit %d\n", ctrl.Exit))
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runFakeAnalyzer(controlFile string) int {
+	data, err := os.ReadFile(controlFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake CLI: cannot read control file:", err)
+		return 2
+	}
+	var ctrl fakeControl
+	if err := json.Unmarshal(data, &ctrl); err != nil {
+		fmt.Fprintln(os.Stderr, "fake CLI: cannot parse control file:", err)
+		return 2
+	}
+	if ctrl.StdoutFile != "" {
+		if stream, streamErr := os.ReadFile(ctrl.StdoutFile); streamErr == nil {
+			_, _ = os.Stdout.Write(stream)
+		}
+	}
+	if ctrl.Stdout != "" {
+		_, _ = os.Stdout.WriteString(ctrl.Stdout + "\n")
+	}
+	return ctrl.Exit
+}
 
 // newTestVideo creates a real file on disk: state.IsProcessed/MarkProcessed
 // stat the video path, so a bare string path is not enough.
@@ -257,10 +352,24 @@ func TestProcessVideoAddMeetingError(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg.Library, "meetings"), 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
 	}
-	if err := os.Chmod(transcriptsDir, 0o555); err != nil {
-		t.Fatalf("Chmod error = %v", err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. A regular file where the
+		// transcripts folder must be makes the first write inside AddMeeting
+		// (WriteTranscript) fail portably.
+		if err := os.Remove(transcriptsDir); err != nil {
+			t.Fatalf("Remove error = %v", err)
+		}
+		if err := os.WriteFile(transcriptsDir, []byte("not a dir"), 0o644); err != nil {
+			t.Fatalf("WriteFile error = %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(transcriptsDir) })
+	} else {
+		if err := os.Chmod(transcriptsDir, 0o555); err != nil {
+			t.Fatalf("Chmod error = %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(transcriptsDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(transcriptsDir, 0o755) })
 
 	_, err := ProcessVideo(context.Background(), video, cfg, st, nil, MockTranscribe, MockAnalyze)
 	if err == nil {
@@ -278,13 +387,26 @@ func TestProcessVideoMarkProcessedError(t *testing.T) {
 
 	stDir := t.TempDir()
 	st := state.New(stDir)
-	// Force MarkProcessed's saveLocked to fail: the state dir itself is
-	// replaced by an unwritable one after State has already resolved its
-	// file path against it.
-	if err := os.Chmod(stDir, 0o555); err != nil {
-		t.Fatalf("Chmod error = %v", err)
+	// Force MarkProcessed's saveLocked to fail. On Windows, os.Chmod on a
+	// directory is a no-op (POSIX permission bits are not representable), so
+	// there the portable equivalent is a read-only processed.json, which
+	// makes saveLocked's final os.Rename fail with access denied; elsewhere
+	// the state dir itself is made unwritable.
+	if runtime.GOOS == "windows" {
+		stateFile := filepath.Join(stDir, "processed.json")
+		if err := os.WriteFile(stateFile, []byte("{}"), 0o644); err != nil {
+			t.Fatalf("WriteFile error = %v", err)
+		}
+		if err := os.Chmod(stateFile, 0o444); err != nil {
+			t.Fatalf("Chmod error = %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stateFile, 0o644) })
+	} else {
+		if err := os.Chmod(stDir, 0o555); err != nil {
+			t.Fatalf("Chmod error = %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(stDir, 0o755) })
 
 	notePath, err := ProcessVideo(context.Background(), video, cfg, st, nil, MockTranscribe, MockAnalyze)
 	if err == nil {
@@ -402,10 +524,7 @@ func TestMakeAnalyzeFuncCLIBackendDelegatesToAnalyzeCLI(t *testing.T) {
 	if err := os.WriteFile(streamFile, []byte(stream), 0o644); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}
-	kimiPath := filepath.Join(dir, "fake-kimi")
-	if err := os.WriteFile(kimiPath, []byte("#!/bin/sh\ncat \""+streamFile+"\"\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile error = %v", err)
-	}
+	kimiPath := fakeCLI(t, dir, "fake-kimi", fakeControl{StdoutFile: streamFile})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	af := MakeAnalyzeFunc(cfg)
@@ -607,10 +726,7 @@ func TestNewReconcilerValidBackendWiresSemanticReconciler(t *testing.T) {
 // cfg.AnalyzerBackend, mirroring MakeAnalyzeFunc's own kimi/claude choice.
 func TestNewReconcilerUsesClaudePathForClaudeAnalyzerBackend(t *testing.T) {
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "fake-claude")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho yes\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile error = %v", err)
-	}
+	scriptPath := fakeCLI(t, dir, "fake-claude", fakeControl{Stdout: "yes"})
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": scriptPath, "kimi": "kimi-should-not-be-used"},
 		Dir:              dir,
 		EmbeddingBackend: "cybertron",

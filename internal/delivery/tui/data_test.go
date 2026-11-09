@@ -56,6 +56,24 @@ func writeSnapshot(t *testing.T, stateDir string, snap status.Snapshot) {
 	}
 }
 
+// processAlive is the dashboard's liveness probe for the running watcher. On
+// Windows the old signal-0 implementation always reported "dead", so every
+// status snapshot looked stale and the dashboard silently fell back to its
+// inbox-backlog guess; probing a live PID is the regression test for that.
+func TestProcessAliveSelf(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Error("processAlive(current PID) = false, want true")
+	}
+}
+
+func TestProcessAliveRejectsNonPositivePID(t *testing.T) {
+	for _, pid := range []int{0, -1} {
+		if processAlive(pid) {
+			t.Errorf("processAlive(%d) = true, want false", pid)
+		}
+	}
+}
+
 func TestCountProcessed(t *testing.T) {
 	dir := t.TempDir()
 

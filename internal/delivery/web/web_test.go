@@ -217,14 +217,13 @@ func TestListSectionOrdersNewestFirst(t *testing.T) {
 
 func TestServeDirReadDirError(t *testing.T) {
 	root := t.TempDir()
+	// A regular file where the topics directory must be: os.ReadDir fails
+	// portably, on every platform. (POSIX permission bits are not
+	// representable on Windows, so a chmod-based block would be a no-op there.)
 	blocked := filepath.Join(root, "topics")
-	if err := os.MkdirAll(blocked, 0o755); err != nil {
+	if err := os.WriteFile(blocked, []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(blocked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
 
 	srv := NewServer(root)
 	req := httptest.NewRequest(http.MethodGet, "/topics/", nil)

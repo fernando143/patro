@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -45,7 +46,14 @@ func TestExecutableValidate(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "script")
+	// Windows has no exec bits — every regular file reports the same mode —
+	// so there the launchable-file test is the extension (.cmd for the npm
+		// shims), matching setup.ValidateExecutable's Windows rule.
+	scriptName := "script"
+	if runtime.GOOS == "windows" {
+		scriptName = "script.cmd"
+	}
+	script := filepath.Join(dir, scriptName)
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}

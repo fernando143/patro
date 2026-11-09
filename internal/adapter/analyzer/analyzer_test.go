@@ -126,27 +126,36 @@ func TestBuildPromptFull(t *testing.T) {
 		"en",
 		"/tmp/proj/.state/tmp/transcript-abc123.txt",
 	)
-	if got != expectedPromptFull {
+	if got := stripCRs(got); got != expectedPromptFull {
 		t.Errorf("BuildPrompt mismatch:\n--- got ---\n%q\n--- want ---\n%q", got, expectedPromptFull)
 	}
 }
 
+// stripCRs makes the byte-for-byte prompt comparisons portable across
+// checkouts: the prompt template and fragments are embedded verbatim, so on
+// a Windows checkout (core.autocrlf) they carry CRLF line endings that
+// BuildPrompt reproduces faithfully. The prompt *content* must be identical
+// everywhere; only the line endings are allowed to differ.
+func stripCRs(s string) string {
+	return strings.ReplaceAll(s, "\r", "")
+}
+
 func TestBuildPromptEmptyLibraryUnknownLanguage(t *testing.T) {
 	got := BuildPrompt(nil, "unknown", "")
-	if got != expectedPromptEmptyUnknown {
+	if got := stripCRs(got); got != expectedPromptEmptyUnknown {
 		t.Errorf("BuildPrompt mismatch:\n--- got ---\n%q\n--- want ---\n%q", got, expectedPromptEmptyUnknown)
 	}
 }
 
 func TestBuildPromptExistingTopicsNoPath(t *testing.T) {
 	got := BuildPrompt([]meeting.TopicRef{{Slug: "produto", Name: "Produto"}}, "pt", "")
-	if got != expectedPromptTopicsNoPathPt {
+	if got := stripCRs(got); got != expectedPromptTopicsNoPathPt {
 		t.Errorf("BuildPrompt mismatch:\n--- got ---\n%q\n--- want ---\n%q", got, expectedPromptTopicsNoPathPt)
 	}
 }
 
 func TestBuildPromptKeyBlocks(t *testing.T) {
-	withTopics := BuildPrompt([]meeting.TopicRef{{Slug: "a", Name: "A"}}, "en", "/tmp/t.txt")
+	withTopics := stripCRs(BuildPrompt([]meeting.TopicRef{{Slug: "a", Name: "A"}}, "en", "/tmp/t.txt"))
 	for _, block := range []string{
 		"First, read the meeting transcript from this file using your file reading tool: /tmp/t.txt\n" +
 			"Base your entire analysis on its contents.",

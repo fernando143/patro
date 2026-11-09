@@ -3,9 +3,30 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// setHome points the user's home directory at dir. os.UserHomeDir reads HOME
+// on Unix and USERPROFILE on Windows, so both are set and the path helpers
+// under test stay platform-neutral.
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
+// skipUnlessLinux skips a test that exercises a function only reachable on
+// Linux. ServiceAPIKeyConfigured and friends dispatch on runtime.GOOS, so on
+// another OS they read a different file entirely and the assertion is about
+// the wrong branch.
+func skipUnlessLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("exercises the linux service branch, running on %s", runtime.GOOS)
+	}
+}
 
 // The tests below intentionally never exercise InstallService, SetAPIKey,
 // RestartService, installLinuxService, setLinuxAPIKey, installMacService,
@@ -17,7 +38,7 @@ import (
 
 func TestLinuxUnitAndOverridePaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	unitPath, err := linuxUnitPath()
 	if err != nil {
@@ -40,7 +61,7 @@ func TestLinuxUnitAndOverridePaths(t *testing.T) {
 
 func TestMacPlistPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	got, err := macPlistPath()
 	if err != nil {
@@ -54,7 +75,7 @@ func TestMacPlistPath(t *testing.T) {
 
 func TestWriteLinuxOverrideContentAndPermissions(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	if err := writeLinuxOverride("my-secret-key"); err != nil {
 		t.Fatalf("writeLinuxOverride error = %v", err)
@@ -69,6 +90,12 @@ func TestWriteLinuxOverrideContentAndPermissions(t *testing.T) {
 		t.Errorf("override content = %q, want the API key line", data)
 	}
 
+	if runtime.GOOS == "windows" {
+		// Windows permission bits carry only the read-only flag, so a 0600
+		// expectation cannot hold there. The systemd unit is never used on
+		// Windows either; the key lives in a user environment variable.
+		t.Skip("POSIX file modes are not representable on Windows")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat error = %v", err)
@@ -79,8 +106,11 @@ func TestWriteLinuxOverrideContentAndPermissions(t *testing.T) {
 }
 
 func TestWriteLinuxOverrideRewritesLooserExistingPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not representable on Windows")
+	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	// Simulate a pre-existing override created with looser permissions:
 	// os.WriteFile does not chmod a file that already exists.
@@ -107,15 +137,17 @@ func TestWriteLinuxOverrideRewritesLooserExistingPermissions(t *testing.T) {
 }
 
 func TestServiceAPIKeyConfiguredLinuxNoOverride(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	skipUnlessLinux(t)
+	setHome(t, t.TempDir())
 	if ServiceAPIKeyConfigured() {
 		t.Error("ServiceAPIKeyConfigured() = true, want false when no override.conf exists")
 	}
 }
 
 func TestServiceAPIKeyConfiguredLinuxEmptyKey(t *testing.T) {
+	skipUnlessLinux(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	if err := writeLinuxOverride(""); err != nil {
 		t.Fatalf("writeLinuxOverride error = %v", err)
 	}
@@ -125,8 +157,9 @@ func TestServiceAPIKeyConfiguredLinuxEmptyKey(t *testing.T) {
 }
 
 func TestServiceAPIKeyConfiguredLinuxSetKey(t *testing.T) {
+	skipUnlessLinux(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	if err := writeLinuxOverride("a-real-key"); err != nil {
 		t.Fatalf("writeLinuxOverride error = %v", err)
 	}
@@ -167,13 +200,21 @@ func TestXMLEscape(t *testing.T) {
 }
 
 func TestRunQuietSuccess(t *testing.T) {
-	if err := runQuiet("true"); err != nil {
-		t.Errorf("runQuiet(true) error = %v, want nil", err)
+	name, args := "true", []string(nil)
+	if runtime.GOOS == "windows" {
+		name, args = "cmd", []string{"/c", "exit 0"}
+	}
+	if err := runQuiet(name, args...); err != nil {
+		t.Errorf("runQuiet(%s) error = %v, want nil", name, err)
 	}
 }
 
 func TestRunQuietFailureIncludesOutput(t *testing.T) {
-	err := runQuiet("sh", "-c", "echo boom to stderr >&2; exit 1")
+	name, args := "sh", []string{"-c", "echo boom to stderr >&2; exit 1"}
+	if runtime.GOOS == "windows" {
+		name, args = "cmd", []string{"/c", "echo boom to stderr 1>&2 & exit 1"}
+	}
+	err := runQuiet(name, args...)
 	if err == nil {
 		t.Fatal("runQuiet error = nil, want error for a failing command")
 	}

@@ -21,6 +21,7 @@ import (
 var (
 	mu     sync.Mutex
 	output io.Writer = os.Stdout
+	file   *os.File  // the log file opened by Init; nil until then
 )
 
 // Init opens logFile (creating parent directories) and tees subsequent log
@@ -35,9 +36,28 @@ func Init(logFile string) error {
 		return err
 	}
 	mu.Lock()
+	file = fh
 	output = io.MultiWriter(os.Stdout, fh)
 	mu.Unlock()
 	return nil
+}
+
+// Close closes the log file opened by Init, if any, and restores
+// stdout-only output. It is a no-op when Init was never called or was
+// already closed, and, like every other function in this package, is safe
+// for concurrent use. Callers that remove the directory holding the log
+// file (tests, short-lived commands) must call Close first: an open handle
+// keeps the file undeletable on Windows.
+func Close() error {
+	mu.Lock()
+	defer mu.Unlock()
+	var err error
+	if file != nil {
+		err = file.Close()
+		file = nil
+	}
+	output = os.Stdout
+	return err
 }
 
 // Infof logs a message at INFO level.
