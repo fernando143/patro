@@ -3,6 +3,7 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -27,6 +28,20 @@ func TestExpandPathTildeSlash(t *testing.T) {
 	}
 }
 
+// A Windows user types ~\Videos\obs, so the tilde must expand before either
+// separator, on every platform: the expansion is the same rule, only the
+// spelling of the path differs.
+func TestExpandPathWindowsStyleTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory available")
+	}
+	want := filepath.Join(home, `Videos\obs`)
+	if got := ExpandPath(`~\Videos\obs`); got != want {
+		t.Errorf(`ExpandPath(~\Videos\obs) = %q, want %q`, got, want)
+	}
+}
+
 func TestExpandPathRelativeBecomesAbsolute(t *testing.T) {
 	got := ExpandPath("relative/dir")
 	if !filepath.IsAbs(got) {
@@ -35,14 +50,15 @@ func TestExpandPathRelativeBecomesAbsolute(t *testing.T) {
 }
 
 func TestExpandPathAlreadyAbsolute(t *testing.T) {
-	if got := ExpandPath("/tmp/foo"); got != "/tmp/foo" {
-		t.Errorf("ExpandPath(/tmp/foo) = %q, want unchanged", got)
+	abs := filepath.Join(t.TempDir(), "foo")
+	if got := ExpandPath(abs); got != abs {
+		t.Errorf("ExpandPath(%q) = %q, want unchanged", abs, got)
 	}
 }
 
 func TestConfigPathFlagTakesPriority(t *testing.T) {
-	got := ConfigPath("/custom/config.yaml")
-	if got != "/custom/config.yaml" {
+	flag := filepath.Join(t.TempDir(), "custom.yaml")
+	if got := ConfigPath(flag); got != flag {
 		t.Errorf("ConfigPath(flag) = %q, want the flag value expanded", got)
 	}
 }
@@ -60,10 +76,14 @@ func TestConfigPathUsesCanonicalUserConfigWhenLocalConfigIsPresent(t *testing.T)
 		t.Fatalf("Chdir error = %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
-	t.Setenv("HOME", t.TempDir())
+	// UserHomeDir reads HOME on Unix and USERPROFILE on Windows, so both are
+	// pointed at the same directory to keep the expectation platform-neutral.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	got := ConfigPath("")
-	want := filepath.Join(os.Getenv("HOME"), ".config", "patro", "config.yaml")
+	want := filepath.Join(home, ".config", "patro", "config.yaml")
 	if got != want {
 		t.Errorf("ConfigPath(\"\") = %q, want %q (canonical user config)", got, want)
 	}
@@ -82,6 +102,7 @@ func TestConfigPathFallsBackToUserConfigDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	got := ConfigPath("")
 	want := filepath.Join(dir, ".config", "patro", "config.yaml")
@@ -128,6 +149,9 @@ func TestValidateExecutableDirectory(t *testing.T) {
 }
 
 func TestValidateExecutableNotExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable bit to withhold; see TestValidateExecutableWindows*")
+	}
 	path := filepath.Join(t.TempDir(), "script")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
@@ -138,11 +162,45 @@ func TestValidateExecutableNotExecutableBit(t *testing.T) {
 }
 
 func TestValidateExecutableValid(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable bit to grant; see TestValidateExecutableWindows*")
+	}
 	path := filepath.Join(t.TempDir(), "script")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}
 	if err := ValidateExecutable(path); err != nil {
 		t.Errorf("ValidateExecutable(executable file) error = %v, want nil", err)
+	}
+}
+
+// On Windows a launchable file is identified by its extension, not by mode
+// bits: .exe for binaries and .cmd/.bat for the npm-installed CLIs the
+// analyzer backends shell out to.
+func TestValidateExecutableWindowsAcceptsLaunchableExtension(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only rule")
+	}
+	for _, name := range []string{"tool.exe", "tool.cmd", "tool.bat", "TOOL.EXE"} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile error = %v", err)
+		}
+		if err := ValidateExecutable(path); err != nil {
+			t.Errorf("ValidateExecutable(%s) error = %v, want nil", name, err)
+		}
+	}
+}
+
+func TestValidateExecutableWindowsRejectsExtensionlessFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only rule")
+	}
+	path := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	if err := ValidateExecutable(path); err == nil {
+		t.Error("ValidateExecutable(extensionless file) error = nil, want error")
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -40,7 +39,7 @@ func GrayZoneDecision(b backend.Backend, binaryPath string, timeout time.Duratio
 			args = b.Argv(prompt)
 		}
 
-		cmd := exec.CommandContext(runCtx, binaryPath, args...)
+		cmd := execCLI(runCtx, binaryPath, args)
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		cmd.Stderr = &out

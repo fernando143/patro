@@ -124,7 +124,7 @@ func runCLI(ctx context.Context, binaryPath string, args []string, workDir, lowe
 	runCtx, cancel := context.WithTimeout(ctx, cliTimeoutSeconds*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, binaryPath, args...)
+	cmd := execCLI(runCtx, binaryPath, args)
 	cmd.Dir = workDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
