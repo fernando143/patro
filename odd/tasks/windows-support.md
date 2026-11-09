@@ -23,12 +23,13 @@ liveness, npm `.cmd` shims). macOS and Linux behavior must not change.
 | T1 | S1, S3 | Portable `~` expansion (`~/` and `~\`) in config and setup | inline | 0c0f87d |
 | T2 | S1, S3 | Windows executable validation in `setup.ValidateExecutable` | inline | 0c0f87d |
 | T3 | S1, S3 | Run `.cmd`/`.bat` analyzer CLIs through `cmd.exe /c` on Windows | inline | 0c0f87d |
-| T4 | S1, S3 | Windows background service (schtasks + user env var) in `delivery/setup` | inline | |
-| T5 | S1, S3 | Windows process liveness and service status in the TUI | inline | |
-| T6 | S1 | Windows-portable test suite (`go test ./...` green on Windows) | worker | |
-| T7 | S2 | Release artifacts: goreleaser `windows/amd64` zip + Scoop bucket, CI matrix | inline | |
-| T8 | S1, S2 | Docs: Windows install, config paths, service and logs | inline | |
-| T9 | S1 | Keep Git from rewriting the embedded model assets (`-text`) | inline | |
+| T4 | S1, S3 | Windows background service (per-user autostart entry) in `delivery/setup` | inline | e4365c3 |
+| T5 | S1, S3 | Windows process liveness and service status in the TUI | inline | e4365c3 |
+| T6 | S1 | Windows-portable test suite (`go test ./...` green on Windows) | worker | 63e4424 |
+| T7 | S2 | Release artifacts: goreleaser `windows/amd64` zip + Scoop bucket, CI matrix | inline | d46ac88 |
+| T8 | S1, S2 | Docs: Windows install, config paths, service and logs | inline | d46ac88 |
+| T9 | S1 | Keep Git from rewriting the embedded model assets (`-text`) | inline | c050b7d |
+| T10 | S1 | Flush the vector store and clean URL paths without POSIX assumptions | inline | 77994b1 |
 
 ### Delivery slices
 
@@ -38,10 +39,14 @@ slices; each slice keeps tests and docs with the behavior it ships.
 - **Slice 1** — `f85073f..0c0f87d`: the ODD task documents plus T1-T3 (533
 authored lines). Portable paths, Windows executable validation, `.cmd` shim
 execution.
-- **Slice 2** — T4-T5: the Windows background service and the two runtime
-probes.
-- **Slice 3** — T6: the portable test suite and the `logging` handle fix.
-- **Slice 4** — T7-T8: release artifacts, CI matrix and documentation.
+- **Slice 2** — `c050b7d`, `e4365c3`: the embedded-asset fix and T4-T5 (the
+per-user autostart watcher and the two runtime probes). The test files for
+this slice land with slice 3, because the portable-test sweep is rewriting
+several of them at once.
+- **Slice 3** — `63e4424`, `77994b1`: T6 plus T10 — the portable test suite, the
+`logging` handle fix, and the two Windows-only bugs the suite exposed.
+- **Slice 4** — `d46ac88`: T7-T8, release artifacts, CI matrix and
+documentation.
 
 ## Log
 
@@ -73,6 +78,20 @@ probes.
   filter stops it, and the probe entry was then deleted. Consequence accepted:
   a Run entry has no supervisor, so there is no restart-on-failure — a crashed
   watcher returns at the next logon or from the settings screen.
+- **L12** (evidence, measured): the portable suite turned two "test failures"
+  into real Windows bugs. `OSCommitFS.SyncFile` opened the target read-only and
+  then flushed it, and Windows answers `FlushFileBuffers` on a read-only handle
+  with access denied, so every vector-store commit failed; `SyncDir` has no
+  Windows equivalent at all — NTFS journals the rename itself — so it is now a
+  documented no-op there. And the web viewer cleaned the request path with
+  `filepath.Clean`, which turns `/search` into a backslash path on Windows and
+  sent every route to the 404 branch.
+- **L13** (evidence, measured): `go vet ./...` and `go test ./...` are green on
+  this Windows host — 20 packages, no failures. The sweep added four skips, all
+  POSIX permission-bit cases, each naming the missing capability.
+- **L14** (note): `.gitignore`'s `knowledge/` entry also matches the tracked
+  package `internal/domain/knowledge/`, so `git add` needs `-u` for files there.
+  Pre-existing, unrelated to this feature, left alone.
 - **L6** (evidence): npm-installed CLIs are `.cmd` shims on Windows and
   `CreateProcess` cannot execute them directly, so every analyzer backend
   (`kimi`, `claude`, `codex`, `pi`) needs the `cmd.exe /d /s /c` route.
