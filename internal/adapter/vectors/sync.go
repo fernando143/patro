@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -69,8 +70,14 @@ func (OSCommitFS) LinkOrCopyRollback(source, rollback string) error {
 	return os.WriteFile(rollback, data, 0o600)
 }
 
+// SyncFile flushes path's contents to the device.
+//
+// The file is opened read-write even though nothing is written: Windows
+// refuses FlushFileBuffers on a handle opened read-only, which made every
+// commit fail there with "access denied". Only files this package created are
+// flushed, so the wider access never applies to someone else's data.
 func (OSCommitFS) SyncFile(path string) error {
-	file, err := os.OpenFile(path, os.O_RDONLY, 0)
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -85,7 +92,16 @@ func (OSCommitFS) Close(string) error { return nil }
 
 func (OSCommitFS) Rename(source, target string) error { return os.Rename(source, target) }
 
+// SyncDir flushes a directory entry so a completed rename survives a crash.
+//
+// That is a POSIX durability step with no Windows equivalent: Windows has no
+// directory handle to flush and returns "access denied" when asked, while NTFS
+// journals the metadata change itself. The no-op is therefore correct there,
+// not a concession.
 func (OSCommitFS) SyncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	dir, err := os.Open(path)
 	if err != nil {
 		return err

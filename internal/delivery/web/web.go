@@ -16,6 +16,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -217,7 +218,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rel := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+	// URL paths are slash-separated whatever the host OS is, so they are
+	// cleaned with the slash-based path package. filepath.Clean would turn
+	// "/search" into `\search` on Windows, which matches no route below and
+	// made every page of the viewer a 404.
+	rel := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 
 	switch rel {
 	case "", layout.IndexFileName:
@@ -237,7 +242,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	full := filepath.Join(s.Root, rel)
 
 	// Guard against path traversal: the resolved path must stay under Root.
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	// rel is URL-shaped, so the separator here is a literal slash.
+	if rel == ".." || strings.HasPrefix(rel, "../") {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
