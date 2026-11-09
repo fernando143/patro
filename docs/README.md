@@ -5,7 +5,8 @@ library.
 
 ## Quick path
 
-1. Install Patro with Homebrew or build it from source.
+1. Install Patro with Homebrew (macOS/Linux), Scoop or the release zip
+   (Windows), or build it from source.
 2. Run `patro init` to configure the inbox, library, API key, and analyzer.
 3. Drop a recording into the configured inbox.
 
