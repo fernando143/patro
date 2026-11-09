@@ -83,6 +83,13 @@ func AnalyzeCLI(ctx context.Context, t *meeting.TranscriptResult, existing []mee
 	if err != nil {
 		return nil, err
 	}
+	if b.PlainText {
+		answer := plainTextAnswer(stdout)
+		if answer == "" {
+			return nil, fmt.Errorf("%s produced no output on stdout", b.Name)
+		}
+		return ParseAnalysis(answer, b.DisplayName), nil
+	}
 	raw := assistantText(stdout)
 	if strings.TrimSpace(raw) == "" {
 		return nil, fmt.Errorf("%s produced no assistant text in its stream-json output", b.Name)

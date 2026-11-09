@@ -10,7 +10,14 @@ The analyzer backend is pluggable:
 
 - **Kimi (default)** — runs the already-installed local `kimi -p` CLI.
 - **Claude** — runs the local `claude -p` CLI.
+- **Codex** — runs `codex exec --json` in a read-only sandbox.
+- **Pi** — runs the local `pi -p` CLI; unlike the others it prints its answer
+  on stdout instead of streaming JSONL, so the registry marks it `PlainText`.
 - **LeMUR** — uses AssemblyAI's hosted LLM.
+
+The set lives in one place, `internal/adapter/analyzer/backend`: config
+validation, both init wizards, the settings TUI and the gray-zone decider all
+read from that registry, so a new backend needs no second list.
 
 The project is intentionally small and self-contained: a single static binary built from the Go module `github.com/fernando143/patro`, distributed via Homebrew (macOS/Linux) and Scoop (Windows) from the GitHub repo `fernando143/patro`.
 

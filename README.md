@@ -5,7 +5,7 @@
 
 `patro` is a small, local service written in Go that turns your meeting recordings into a growing Markdown knowledge library.
 
-It watches a folder for new videos (for example, where OBS Studio saves your recordings), sends the audio to [AssemblyAI](https://www.assemblyai.com/) for transcription, and then asks a local AI — [Kimi Code CLI](https://www.kimi.com/code) or [Claude Code CLI](https://claude.ai/download) — to write structured notes. The results are saved locally and organized by topic.
+It watches a folder for new videos (for example, where OBS Studio saves your recordings), sends the audio to [AssemblyAI](https://www.assemblyai.com/) for transcription, and then asks a local AI — [Kimi Code CLI](https://www.kimi.com/code), [Claude Code CLI](https://claude.ai/download), Codex CLI, or the Pi coding agent — to write structured notes. The results are saved locally and organized by topic.
 
 You can also analyze transcripts with AssemblyAI's own LeMUR model by setting `analyzer_backend: lemur` in `config.yaml`.
 
@@ -23,7 +23,7 @@ knowledge/
 
 - **Linux, macOS or Windows**
 - An **[AssemblyAI](https://www.assemblyai.com/) API key** — transcription runs through their service
-- Either **Kimi Code CLI** or **Claude Code CLI** installed locally, if you want to use a local AI to write the notes
+- Either **Kimi Code CLI** or **Claude Code CLI** installed locally, if you want to use a local AI to write the notes (Codex CLI and the Pi coding agent work too)
 - **Homebrew** for the macOS/Linux install, **Scoop** for Windows, or **Go 1.26+** to build from source
 
 ## Quick install (recommended)
@@ -122,8 +122,8 @@ Config keys:
 - `library`: path where the knowledge library should be written
 - `video_extensions`: list of extensions that trigger processing
 - `stability_checks` / `stability_interval_seconds`: how long to wait for OBS to finish writing a file
-- `analyzer_backend`: `kimi`, `claude`, `codex`, or `lemur`
-- `kimi_path` / `claude_path` / `codex_path`: absolute path to the CLI binary when running as a service
+- `analyzer_backend`: `kimi`, `claude`, `codex`, `pi`, or `lemur`
+- `kimi_path` / `claude_path` / `codex_path` / `pi_path`: absolute path to the CLI binary when running as a service
 
 The AssemblyAI API key is read only from the `ASSEMBLYAI_API_KEY` environment variable — never put it in `config.yaml`:
 

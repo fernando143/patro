@@ -11,7 +11,7 @@ import (
 // first and every consumer follows from the registry rather than from a
 // hand-maintained copy.
 func TestNamesPinsTheSupportedSet(t *testing.T) {
-	want := []string{"kimi", "claude", "codex", "lemur"}
+	want := []string{"kimi", "claude", "codex", "pi", "lemur"}
 	if got := Names(); !slices.Equal(got, want) {
 		t.Errorf("Names() = %v, want %v", got, want)
 	}
@@ -45,6 +45,7 @@ func TestConfigKeysMatchTheOnDiskFormat(t *testing.T) {
 		"kimi":   "kimi_path",
 		"claude": "claude_path",
 		"codex":  "codex_path",
+		"pi":     "pi_path",
 		"lemur":  "",
 	}
 	for _, b := range All() {
@@ -57,7 +58,7 @@ func TestConfigKeysMatchTheOnDiskFormat(t *testing.T) {
 // TestDefaultBinariesAreTheLookPathNames pins the names resolved on PATH
 // when config.yaml carries no explicit path.
 func TestDefaultBinariesAreTheLookPathNames(t *testing.T) {
-	want := map[string]string{"kimi": "kimi", "claude": "claude", "codex": "codex", "lemur": ""}
+	want := map[string]string{"kimi": "kimi", "claude": "claude", "codex": "codex", "pi": "pi", "lemur": ""}
 	for _, b := range All() {
 		if b.DefaultBinary != want[b.Name] {
 			t.Errorf("%s: DefaultBinary = %q, want %q", b.Name, b.DefaultBinary, want[b.Name])

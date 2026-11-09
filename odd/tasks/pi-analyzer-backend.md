@@ -23,10 +23,10 @@ decider without any per-backend special casing.
 
 | ID | Spec | What | Route | Commit |
 |----|------|------|-------|--------|
-| T1 | S1, S3, S4 | Plain-text stdout reader alongside the JSONL reader | worker | |
-| T2 | S1, S2, S4 | Register the `pi` backend with its argv and help text | worker | |
-| T3 | S1, S2 | Tests: registry, config key `pi_path`, analyzer run | worker | |
-| T4 | S1, S3 | Docs: README backends table, `config.example.yaml`, AGENTS.md | inline | |
+| T1 | S1, S3, S4 | Plain-text stdout reader alongside the JSONL reader | inline | 2d3f7f5 |
+| T2 | S1, S2, S4 | Register the `pi` backend with its argv and help text | inline | 2d3f7f5 |
+| T3 | S1, S2 | Tests: reader, registry wiring, `pi_path` config key | inline | 2d3f7f5 |
+| T4 | S1, S3 | Docs: README backends, `config.example.yaml`, AGENTS.md | inline | 2d3f7f5 |
 
 ## Log
 
@@ -46,3 +46,19 @@ decider without any per-backend special casing.
 - **L4** (decision): `pi -p` emits the assistant text directly on stdout, not
   JSONL, so the registry grows a plain-text reader mode instead of forcing the
   `stream-json` reader every other CLI backend uses.
+- **L5** (implementation): the reader mode is a `PlainText` field on the
+  registry entry plus one branch in `AnalyzeCLI`; the stream path, including its
+  "no assistant text in its stream-json output" error, stays byte-identical for
+  the four existing backends so no current behavior moves.
+- **L6** (sequencing): the registry entry (T2) waits for the Windows test sweep
+  to land, because `cmd/patro/init_test.go` and
+  `internal/delivery/tui/settings_test.go` assert the offered backend list and
+  a second writer is editing them.
+- **L7** (evidence, measured): after registering `pi`, only four assertions in
+  the repository pinned the backend set by hand (`internal/adapter/analyzer/backend`'s
+  three tables and `config`'s "invalid analyzer_backend" message).
+  `cmd/patro` and `internal/delivery/tui` passed untouched, which is the
+  registry doing its job.
+- **L8** (evidence, measured): `TestAnalyzeCLIParsesAPlainTextBackend` runs the
+  real `pi` registry entry against a fake CLI that prints plain JSON, and gets a
+  parsed analysis back — the wiring, not just the reader.

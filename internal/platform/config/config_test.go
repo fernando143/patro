@@ -158,7 +158,7 @@ func TestLoadInvalidBackend(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() succeeded, want an invalid-backend error")
 	}
-	for _, want := range []string{"bogus", "kimi, claude, codex, lemur"} {
+	for _, want := range []string{"bogus", "kimi, claude, codex, pi, lemur"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
