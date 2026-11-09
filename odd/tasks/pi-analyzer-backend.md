@@ -23,10 +23,10 @@ decider without any per-backend special casing.
 
 | ID | Spec | What | Route | Commit |
 |----|------|------|-------|--------|
-| T1 | S1, S3, S4 | Plain-text stdout reader alongside the JSONL reader | inline | 2d3f7f5 |
-| T2 | S1, S2, S4 | Register the `pi` backend with its argv and help text | inline | 2d3f7f5 |
-| T3 | S1, S2 | Tests: reader, registry wiring, `pi_path` config key | inline | 2d3f7f5 |
-| T4 | S1, S3 | Docs: README backends, `config.example.yaml`, AGENTS.md | inline | 2d3f7f5 |
+| T1 | S1, S3, S4 | Plain-text stdout reader alongside the JSONL reader | inline | e3f176f |
+| T2 | S1, S2, S4 | Register the `pi` backend with its argv and help text | inline | e3f176f |
+| T3 | S1, S2 | Tests: reader, registry wiring, `pi_path` config key | inline | e3f176f |
+| T4 | S1, S3 | Docs: README backends, `config.example.yaml`, AGENTS.md | inline | e3f176f |
 
 ## Log
 
