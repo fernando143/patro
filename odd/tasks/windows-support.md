@@ -56,10 +56,23 @@ probes.
   `%USERPROFILE%\.config\patro\config.yaml`. `os.UserHomeDir()` returns
   `%USERPROFILE%` on Windows, so no existing resolver changes and the docs stay
   honest across the three platforms (S3).
-- **L5** (decision): the Windows background service is a per-user Scheduled
-  Task created with `schtasks /sc onlogon` plus a user environment variable
-  authored with `setx` for the API key. No administrator rights, no Windows
-  Service Control handler (a Go process without one would be killed by the SCM).
+- **L5** (decision): the Windows background service is a **per-user autostart
+  entry** in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, with the
+  API key in the user environment authored through `reg add` under
+  `HKCU\Environment`. No administrator rights, and no Windows Service Control
+  handler (a Go process without one would be killed by the SCM).
+- **L11** (evidence, measured — supersedes the `schtasks` decision in L5):
+  `schtasks /create /sc once` succeeds unprivileged on this host, but
+  `schtasks /create /sc onlogon` fails with "Acceso denegado": a logon trigger
+  is a security boundary, so a Scheduled Task cannot satisfy the project's
+  "no administrator rights" promise. The HKCU Run key can. Verified end to end
+  with a throwaway value name: the registry stores
+  `"C:\…\probe dir\patro.exe" serve --mock --config "C:\…\config.yaml"`
+  with quoting intact, `Get-CimInstance Win32_Process` with a
+  `CommandLine -like '* serve*'` filter reports the watcher as running, the same
+  filter stops it, and the probe entry was then deleted. Consequence accepted:
+  a Run entry has no supervisor, so there is no restart-on-failure — a crashed
+  watcher returns at the next logon or from the settings screen.
 - **L6** (evidence): npm-installed CLIs are `.cmd` shims on Windows and
   `CreateProcess` cannot execute them directly, so every analyzer backend
   (`kimi`, `claude`, `codex`, `pi`) needs the `cmd.exe /d /s /c` route.

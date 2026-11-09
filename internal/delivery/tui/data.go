@@ -2,17 +2,16 @@ package tui
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"github.com/fernando143/patro/internal/adapter/state"
 	"github.com/fernando143/patro/internal/adapter/status"
+	"github.com/fernando143/patro/internal/delivery/setup"
 	"github.com/fernando143/patro/internal/platform/config"
 
 	"github.com/fernando143/patro/internal/platform/layout"
@@ -108,20 +107,14 @@ func countFlaggedTopics(stateDir string) int {
 	return ledger.CountFlagged(entries)
 }
 
-// processAlive reports whether a process with this PID currently exists. It
-// sends signal 0 (a no-op permission/existence probe); EPERM still proves the
-// process exists. patro's serve and dashboard always run as the same user on
-// the same machine, so this is a reliable liveness check for the snapshot.
+// processAlive reports whether a process with this PID currently exists. The
+// platform probe lives in process_unix.go and process_windows.go: the Unix
+// signal-0 trick has no Windows equivalent.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return processExists(pid)
 }
 
 // countInboxBacklog counts video files in the inbox not yet recorded in
@@ -217,6 +210,15 @@ func serviceStatus() serviceHealth {
 		uid := os.Getuid()
 		err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/com.patro", uid)).Run()
 		if err == nil {
+			return serviceActive
+		}
+		return serviceInactive
+	case "windows":
+		// There is no supervisor to query: the per-user autostart entry says
+		// whether the watcher is installed and the process list says whether
+		// it is alive. Get-CimInstance, not tasklist, because tasklist output
+		// is localized (see internal/delivery/setup).
+		if setup.WindowsWatcherRunning() {
 			return serviceActive
 		}
 		return serviceInactive
