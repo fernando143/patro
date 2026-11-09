@@ -39,10 +39,12 @@ decider without any per-backend special casing.
   `pi -p` requires an authenticated provider, exactly like `claude`/`codex`, so
   a missing login surfaces as a normal non-zero-exit error.
 - **L3** (decision): `pi` is invoked as
-  `pi -p <prompt> --no-session --no-tools --tools read --no-context-files`.
-  `--no-session` keeps runs ephemeral, `--tools read` is the minimum needed to
-  read the staged transcript, and `--no-context-files` stops a stray
-  `AGENTS.md` in the working directory from polluting the answer.
+  `pi -p <prompt> --no-session --tools read --no-context-files`.
+  `--no-session` keeps runs ephemeral, `--no-context-files` stops a stray
+  `AGENTS.md` in the working directory from polluting the answer, and
+  `--tools read` is the minimum needed to read the staged transcript. Per pi's
+  own CLI docs a plain tool name replaces the whole selection, so that single
+  flag is already an allowlist — `--no-tools` on top of it would be redundant.
 - **L4** (decision): `pi -p` emits the assistant text directly on stdout, not
   JSONL, so the registry grows a plain-text reader mode instead of forcing the
   `stream-json` reader every other CLI backend uses.
@@ -62,3 +64,8 @@ decider without any per-backend special casing.
 - **L8** (evidence, measured): `TestAnalyzeCLIParsesAPlainTextBackend` runs the
   real `pi` registry entry against a fake CLI that prints plain JSON, and gets a
   parsed analysis back — the wiring, not just the reader.
+- **L9** (review, measured): the independent verification found the gray-zone
+  decider launching `pi` with a bare `-p`, which skips every safety flag and
+  would have run with pi's default tools (write and edit included) and a
+  persisted session. `GrayZoneDecision` now uses the registry argv for
+  plain-text backends too, and `grayzone_pi_test.go` pins it.

@@ -89,7 +89,7 @@ The API key goes into your user environment (the Windows spelling of `export`), 
 setx ASSEMBLYAI_API_KEY "<your-key>"
 ```
 
-A new shell picks the key up; the wizard restarts the task for you.
+A new shell picks the key up; the wizard has already started the watcher.
 
 ### Running via `brew services`
 

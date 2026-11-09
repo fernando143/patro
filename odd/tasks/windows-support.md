@@ -87,8 +87,20 @@ documentation.
   `filepath.Clean`, which turns `/search` into a backslash path on Windows and
   sent every route to the 404 branch.
 - **L13** (evidence, measured): `go vet ./...` and `go test ./...` are green on
-  this Windows host — 20 packages, no failures. The sweep added four skips, all
-  POSIX permission-bit cases, each naming the missing capability.
+  this Windows host — 20 packages, no failures. The sweep added eleven skip
+  sites covering four distinct reasons, all POSIX permission-bit or
+  Linux-only-branch cases, each naming the missing capability.
+- **L15** (review, measured): the independent verification of this branch found
+  a regression the feature itself introduced — folding request paths onto a
+  slash-based clean fixed the viewer's Windows 404s but let `/..\..\secret.txt`
+  reach `filepath.Join` as one component and escape the library root. The
+  request path is now slash-normalised *before* `path.Clean`, and
+  `internal/delivery/web/web_traversal_test.go` pins both halves. The same
+  review found `cmd/patro`'s fallback wizard still carrying its own copy of the
+  executable-bit rule (rejecting every Windows path in an unbounded loop, now
+  delegating to `setup.ValidateExecutable`) and the gray-zone call launching
+  `pi` with a bare `-p`, which would have run with write and edit enabled; both
+  now have regression tests.
 - **L14** (note): `.gitignore`'s `knowledge/` entry also matches the tracked
   package `internal/domain/knowledge/`, so `git add` needs `-u` for files there.
   Pre-existing, unrelated to this feature, left alone.

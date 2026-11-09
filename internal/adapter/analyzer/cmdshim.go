@@ -50,6 +50,12 @@ func windowsCommandLine(binaryPath string, args []string) string {
 // backslash, the convention the C runtime — and therefore the Node-based CLI
 // at the end of the shim — uses when it splits the line back into argv.
 func quoteForCmd(arg string) string {
+	// The prompt is prose and may contain a %VAR% sequence (a topic name, say);
+	// cmd.exe expands those inside double quotes too, and there is no portable
+	// way to escape one on a command line. The argv the CLIs actually receive
+	// can therefore differ from what this function rendered. Only the explicit
+	// ".cmd path configured" route is affected, which is why it is documented
+	// here rather than worked around.
 	arg = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(arg)
 	arg = strings.ReplaceAll(arg, `"`, `\"`)
 	return `"` + arg + `"`

@@ -215,7 +215,10 @@ func (p *prompter) promptBinary(name string) string {
 	for {
 		raw := p.required(fmt.Sprintf("Enter the absolute path to the '%s' executable", name), "")
 		path := setup.ExpandPath(raw)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		// The rule for "is this launchable" lives with the service installer:
+		// a local copy of it here is what made this wizard reject every
+		// Windows path, where there is no executable bit to check.
+		if err := setup.ValidateExecutable(path); err == nil {
 			return path
 		}
 		fmt.Printf("'%s' is not an executable file. Please try again.\n", path)

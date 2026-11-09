@@ -218,11 +218,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL paths are slash-separated whatever the host OS is, so they are
-	// cleaned with the slash-based path package. filepath.Clean would turn
-	// "/search" into `\search` on Windows, which matches no route below and
-	// made every page of the viewer a 404.
-	rel := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	// URL paths are slash-separated whatever the host OS is, so backslashes are
+	// folded to slashes before a slash-based clean is applied. Both halves
+	// matter: filepath.Clean would turn "/search" into a backslash path on
+	// Windows and send every route to the 404 branch, while skipping the folding
+	// lets "/..\..\secret.txt" reach filepath.Join below as one component and
+	// escape Root — filepath.Join does treat a backslash as a separator.
+	urlPath := strings.ReplaceAll(r.URL.Path, `\`, "/")
+	rel := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
 
 	switch rel {
 	case "", layout.IndexFileName:
