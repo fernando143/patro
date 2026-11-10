@@ -401,8 +401,15 @@ func TestResolvePathExpandsWindowsStyleTilde(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	want := filepath.Join(home, `Videos\obs`, "config.yaml")
-	if got := ResolvePath(`~\Videos\obs\config.yaml`); got != want {
+	got := ResolvePath(`~\Videos\obs\config.yaml`)
+	if !strings.HasPrefix(got, home) {
+		t.Fatalf(`ResolvePath(~\Videos\obs\config.yaml) = %q, want it under %q`, got, home)
+	}
+	// Everything after the tilde is one path, so no separator is invented
+	// in the middle of it: on Unix a backslash is an ordinary character, and
+	// asserting a slash there would pin Windows' separator as the contract.
+	want := filepath.Join(home, `Videos\obs\config.yaml`)
+	if got != want {
 		t.Errorf(`ResolvePath(~\Videos\obs\config.yaml) = %q, want %q`, got, want)
 	}
 }

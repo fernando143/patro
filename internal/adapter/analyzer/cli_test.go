@@ -275,17 +275,6 @@ func TestWriteTranscriptFilePlainText(t *testing.T) {
 	}
 }
 
-// writeFakeCLI writes an executable shell script behaving as a fake
-// kimi/claude CLI and returns its path.
-func writeFakeCLI(t *testing.T, dir, name, script string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func TestRunCLITimeout(t *testing.T) {
 	dir := t.TempDir()
 	binaryPath := fakeCLI(t, dir, "slow-cli", fakeControl{SleepSeconds: 1})
