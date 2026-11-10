@@ -1,6 +1,9 @@
 package setup
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // These cover the pure Windows renderers and parsers. They deliberately carry
 // no GOOS suffix so they also run on macOS and Linux, where the Windows service
@@ -193,5 +196,37 @@ func TestParseRegQueryValue(t *testing.T) {
 				t.Errorf("parseRegQueryValue(...) = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestWatcherEnv pins the rule that made `patro init` report success while the
+// watcher it had just started exited on startup: the key written to the user
+// environment is not in the wizard's own environment, so it has to be handed to
+// the child explicitly — and the stale entry must go, because Windows resolves a
+// variable from the first matching entry in the block.
+func TestWatcherEnv(t *testing.T) {
+	base := []string{"PATH=C:/Windows", "ASSEMBLYAI_API_KEY=stale", "HOME=C:/Users/me"}
+
+	got := watcherEnv(base, "ASSEMBLYAI_API_KEY", "fresh")
+
+	var seen []string
+	for _, entry := range got {
+		if strings.HasPrefix(entry, "ASSEMBLYAI_API_KEY=") {
+			seen = append(seen, entry)
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("ASSEMBLYAI_API_KEY entries = %v, want exactly one", seen)
+	}
+	if seen[0] != "ASSEMBLYAI_API_KEY=fresh" {
+		t.Errorf("entry = %q, want the new value", seen[0])
+	}
+	if len(got) != len(base) {
+		t.Errorf("env length = %d, want %d (replace, not append)", len(got), len(base))
+	}
+
+	// No value available means the child keeps whatever it inherits.
+	if untouched := watcherEnv(base, "ASSEMBLYAI_API_KEY", ""); len(untouched) != len(base) {
+		t.Errorf("env length = %d, want %d when there is no key to inject", len(untouched), len(base))
 	}
 }

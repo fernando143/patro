@@ -121,3 +121,23 @@ func sanitizeImageName(s string) string {
 	}
 	return b.String()
 }
+
+// watcherEnv returns the environment for a spawned watcher: base with any stale
+// entry for keyName replaced by keyValue.
+//
+// A duplicate would not work: Windows resolves a variable from the first
+// matching entry in the block, so appending without removing the old one would
+// hand the child the value this process already had.
+func watcherEnv(base []string, keyName, keyValue string) []string {
+	if keyValue == "" {
+		return base
+	}
+	env := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, keyName+"=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, keyName+"="+keyValue)
+}

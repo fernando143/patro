@@ -4,6 +4,7 @@ package setup
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -112,11 +113,16 @@ func WindowsWatcherRunning() bool {
 // non-empty key. Any read failure counts as "not configured", matching the
 // other platforms' best-effort reads.
 func windowsServiceAPIKeyConfigured() bool {
-	out, err := exec.Command("reg", "query", windowsEnvKey, "/v", config.APIKeyEnvVar).Output()
+	return windowsUserEnvValue(config.APIKeyEnvVar) != ""
+}
+
+// windowsUserEnvValue reads one value from the per-user environment.
+func windowsUserEnvValue(name string) string {
+	out, err := exec.Command("reg", "query", windowsEnvKey, "/v", name).Output()
 	if err != nil {
-		return false
+		return ""
 	}
-	return parseRegQueryValue(string(out), config.APIKeyEnvVar) != ""
+	return parseRegQueryValue(string(out), name)
 }
 
 // windowsAutostartCommand reads back the command the installer stored.
@@ -152,6 +158,14 @@ func startWindowsWatcher(command string) error {
 		return fmt.Errorf("cannot parse the stored autostart command %q; re-run `patro init`", command)
 	}
 	cmd := exec.Command(exe, args...)
+	// The logon entry is launched by Windows with the user environment, but a
+	// watcher started from here inherits this process's environment, which
+	// predates the key written moments ago: `reg add` updates the user
+	// environment for later processes, not the running one. Without this the
+	// fresh watcher exits immediately with "ASSEMBLYAI_API_KEY is not set"
+	// while the wizard reports success and the logon path works — the worst
+	// possible split. The key is read back and handed to the child explicitly.
+	cmd.Env = watcherEnv(os.Environ(), config.APIKeyEnvVar, windowsUserEnvValue(config.APIKeyEnvVar))
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: detachedProcess | createNewProcessGroup,
