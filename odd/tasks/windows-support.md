@@ -129,3 +129,13 @@ documentation.
   Anyone who checked out the repo on Windows before this fix must re-checkout
   those three files (`rm` + `git checkout --`) or their binary will embed
   corrupted weights.
+- **L16** (review, native lifecycle `review-507153c520d2a8dc`, tier high, four lenses):
+  **approved and acknowledged; authority burned.** Three CRITICAL findings — R1-001,
+  R2-001 and R4-cmdquote-metachar — all named the same defect: `quoteForCmd`
+  escaped embedded quotes as `\"`, but cmd.exe has no escape character and toggles
+  its in-quote state at every quote, so at odd parity a later `&` fell outside the
+  quotes and ran as a command. My own probe had only exercised an even number of
+  interior quotes, which is why it looked safe. One bounded correction (90 diff
+  lines, commit `8542143`) makes tokens safe instead of escaped. Seventeen
+  non-blocking advisory findings remain as separate later work; none of them
+  reopens this review.
