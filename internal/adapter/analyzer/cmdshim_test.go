@@ -73,6 +73,43 @@ func TestExecCLIRunsAnExecutableDirectly(t *testing.T) {
 	}
 }
 
+// TestWindowsCommandLineKeepsQuoteParity pins the invariant the security of the
+// shim route depends on: cmd.exe toggles its in-quote state at every double
+// quote, so a token may contain none of its own. Anything else — however the
+// metacharacters are arranged — lets the interpreter step outside the quotes.
+func TestWindowsCommandLineKeepsQuoteParity(t *testing.T) {
+	args := []string{
+		`plain`,
+		`has "two" quotes`,
+		`has "odd quote and & ampersand`,
+		`&&|<>^%PATH% mixed with " and ' quotes`,
+		"multi\nline\nwith \" quotes & more",
+	}
+	rendered := windowsCommandLine(`C:\Program Files\pi.cmd`, args)
+
+	tokens := len(args) + 1
+	if got, want := strings.Count(rendered, `"`), tokens*2; got != want {
+		t.Errorf("rendered line has %d double quotes, want exactly %d (two per token): %q", got, want, rendered)
+	}
+	for _, arg := range args {
+		if quoted := quoteForCmd(arg); strings.Count(quoted, `"`) != 2 {
+			t.Errorf("quoteForCmd(%q) = %q, want exactly two double quotes", arg, quoted)
+		}
+	}
+	// Nothing may sit outside a quoted region. After splitting on the quote
+	// character, odd-indexed segments are the quoted contents and even-indexed
+	// ones are the gaps between tokens, where cmd.exe would interpret a
+	// metacharacter.
+	for i, segment := range strings.Split(rendered, `"`) {
+		if i%2 == 1 {
+			continue
+		}
+		if strings.ContainsAny(segment, "&|<>") {
+			t.Errorf("segment %q sits outside the quotes in %q", segment, rendered)
+		}
+	}
+}
+
 func TestWindowsCommandLine(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -101,11 +138,23 @@ func TestWindowsCommandLine(t *testing.T) {
 			want:   `"shim.cmd" "line one line two line three"`,
 		},
 		{
-			// The prompt carries a JSON schema, so embedded quotes are normal.
-			name:   "embedded quotes are escaped for the C runtime",
+			// A prompt carries a JSON schema, so embedded quotes are normal.
+			// They cannot be escaped — cmd.exe has no escape character — so they
+			// are neutralised to a single quote, which keeps the quote parity
+			// even and the token inside its delimiters.
+			name:   "embedded quotes are neutralised",
 			binary: "shim.cmd",
 			args:   []string{`{"topics": []}`},
-			want:   `"shim.cmd" "{\"topics\": []}"`,
+			want:   `"shim.cmd" "{'topics': []}"`,
+		},
+		{
+			// The injection shape: an odd number of interior quotes would have
+			// closed the quoted region early under the old backslash escaping
+			// and let the ampersand run as its own command.
+			name:   "quotes and metacharacters cannot escape the quoting",
+			binary: "shim.cmd",
+			args:   []string{`A " & calc & " B`},
+			want:   `"shim.cmd" "A ' & calc & ' B"`,
 		},
 		{
 			name:   "shell metacharacters stay inside the quotes",

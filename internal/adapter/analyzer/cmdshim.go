@@ -31,8 +31,8 @@ func isCmdShim(binaryPath string) bool {
 }
 
 // windowsCommandLine renders one invocation as a single cmd.exe command line:
-// the binary and every argument, each double-quoted so that the
-// metacharacters cmd.exe would otherwise interpret — & | < > ^ — stay literal.
+// the binary and every argument, each wrapped in the one pair of quotes cmd.exe
+// strips, with the tokens themselves made safe by quoteForCmd.
 func windowsCommandLine(binaryPath string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, quoteForCmd(binaryPath))
@@ -42,21 +42,26 @@ func windowsCommandLine(binaryPath string, args []string) string {
 	return strings.Join(parts, " ")
 }
 
-// quoteForCmd quotes one command-line token the way cmd.exe expects.
+// quoteForCmd wraps one token in the pair of double quotes cmd.exe strips,
+// after making the token safe to sit between them.
 //
-// Two rules matter. A raw newline terminates a cmd.exe command, so everything
-// after it would be silently dropped: newlines and CRLF collapse to a space,
-// which prose prompts tolerate. And an embedded double quote is escaped with a
-// backslash, the convention the C runtime — and therefore the Node-based CLI
-// at the end of the shim — uses when it splits the line back into argv.
+// cmd.exe parses this rendered line itself before the batch file ever sees it,
+// and it has no escape character: every double quote toggles its in-quote state
+// and a backslash is an ordinary character. Escaping an embedded quote as \"
+// would leave the quote count unbalanced, close the quoted region early, and let
+// a later & | < > ^ be read as a command separator — on text this program does
+// not control, because analyzer prompts embed transcript and topic content and
+// the gray-zone question embeds topic names. The token is therefore made safe
+// instead of escaped: newlines collapse to a space (a raw one ends the command
+// outright) and an embedded double quote becomes a single quote, so no unpaired
+// toggle can occur and everything up to the closing delimiter stays literal.
+//
+// Two limits remain, documented rather than hidden: cmd.exe still expands
+// %VAR% inside quotes, and a prompt sent through this route shows any JSON
+// example with single quotes. Only a backend whose resolved binary is a
+// .cmd/.bat shim takes the route at all.
 func quoteForCmd(arg string) string {
-	// The prompt is prose and may contain a %VAR% sequence (a topic name, say);
-	// cmd.exe expands those inside double quotes too, and there is no portable
-	// way to escape one on a command line. The argv the CLIs actually receive
-	// can therefore differ from what this function rendered. Only the explicit
-	// ".cmd path configured" route is affected, which is why it is documented
-	// here rather than worked around.
 	arg = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(arg)
-	arg = strings.ReplaceAll(arg, `"`, `\"`)
+	arg = strings.ReplaceAll(arg, `"`, `'`)
 	return `"` + arg + `"`
 }
