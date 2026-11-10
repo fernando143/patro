@@ -1,0 +1,21 @@
+{
+    "version": "0.9.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/fernando143/patro/releases/download/v0.9.0/patro_0.9.0_windows_amd64.zip",
+            "bin": [
+                "patro.exe"
+            ],
+            "hash": "e08daf1dd1df1181174527006b6d21dd8cbeb0250b294ab7054d60aeca7c93aa"
+        },
+        "arm64": {
+            "url": "https://github.com/fernando143/patro/releases/download/v0.9.0/patro_0.9.0_windows_arm64.zip",
+            "bin": [
+                "patro.exe"
+            ],
+            "hash": "836c737fbdbb8e899de5b7db76500956d9fa929368b97f4b4f7ce37dfa551be4"
+        }
+    },
+    "homepage": "https://github.com/fernando143/patro",
+    "description": "Watch an OBS recordings folder, transcribe meetings with AssemblyAI and distill them into a Markdown knowledge library"
+}
