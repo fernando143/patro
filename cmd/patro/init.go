@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -95,9 +96,16 @@ func printCompletion(configPath string, serviceInstalled bool) {
 		fmt.Println("Check status: systemctl --user status patro")
 	case "darwin":
 		fmt.Println("View logs: tail -f /tmp/patro.out.log /tmp/patro.err.log")
+	case "windows":
+		fmt.Printf("View logs: %s\n", filepath.Join(filepath.Dir(configPath), "patro.log"))
+		fmt.Println("Check status: the \"patro\" entry under HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run")
 	}
 	if serviceInstalled {
-		fmt.Println("Hint: for Homebrew installs, `brew services start patro` also works.")
+		if runtime.GOOS == "windows" {
+			fmt.Println("Hint: stop the autostart with `reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v patro /f`.")
+		} else {
+			fmt.Println("Hint: for Homebrew installs, `brew services start patro` also works.")
+		}
 	}
 }
 
@@ -207,7 +215,10 @@ func (p *prompter) promptBinary(name string) string {
 	for {
 		raw := p.required(fmt.Sprintf("Enter the absolute path to the '%s' executable", name), "")
 		path := setup.ExpandPath(raw)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		// The rule for "is this launchable" lives with the service installer:
+		// a local copy of it here is what made this wizard reject every
+		// Windows path, where there is no executable bit to check.
+		if err := setup.ValidateExecutable(path); err == nil {
 			return path
 		}
 		fmt.Printf("'%s' is not an executable file. Please try again.\n", path)

@@ -138,14 +138,8 @@ func ResolvePath(flagPath string) string {
 		}
 	}
 
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = home
-		}
-	} else if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, path[2:])
-		}
+	if path == "~" || hasTildePrefix(path) {
+		path = ExpandUser(path)
 	}
 	if abs, err := filepath.Abs(path); err == nil {
 		return abs
@@ -365,15 +359,30 @@ func normalizeExtensions(extensions []string) []string {
 // resolvePath expands a leading "~" and resolves value against base,
 // returning a cleaned absolute path.
 func resolvePath(value, base string) string {
-	p := expandUser(value)
+	p := ExpandUser(value)
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(base, p)
 	}
 	return filepath.Clean(p)
 }
 
-// expandUser replaces a leading "~" with the user's home directory.
-func expandUser(path string) string {
+// hasTildePrefix reports whether path starts with "~" followed by either
+// separator. Windows users write ~\Videos\obs, Unix users write ~/Videos/obs,
+// and both mean "the home directory": treating the backslash form as a
+// relative directory literally named "~" silently writes the library to the
+// wrong place.
+func hasTildePrefix(path string) bool {
+	return len(path) > 1 && path[0] == '~' && (path[1] == '/' || path[1] == '\\')
+}
+
+// ExpandUser replaces a leading "~" or "~/" ("~\" on Windows) with the
+// user's home directory. It returns path unchanged when there is no leading
+// tilde or the home directory cannot be determined.
+//
+// Exported because the setup wizard and the background-service installer
+// expand the same values from user input; a second copy of this rule is how
+// the two spellings drifted apart in the first place.
+func ExpandUser(path string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return path
@@ -381,7 +390,7 @@ func expandUser(path string) string {
 	switch {
 	case path == "~":
 		return home
-	case strings.HasPrefix(path, "~/"):
+	case hasTildePrefix(path):
 		return filepath.Join(home, path[2:])
 	default:
 		return path

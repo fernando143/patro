@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,152 @@ import (
 	"github.com/fernando143/patro/internal/domain/meeting"
 	"github.com/fernando143/patro/internal/platform/config"
 )
+
+// ---- Fake analyzer CLI infrastructure --------------------------------------
+//
+// The fake CLIs below must behave like the real kimi/claude/codex processes:
+// receive argv, write stdout/stderr, exit with a code, and block long enough
+// for the timeout tests. On Unix that is a shell script. On Windows a `#!`
+// script cannot be started, so fakeCLI materializes the *test binary itself*
+// and re-executes it in a control-file-driven helper mode (TestMain and
+// runFakeAnalyzer). Direct execution keeps argv byte-exact for the tests
+// that assert on arguments; the npm `.cmd` shim path is exercised separately
+// and directly by TestExecCLIRunsACmdShim.
+
+// fakeControlEnv carries the path of the control file from a test to its
+// helper-process fake CLI.
+const fakeControlEnv = "PATRO_FAKE_CLI_CONTROL"
+
+// fakeControl describes what a fake CLI does when run. It is interpreted by
+// the generated shell script on Unix and by runFakeAnalyzer on Windows.
+type fakeControl struct {
+	Stdout       string // exact bytes written to stdout (a newline is appended)
+	StdoutFile   string // file whose contents are copied verbatim to stdout
+	Stderr       string // exact bytes written to stderr (no newline appended)
+	Exit         int    // process exit code
+	EchoArgs     string // if set, cwd + argv (one per line) are written to this file
+	RequireArg   string // if set, exit 1 with a stderr message when argv lacks it
+	SleepSeconds int    // if > 0, block this long so a context timeout kills the fake
+}
+
+func TestMain(m *testing.M) {
+	if controlFile := os.Getenv(fakeControlEnv); controlFile != "" {
+		os.Exit(runFakeAnalyzer(controlFile))
+	}
+	os.Exit(m.Run())
+}
+
+// fakeCLI materializes an executable fake analyzer CLI in dir and returns
+// its path: a shell script on Unix, the re-executed test binary on Windows.
+func fakeCLI(t *testing.T, dir, name string, ctrl fakeControl) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return fakeCLIHelper(t, ctrl)
+	}
+	return fakeCLIScript(t, dir, name, ctrl)
+}
+
+// fakeCLIHelper arms the helper-process mode: it writes the control file and
+// returns the test binary's own path as the "CLI" to run.
+func fakeCLIHelper(t *testing.T, ctrl fakeControl) string {
+	t.Helper()
+	controlFile := filepath.Join(t.TempDir(), "fake-cli-control.json")
+	data, err := json.Marshal(ctrl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(controlFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeControlEnv, controlFile)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+// fakeCLIScript renders ctrl as a POSIX shell script.
+func fakeCLIScript(t *testing.T, dir, name string, ctrl fakeControl) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	if ctrl.EchoArgs != "" {
+		b.WriteString("{ pwd; printf '%s\\n' \"$@\"; } > \"" + ctrl.EchoArgs + "\"\n")
+	}
+	if ctrl.RequireArg != "" {
+		b.WriteString("case \" $* \" in *' " + ctrl.RequireArg + " '*) ;; *) echo 'Error: missing required argument " +
+			ctrl.RequireArg + "' >&2; exit 1;; esac\n")
+	}
+	if ctrl.StdoutFile != "" {
+		b.WriteString("cat \"" + ctrl.StdoutFile + "\"\n")
+	}
+	if ctrl.Stdout != "" {
+		b.WriteString("printf '%s\\n' '" + ctrl.Stdout + "'\n")
+	}
+	if ctrl.Stderr != "" {
+		b.WriteString("printf '%s' '" + ctrl.Stderr + "' >&2\n")
+	}
+	if ctrl.SleepSeconds > 0 {
+		// exec replaces the shell with sleep itself, so the kill on context
+		// timeout reaches the process actually holding stdout/stderr open.
+		b.WriteString(fmt.Sprintf("exec sleep %d\n", ctrl.SleepSeconds))
+	}
+	if ctrl.Exit != 0 {
+		b.WriteString(fmt.Sprintf("exit %d\n", ctrl.Exit))
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// runFakeAnalyzer is the helper-process half of fakeCLI: the test binary
+// re-executes itself with fakeControlEnv set and behaves like the fake CLI
+// described by the control file, then exits without running any tests.
+func runFakeAnalyzer(controlFile string) int {
+	data, err := os.ReadFile(controlFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake CLI: cannot read control file:", err)
+		return 2
+	}
+	var ctrl fakeControl
+	if err := json.Unmarshal(data, &ctrl); err != nil {
+		fmt.Fprintln(os.Stderr, "fake CLI: cannot parse control file:", err)
+		return 2
+	}
+	args := os.Args[1:]
+	if ctrl.EchoArgs != "" {
+		var b strings.Builder
+		if wd, wdErr := os.Getwd(); wdErr == nil {
+			b.WriteString(wd + "\n")
+		}
+		for _, a := range args {
+			b.WriteString(a + "\n")
+		}
+		_ = os.WriteFile(ctrl.EchoArgs, []byte(b.String()), 0o644)
+	}
+	if ctrl.RequireArg != "" && !slices.Contains(args, ctrl.RequireArg) {
+		fmt.Fprintf(os.Stderr, "Error: missing required argument %s\n", ctrl.RequireArg)
+		return 1
+	}
+	if ctrl.StdoutFile != "" {
+		if stream, streamErr := os.ReadFile(ctrl.StdoutFile); streamErr == nil {
+			_, _ = os.Stdout.Write(stream)
+		}
+	}
+	if ctrl.Stdout != "" {
+		_, _ = os.Stdout.WriteString(ctrl.Stdout + "\n")
+	}
+	if ctrl.Stderr != "" {
+		_, _ = os.Stderr.WriteString(ctrl.Stderr)
+	}
+	if ctrl.SleepSeconds > 0 {
+		time.Sleep(time.Duration(ctrl.SleepSeconds) * time.Second)
+	}
+	return ctrl.Exit
+}
 
 // optionsFrom keeps these tests expressing intent as a *config.Config while
 // AnalyzeCLI takes only the four values it actually uses.
@@ -127,20 +275,9 @@ func TestWriteTranscriptFilePlainText(t *testing.T) {
 	}
 }
 
-// writeFakeCLI writes an executable shell script behaving as a fake
-// kimi/claude CLI and returns its path.
-func writeFakeCLI(t *testing.T, dir, name, script string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func TestRunCLITimeout(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := writeFakeCLI(t, dir, "slow-cli", "#!/bin/sh\nexec sleep 1\n")
+	binaryPath := fakeCLI(t, dir, "slow-cli", fakeControl{SleepSeconds: 1})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -177,8 +314,8 @@ func TestAnalyzeCLISuccess(t *testing.T) {
 	}
 
 	// The fake CLI records its cwd and argv, then emits the canned stream.
-	kimiPath := writeFakeCLI(t, dir, "fake-kimi",
-		"#!/bin/sh\n{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\ncat \""+streamFile+"\"\n")
+	invocationFile := filepath.Join(dir, "invocation.txt")
+	kimiPath := fakeCLI(t, dir, "fake-kimi", fakeControl{StdoutFile: streamFile, EchoArgs: invocationFile})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	tr := &meeting.TranscriptResult{
@@ -204,7 +341,7 @@ func TestAnalyzeCLISuccess(t *testing.T) {
 	}
 
 	// The CLI ran in cfg.Dir with `-p <prompt> --output-format stream-json`.
-	invocation, err := os.ReadFile(filepath.Join(dir, "invocation.txt"))
+	invocation, err := os.ReadFile(invocationFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +374,12 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 
 	// Claude Code emits the nested envelope and requires --verbose with
 	// `-p --output-format stream-json`; the fake fails without it.
-	script := "#!/bin/sh\n" +
-		"{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\n" +
-		"case \" $* \" in *' --verbose '*) ;; *) echo 'Error: When using --print, --output-format=stream-json requires --verbose' >&2; exit 1;; esac\n" +
-		"echo '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromClaude\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"claude-topic\\\"}]}\"}]}}'\n"
-	claudePath := writeFakeCLI(t, dir, "fake-claude", script)
+	invocationFile := filepath.Join(dir, "invocation.txt")
+	claudePath := fakeCLI(t, dir, "fake-claude", fakeControl{
+		EchoArgs:   invocationFile,
+		RequireArg: "--verbose",
+		Stdout:     `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"{\"meeting\": {\"title\": \"FromClaude\", \"summary\": \"ok\"}, \"topics\": [{\"slug\": \"claude-topic\"}]}"}]}}`,
+	})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &meeting.TranscriptResult{ID: "mtg-claude", Language: "en", Text: "transcript"}
@@ -257,7 +395,7 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 		t.Errorf("Topics = %v", result.Topics)
 	}
 
-	invocation, err := os.ReadFile(filepath.Join(dir, "invocation.txt"))
+	invocation, err := os.ReadFile(invocationFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,10 +406,11 @@ func TestAnalyzeCLIClaudePassesVerbose(t *testing.T) {
 
 func TestAnalyzeCLICodexUsesExecJSON(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\n" +
-		"{ pwd; printf '%s\\n' \"$@\"; } > invocation.txt\n" +
-		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"meeting\\\": {\\\"title\\\": \\\"FromCodex\\\", \\\"summary\\\": \\\"ok\\\"}, \\\"topics\\\": [{\\\"slug\\\": \\\"codex-topic\\\"}]}\"}}'\n"
-	codexPath := writeFakeCLI(t, dir, "fake-codex", script)
+	invocationFile := filepath.Join(dir, "invocation.txt")
+	codexPath := fakeCLI(t, dir, "fake-codex", fakeControl{
+		EchoArgs: invocationFile,
+		Stdout:   `{"type":"item.completed","item":{"type":"agent_message","text":"{\"meeting\": {\"title\": \"FromCodex\", \"summary\": \"ok\"}, \"topics\": [{\"slug\": \"codex-topic\"}]}"}}`,
+	})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"codex": codexPath}, Dir: dir, AnalyzerBackend: "codex"}
 	tr := &meeting.TranscriptResult{ID: "mtg-codex", Language: "en", Text: "transcript"}
@@ -287,7 +426,7 @@ func TestAnalyzeCLICodexUsesExecJSON(t *testing.T) {
 		t.Errorf("Topics = %v", result.Topics)
 	}
 
-	invocation, err := os.ReadFile(filepath.Join(dir, "invocation.txt"))
+	invocation, err := os.ReadFile(invocationFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,8 +479,8 @@ func TestAnalyzeCLIBinaryNotFound(t *testing.T) {
 
 func TestAnalyzeCLINonZeroExit(t *testing.T) {
 	dir := t.TempDir()
-	kimiPath := writeFakeCLI(t, dir, "fake-kimi",
-		"#!/bin/sh\necho 'fatal: something broke' >&2\nexit 3\n")
+	kimiPath := fakeCLI(t, dir, "fake-kimi",
+		fakeControl{Stderr: "fatal: something broke", Exit: 3})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"kimi": kimiPath}, Dir: dir, AnalyzerBackend: "kimi"}
 	tr := &meeting.TranscriptResult{ID: "m2", Text: "text"}
@@ -356,10 +495,10 @@ func TestAnalyzeCLINonZeroExit(t *testing.T) {
 
 func TestAnalyzeCLIStderrTruncatedTo1000(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\n" +
-		"i=0; while [ $i -lt 1500 ]; do printf 'e' >&2; i=$((i+1)); done\n" +
-		"exit 1\n"
-	claudePath := writeFakeCLI(t, dir, "fake-claude", script)
+	claudePath := fakeCLI(t, dir, "fake-claude", fakeControl{
+		Stderr: strings.Repeat("e", 1500),
+		Exit:   1,
+	})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &meeting.TranscriptResult{ID: "m3", Text: "text"}
@@ -374,8 +513,9 @@ func TestAnalyzeCLIStderrTruncatedTo1000(t *testing.T) {
 
 func TestAnalyzeCLINoAssistantText(t *testing.T) {
 	dir := t.TempDir()
-	claudePath := writeFakeCLI(t, dir, "fake-claude",
-		"#!/bin/sh\necho '{\"role\":\"user\",\"content\":\"no assistant here\"}'\n")
+	claudePath := fakeCLI(t, dir, "fake-claude", fakeControl{
+		Stdout: `{"role":"user","content":"no assistant here"}`,
+	})
 
 	cfg := &config.Config{BinaryPaths: map[string]string{"claude": claudePath}, Dir: dir, AnalyzerBackend: "claude"}
 	tr := &meeting.TranscriptResult{ID: "m4", Text: "text"}

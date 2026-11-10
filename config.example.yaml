@@ -7,5 +7,23 @@ video_extensions:
   - .webm
 stability_checks: 2
 stability_interval_seconds: 5
+
+# Which AI writes the knowledge library: kimi, claude, codex, pi, or lemur.
+# lemur runs in the cloud through AssemblyAI and needs no local CLI; the others
+# shell out to the CLI named by their *_path key, which defaults to the binary
+# name on PATH.
 analyzer_backend: kimi
 kimi_path: /path/to/kimi
+claude_path: /path/to/claude
+codex_path: /path/to/codex
+pi_path: /path/to/pi
+
+# How new topics are matched against the library: cosine similarity at or above
+# merge_threshold merges, below new_topic_threshold creates a new topic, and the
+# band between them costs one reconciliation call.
+embedding_backend: cybertron
+merge_threshold: 0.9
+new_topic_threshold: 0.7
+
+# How many existing topics are shown to the analyzer per request.
+topic_prompt_limit: 50

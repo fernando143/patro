@@ -10,9 +10,16 @@ The analyzer backend is pluggable:
 
 - **Kimi (default)** — runs the already-installed local `kimi -p` CLI.
 - **Claude** — runs the local `claude -p` CLI.
+- **Codex** — runs `codex exec --json` in a read-only sandbox.
+- **Pi** — runs the local `pi -p` CLI; unlike the others it prints its answer
+  on stdout instead of streaming JSONL, so the registry marks it `PlainText`.
 - **LeMUR** — uses AssemblyAI's hosted LLM.
 
-The project is intentionally small and self-contained: a single static binary built from the Go module `github.com/fernando143/patro`, distributed via Homebrew from the GitHub repo `fernando143/patro`.
+The set lives in one place, `internal/adapter/analyzer/backend`: config
+validation, both init wizards, the settings TUI and the gray-zone decider all
+read from that registry, so a new backend needs no second list.
+
+The project is intentionally small and self-contained: a single static binary built from the Go module `github.com/fernando143/patro`, distributed via Homebrew (macOS/Linux) and Scoop (Windows) from the GitHub repo `fernando143/patro`.
 
 ## Technology stack
 
@@ -34,7 +41,7 @@ patro/
 ├── config.yaml                 # user-facing configuration (repo-local example)
 ├── README.md                   # human-readable setup and usage
 ├── patro.log                   # runtime log (created by the app)
-├── .goreleaser.yaml            # release build config (binaries + Homebrew formula)
+├── .goreleaser.yaml            # release build config (binaries + Homebrew formula + Scoop manifest)
 ├── .github/workflows/
 │   └── release.yml             # tag-triggered release automation
 ├── cmd/patro/                  # main package: CLI entry point + init wizard
@@ -116,7 +123,7 @@ patro --version
 ### `init`
 
 - Interactive setup wizard: asks for the AssemblyAI API key, inbox, library, and analyzer backend (kimi/claude), locates the CLI binary, and writes the config.
-- Optionally installs and starts a user-level background service: a systemd user unit `patro.service` with the API key in an `override.conf` on Linux, or a LaunchAgent `com.patro.plist` on macOS.
+- Optionally installs and starts a user-level background service: a systemd user unit `patro.service` with the API key in an `override.conf` on Linux, a LaunchAgent `com.patro.plist` on macOS, or the per-user autostart entry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\patro` with the API key in the user environment on Windows.
 
 ### Pipeline
 
@@ -212,7 +219,7 @@ Also use `--mock` mode as a manual smoke test:
 
 ## Deployment
 
-`patro` is distributed via **Homebrew** and runs as a **user-level background service** with no sudo required.
+`patro` is distributed via **Homebrew** on macOS/Linux and **Scoop** on Windows, and runs as a **user-level background service** with no sudo or administrator rights required.
 
 User install:
 
@@ -225,13 +232,23 @@ patro init
 
 The formula also ships a service (`brew services start patro`) that runs `patro serve` and logs to Homebrew's `var/log/patro.log`. The API key must be provided through the environment — for example via the wizard-installed service or the launchctl/systemd environment — since `brew services` does not inherit the user's shell environment.
 
+Windows user install:
+
+```powershell
+scoop bucket add patro https://github.com/fernando143/patro
+scoop install patro
+patro init
+```
+
+The release also publishes `patro_<version>_windows_amd64.zip` for a manual install. Windows has no user-level systemd or LaunchAgent, and neither Windows substitute works unprivileged (a real service needs the Service Control Protocol and `sc create`; `schtasks /sc onlogon` returns "access denied" for a non-administrator). So `patro init` writes the per-user autostart entry `patro` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` and stores the API key in the user environment under `HKCU\Environment`; the watcher therefore starts at logon and never needs elevation. Because a Run entry has no supervisor, a crashed watcher returns at the next logon or via the settings screen. Status and logs: `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v patro` and `%USERPROFILE%\.config\patro\patro.log`.
+
 ### Release workflow
 
 Pushing a tag `v*` triggers `.github/workflows/release.yml`, which runs GoReleaser (`.goreleaser.yaml`):
 
 - Builds darwin/linux × amd64/arm64 binaries (CGO disabled, version injected via `-X main.version`).
 - Creates the GitHub release on `fernando143/patro` with archives and checksums.
-- Commits an updated `patro` formula to `Formula/patro.rb` in this same repository (the repo doubles as the Homebrew tap; users tap it with an explicit URL since it is not named `homebrew-*`).
+- Commits an updated `patro` formula to `Formula/patro.rb` and a Scoop manifest to `bucket/patro.json` in this same repository (the repo doubles as the Homebrew tap and the Scoop bucket; users tap the URL explicitly since it is not named `homebrew-*`).
 
 Everything runs with the workflow's built-in `GITHUB_TOKEN` (`contents: write`); no extra secrets are required. The repository must be public for `brew tap`/`brew install` to work for other users.
 

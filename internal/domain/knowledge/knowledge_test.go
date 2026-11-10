@@ -3,6 +3,7 @@ package knowledge
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -113,10 +114,24 @@ func TestAddMeeting(t *testing.T) {
 
 func TestAddMeetingPropagatesWriteTranscriptError(t *testing.T) {
 	l := newTestLibrary(t)
-	if err := os.Chmod(l.TranscriptsDir, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. A regular file where the
+		// transcripts folder must be makes the first library write fail on
+		// every platform.
+		if err := os.Remove(l.TranscriptsDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(l.TranscriptsDir, []byte("not a dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(l.TranscriptsDir) })
+	} else {
+		if err := os.Chmod(l.TranscriptsDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(l.TranscriptsDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(l.TranscriptsDir, 0o755) })
 
 	_, err := l.AddMeeting(
 		&meeting.TranscriptResult{ID: "t1"},
@@ -130,10 +145,23 @@ func TestAddMeetingPropagatesWriteTranscriptError(t *testing.T) {
 
 func TestAddMeetingPropagatesWriteMeetingNoteError(t *testing.T) {
 	l := newTestLibrary(t)
-	if err := os.Chmod(l.MeetingsDir, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. A regular file where the meetings
+		// folder must be makes the meeting-note write fail portably.
+		if err := os.Remove(l.MeetingsDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(l.MeetingsDir, []byte("not a dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(l.MeetingsDir) })
+	} else {
+		if err := os.Chmod(l.MeetingsDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(l.MeetingsDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(l.MeetingsDir, 0o755) })
 
 	_, err := l.AddMeeting(
 		&meeting.TranscriptResult{ID: "t1"},
@@ -147,10 +175,23 @@ func TestAddMeetingPropagatesWriteMeetingNoteError(t *testing.T) {
 
 func TestAddMeetingPropagatesAppendTopicSectionError(t *testing.T) {
 	l := newTestLibrary(t)
-	if err := os.Chmod(l.TopicsDir, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. A regular file where the topics
+		// folder must be makes the topic-section write fail portably.
+		if err := os.Remove(l.TopicsDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(l.TopicsDir, []byte("not a dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(l.TopicsDir) })
+	} else {
+		if err := os.Chmod(l.TopicsDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(l.TopicsDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(l.TopicsDir, 0o755) })
 
 	_, err := l.AddMeeting(
 		&meeting.TranscriptResult{ID: "t1"},
@@ -167,10 +208,25 @@ func TestAddMeetingPropagatesAppendTopicSectionError(t *testing.T) {
 
 func TestAddMeetingPropagatesRebuildIndexError(t *testing.T) {
 	l := newTestLibrary(t)
-	if err := os.Chmod(l.Root, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. RebuildIndex writes index.md with
+		// os.WriteFile, so a read-only index.md makes exactly that write
+		// fail with access denied.
+		indexPath := filepath.Join(l.Root, "index.md")
+		if err := os.WriteFile(indexPath, []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(indexPath, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(indexPath, 0o644) })
+	} else {
+		if err := os.Chmod(l.Root, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(l.Root, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(l.Root, 0o755) })
 
 	_, err := l.AddMeeting(
 		&meeting.TranscriptResult{ID: "t1"},
@@ -533,10 +589,24 @@ func TestFindMeetingNoteByTranscriptID(t *testing.T) {
 
 	unreadablePath := filepath.Join(l.MeetingsDir, "2026-01-07-unreadable.md")
 	writeFile(t, unreadablePath, "[transcript](../transcripts/unreadable-id.txt)\n")
-	if err := os.Chmod(unreadablePath, 0o000); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// 0o000 only sets the read-only attribute there, and a read-only
+		// file is still readable. A directory with the note's name cannot be
+		// read back as a file on any platform.
+		if err := os.Remove(unreadablePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(unreadablePath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(unreadablePath) })
+	} else {
+		if err := os.Chmod(unreadablePath, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o644) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o644) })
 
 	t.Run("found", func(t *testing.T) {
 		got, err := l.FindMeetingNoteByTranscriptID("abc123")

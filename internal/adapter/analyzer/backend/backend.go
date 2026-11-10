@@ -48,6 +48,11 @@ type Backend struct {
 	// rather than stream-json assistant deltas. The gray-zone decider needs
 	// a different reader for those two shapes.
 	CodexStyleStream bool
+	// PlainText marks a CLI that prints the assistant's final message
+	// directly on stdout, with no event stream to unwrap. Kimi, Claude and
+	// Codex all stream JSONL; a CLI without that envelope would parse as an
+	// empty answer under the shared reader.
+	PlainText bool
 }
 
 // registry is an explicit ordered table rather than init()-based
@@ -115,6 +120,30 @@ var registry = []Backend{
 			)
 		},
 		CodexStyleStream: true,
+	},
+	{
+		Name:          "pi",
+		Label:         "pi     — local Pi coding agent",
+		DisplayName:   "Pi",
+		ConfigKey:     "pi_path",
+		DefaultBinary: "pi",
+		// Pi prints its final message on stdout instead of streaming events,
+		// so it needs the plain-text reader. --no-session keeps runs
+		// ephemeral, --no-context-files stops a stray AGENTS.md in the working
+		// directory from reaching the answer, and --tools read is the minimum
+		// needed to read the staged transcript: without it the CLI cannot open
+		// the file the prompt points at.
+		Argv: func(prompt string) []string {
+			return []string{"-p", prompt, "--no-session", "--tools", "read", "--no-context-files"}
+		},
+		NotFoundHelp: func(binaryPath string) string {
+			return fmt.Sprintf(
+				"'%s' executable not found. Install the Pi coding agent CLI, "+
+					"adjust pi_path in config.yaml, or switch analyzer_backend to kimi/claude/lemur.",
+				binaryPath,
+			)
+		},
+		PlainText: true,
 	},
 	{
 		Name:        "lemur",

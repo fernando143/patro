@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -133,10 +134,25 @@ func TestMarkProcessedStateDirReadOnly(t *testing.T) {
 	if err := os.WriteFile(video, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(stateDir, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. The portable equivalent of an
+		// unwritable state dir is a read-only processed.json, which makes
+		// saveLocked's final os.Rename fail with access denied.
+		stateFile := filepath.Join(stateDir, "processed.json")
+		if err := os.WriteFile(stateFile, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(stateFile, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stateFile, 0o644) })
+	} else {
+		if err := os.Chmod(stateDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 
 	s := New(stateDir)
 	if err := s.MarkProcessed(video, "id"); err == nil {

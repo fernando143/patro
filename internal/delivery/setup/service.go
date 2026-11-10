@@ -32,6 +32,8 @@ func InstallService(apiKey, configPath string) (log []string, installed bool) {
 		return installLinuxService(apiKey, configPath)
 	case "darwin":
 		return installMacService(apiKey, configPath)
+	case "windows":
+		return installWindowsService(apiKey, configPath)
 	default:
 		return []string{fmt.Sprintf("Unsupported OS: %s. Service installation skipped.", runtime.GOOS)}, false
 	}
@@ -46,6 +48,8 @@ func SetAPIKey(apiKey string) error {
 		return setLinuxAPIKey(apiKey)
 	case "darwin":
 		return setMacAPIKey(apiKey)
+	case "windows":
+		return setWindowsAPIKey(apiKey)
 	default:
 		return ErrNoService
 	}
@@ -78,6 +82,8 @@ func RestartService() error {
 			return ErrNoService
 		}
 		return reloadLaunchAgent(plistPath)
+	case "windows":
+		return restartWindowsService()
 	default:
 		return ErrNoService
 	}
@@ -117,6 +123,8 @@ func ServiceAPIKeyConfigured() bool {
 			return false
 		}
 		return strings.TrimSpace(string(m[2])) != ""
+	case "windows":
+		return windowsServiceAPIKeyConfigured()
 	default:
 		return false
 	}
@@ -383,8 +391,12 @@ func serviceExecutablePath() (string, error) {
 // /opt/homebrew/Cellar/patro/0.2.0/bin/patro to its version-independent
 // sibling /opt/homebrew/opt/patro/bin/patro. It returns "" when exe is not a
 // versioned Cellar path.
+//
+// The separator is a literal "/", not filepath.Separator: Homebrew exists
+// only on macOS and Linux, so the path being parsed is always POSIX even when
+// patro itself was built for Windows.
 func cellarOptPath(exe string) string {
-	sep := string(filepath.Separator)
+	const sep = "/"
 	parts := strings.Split(exe, sep)
 	for i := 0; i+2 < len(parts); i++ {
 		if parts[i] != "Cellar" {

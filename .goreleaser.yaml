@@ -10,6 +10,7 @@ builds:
     goos:
       - darwin
       - linux
+      - windows
     goarch:
       - amd64
       - arm64
@@ -22,6 +23,12 @@ archives:
   - formats:
       - tar.gz
     name_template: "patro_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # tar.gz is not something a Windows user can open without extra tooling,
+    # and the .zip is what Scoop consumes as well.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
@@ -53,3 +60,18 @@ brews:
         1. Run `patro init` to create the config at ~/.config/patro/config.yaml
         2. Set your AssemblyAI API key: export ASSEMBLYAI_API_KEY=<your-key>
         3. Optionally run the watcher in the background: brew services start patro
+
+# Windows has no Homebrew, so the tap in this repository doubles as a Scoop
+# bucket: `scoop bucket add patro https://github.com/fernando143/patro` then
+# `scoop install patro`. GoReleaser commits bucket/patro.json next to
+# Formula/patro.rb, so both install channels are published from one tag.
+scoops:
+  - name: patro
+    repository:
+      owner: fernando143
+      name: patro
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: https://github.com/fernando143/patro
+    description: "Watch an OBS recordings folder, transcribe meetings with AssemblyAI and distill them into a Markdown knowledge library"

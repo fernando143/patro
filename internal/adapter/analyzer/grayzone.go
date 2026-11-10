@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -33,14 +32,17 @@ func GrayZoneDecision(b backend.Backend, binaryPath string, timeout time.Duratio
 
 		prompt := grayZonePrompt(candidate, nearest)
 
-		// Only Codex lacks a plain-text mode; the others answer a bare
-		// prompt directly, which keeps this one-word question cheap.
+		// Codex and Pi need their full registry argv: Codex because it has no
+		// plain-prompt mode, Pi because the bare form would run with its
+		// default tools and persist a session, and this side channel must stay
+		// read-only like every other call. The others answer a bare prompt
+		// directly, which keeps this one-word question cheap.
 		args := []string{"-p", prompt}
-		if b.CodexStyleStream {
+		if b.CodexStyleStream || b.PlainText {
 			args = b.Argv(prompt)
 		}
 
-		cmd := exec.CommandContext(runCtx, binaryPath, args...)
+		cmd := execCLI(runCtx, binaryPath, args)
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		cmd.Stderr = &out

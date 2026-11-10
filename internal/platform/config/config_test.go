@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+// setHome points the user's home directory at dir. os.UserHomeDir reads HOME
+// on Unix and USERPROFILE on Windows; leaving USERPROFILE alone lets these
+// tests read the developer's real ~/.config/patro/config.yaml on Windows.
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
 // writeConfig writes content to <dir>/config.yaml and returns its path.
 func writeConfig(t *testing.T, dir, content string) string {
 	t.Helper()
@@ -149,7 +158,7 @@ func TestLoadInvalidBackend(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() succeeded, want an invalid-backend error")
 	}
-	for _, want := range []string{"bogus", "kimi, claude, codex, lemur"} {
+	for _, want := range []string{"bogus", "kimi, claude, codex, pi, lemur"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
@@ -230,7 +239,7 @@ func TestLoadMalformedYAML(t *testing.T) {
 
 func TestLoadEmptyFlagPrefersCanonicalUserConfigOverLocalConfig(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	userConfigDir := filepath.Join(home, ".config", "patro")
 	if err := os.MkdirAll(userConfigDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -262,7 +271,7 @@ func TestLoadEmptyFlagPrefersCanonicalUserConfigOverLocalConfig(t *testing.T) {
 
 func TestLoadEmptyFlagFallsBackToUserConfigPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	userConfigDir := filepath.Join(home, ".config", "patro")
 	if err := os.MkdirAll(userConfigDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -290,7 +299,7 @@ func TestLoadEmptyFlagFallsBackToUserConfigPath(t *testing.T) {
 
 func TestLoadEmptyFlagNoConfigAnywhereUsesDefaults(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -317,7 +326,7 @@ func TestLoadEmptyFlagNoConfigAnywhereUsesDefaults(t *testing.T) {
 
 func TestLoadEmptyFlagMigratesLocalConfigWhenCanonicalConfigIsMissing(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	dir := t.TempDir()
 	localPath := writeConfig(t, dir, "stability_checks: 9\n")
 
@@ -377,11 +386,31 @@ func TestValidEmbeddingBackendsReturnsIndependentCopy(t *testing.T) {
 
 func TestUserConfigPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	want := filepath.Join(home, ".config", "patro", "config.yaml")
 	if got := UserConfigPath(); got != want {
 		t.Errorf("UserConfigPath() = %q, want %q", got, want)
+	}
+}
+
+// Windows users spell the home directory ~\path, so the same expansion has to
+// accept a backslash after the tilde instead of silently treating the value as
+// a relative directory literally named "~".
+func TestResolvePathExpandsWindowsStyleTilde(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	got := ResolvePath(`~\Videos\obs\config.yaml`)
+	if !strings.HasPrefix(got, home) {
+		t.Fatalf(`ResolvePath(~\Videos\obs\config.yaml) = %q, want it under %q`, got, home)
+	}
+	// Everything after the tilde is one path, so no separator is invented
+	// in the middle of it: on Unix a backslash is an ordinary character, and
+	// asserting a slash there would pin Windows' separator as the contract.
+	want := filepath.Join(home, `Videos\obs\config.yaml`)
+	if got != want {
+		t.Errorf(`ResolvePath(~\Videos\obs\config.yaml) = %q, want %q`, got, want)
 	}
 }
 

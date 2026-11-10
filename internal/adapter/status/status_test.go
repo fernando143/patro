@@ -3,6 +3,7 @@ package status
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -142,10 +143,22 @@ func TestFlushLockedStateDirReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTracker: %v", err)
 	}
-	if err := os.Chmod(stateDir, 0o555); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// POSIX permission bits are not representable on Windows: os.Chmod
+		// on a directory is a no-op there. The portable equivalent of an
+		// unwritable state dir is a read-only status.json, which makes
+		// flushLocked's final os.Rename fail with access denied.
+		stateFile := filepath.Join(stateDir, FileName)
+		if err := os.Chmod(stateFile, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stateFile, 0o644) })
+	} else {
+		if err := os.Chmod(stateDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 
 	tr.Enqueue("a.mkv")
 	snap, err := Read(stateDir)

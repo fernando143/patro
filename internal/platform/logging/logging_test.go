@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,19 +58,23 @@ func TestWarnfAndErrorfLevels(t *testing.T) {
 }
 
 func TestInitTeesToFile(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "nested", "patro.log")
+
 	// Init replaces the global sink permanently for the process, so make
-	// sure it is restored for any test running after this one.
+	// sure it is restored for any test running after this one. Registering
+	// the Close cleanup after TempDir means cleanups run Close first and
+	// release the file handle before TempDir's RemoveAll (the handle would
+	// keep the file undeletable on Windows).
 	mu.Lock()
 	prev := output
 	mu.Unlock()
 	t.Cleanup(func() {
+		_ = Close()
 		mu.Lock()
 		output = prev
 		mu.Unlock()
 	})
-
-	dir := t.TempDir()
-	logFile := filepath.Join(dir, "nested", "patro.log")
 
 	if err := Init(logFile); err != nil {
 		t.Fatalf("Init error = %v", err)
@@ -83,6 +88,57 @@ func TestInitTeesToFile(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("INFO patro: service started")) {
 		t.Errorf("log file content = %q, want it to contain the Infof message", data)
+	}
+}
+
+func TestCloseReleasesLogFileAndRestoresStdoutOnly(t *testing.T) {
+	// Init replaces the global sink permanently for the process, so make
+	// sure it is restored for any test running after this one.
+	mu.Lock()
+	prev := output
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		output = prev
+		mu.Unlock()
+	})
+
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "patro.log")
+
+	if err := Init(logFile); err != nil {
+		t.Fatalf("Init error = %v", err)
+	}
+	Infof("before close")
+
+	Close()
+
+	// Close must release the file handle: on Windows an open handle keeps
+	// the file undeletable, so a successful remove is the observable proof
+	// that the file is closed.
+	if err := os.Remove(logFile); err != nil {
+		t.Fatalf("Remove(%s) error = %v, want Close to release the log file", logFile, err)
+	}
+
+	// Close must restore stdout-only output and stay idempotent.
+	if err := Close(); err != nil {
+		t.Errorf("second Close error = %v, want nil", err)
+	}
+	mu.Lock()
+	restored := output == io.Writer(os.Stdout)
+	mu.Unlock()
+	if !restored {
+		mu.Lock()
+		current := output
+		mu.Unlock()
+		t.Errorf("output after Close = %T, want os.Stdout", current)
+	}
+	// Logging must keep working after Close.
+	var buf bytes.Buffer
+	withCapturedOutput(t, &buf)
+	Infof("after close")
+	if !bytes.Contains(buf.Bytes(), []byte("INFO patro: after close")) {
+		t.Errorf("output after Close = %q, want the Infof message still logged", buf.String())
 	}
 }
 

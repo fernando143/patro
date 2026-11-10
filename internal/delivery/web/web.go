@@ -16,6 +16,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -217,7 +218,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rel := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+	// URL paths are slash-separated whatever the host OS is, so backslashes are
+	// folded to slashes before a slash-based clean is applied. Both halves
+	// matter: filepath.Clean would turn "/search" into a backslash path on
+	// Windows and send every route to the 404 branch, while skipping the folding
+	// lets "/..\..\secret.txt" reach filepath.Join below as one component and
+	// escape Root — filepath.Join does treat a backslash as a separator.
+	urlPath := strings.ReplaceAll(r.URL.Path, `\`, "/")
+	rel := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
 
 	switch rel {
 	case "", layout.IndexFileName:
@@ -237,7 +245,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	full := filepath.Join(s.Root, rel)
 
 	// Guard against path traversal: the resolved path must stay under Root.
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	// rel is URL-shaped, so the separator here is a literal slash.
+	if rel == ".." || strings.HasPrefix(rel, "../") {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}

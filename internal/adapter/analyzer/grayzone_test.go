@@ -2,9 +2,9 @@ package analyzer
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,13 +17,12 @@ import (
 // internal/domain/knowledge, which is the knowledge domain and had no business
 // shelling out to a CLI.
 
-func writeGrayZoneScript(t *testing.T, dir, body string) string {
+// writeGrayZoneFake materializes a fake reconciliation CLI (see fakeCLI in
+// cli_test.go), portably across Unix shell scripts and the Windows helper
+// process.
+func writeGrayZoneFake(t *testing.T, dir string, ctrl fakeControl) string {
 	t.Helper()
-	path := filepath.Join(dir, "fake-cli.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return fakeCLI(t, dir, "fake-cli", ctrl)
 }
 
 func mustBackend(t *testing.T, name string) backend.Backend {
@@ -42,7 +41,7 @@ func decideWith(t *testing.T, name, script string, timeout time.Duration) (bool,
 }
 
 func TestGrayZoneDecisionYes(t *testing.T) {
-	same, err := decideWith(t, "kimi", writeGrayZoneScript(t, t.TempDir(), `echo "yes"`), time.Second)
+	same, err := decideWith(t, "kimi", writeGrayZoneFake(t, t.TempDir(), fakeControl{Stdout: "yes"}), time.Second)
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
@@ -52,7 +51,7 @@ func TestGrayZoneDecisionYes(t *testing.T) {
 }
 
 func TestGrayZoneDecisionNo(t *testing.T) {
-	same, err := decideWith(t, "kimi", writeGrayZoneScript(t, t.TempDir(), `echo "no"`), time.Second)
+	same, err := decideWith(t, "kimi", writeGrayZoneFake(t, t.TempDir(), fakeControl{Stdout: "no"}), time.Second)
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
@@ -65,8 +64,9 @@ func TestGrayZoneDecisionNo(t *testing.T) {
 // with no plain-text mode: its answer arrives as a JSONL agent_message and
 // has to be read back through the same parser the analyzer uses.
 func TestGrayZoneDecisionCodexReadsItsOwnStreamShape(t *testing.T) {
-	script := writeGrayZoneScript(t, t.TempDir(),
-		`echo '{"type":"item.completed","item":{"type":"agent_message","text":"yes"}}'`)
+	script := writeGrayZoneFake(t, t.TempDir(), fakeControl{
+		Stdout: `{"type":"item.completed","item":{"type":"agent_message","text":"yes"}}`,
+	})
 	same, err := decideWith(t, "codex", script, time.Second)
 	if err != nil {
 		t.Fatalf("decide: %v", err)
@@ -81,8 +81,9 @@ func TestGrayZoneDecisionCodexReadsItsOwnStreamShape(t *testing.T) {
 // without parsing would never match "yes" — and a decider that always says
 // no silently disables merging.
 func TestGrayZoneDecisionCodexRawJSONIsNotAYes(t *testing.T) {
-	script := writeGrayZoneScript(t, t.TempDir(),
-		`echo '{"type":"item.completed","item":{"type":"agent_message","text":"no"}}'`)
+	script := writeGrayZoneFake(t, t.TempDir(), fakeControl{
+		Stdout: `{"type":"item.completed","item":{"type":"agent_message","text":"no"}}`,
+	})
 	same, err := decideWith(t, "codex", script, time.Second)
 	if err != nil {
 		t.Fatalf("decide: %v", err)
@@ -93,17 +94,18 @@ func TestGrayZoneDecisionCodexRawJSONIsNotAYes(t *testing.T) {
 }
 
 func TestGrayZoneDecisionNonZeroExit(t *testing.T) {
-	if _, err := decideWith(t, "kimi", writeGrayZoneScript(t, t.TempDir(), `exit 1`), time.Second); err == nil {
+	if _, err := decideWith(t, "kimi", writeGrayZoneFake(t, t.TempDir(), fakeControl{Exit: 1}), time.Second); err == nil {
 		t.Fatal("decide() error = nil, want an error on non-zero exit")
 	}
 }
 
 func TestGrayZoneDecisionTimeout(t *testing.T) {
-	// exec (rather than a plain "sleep 5") replaces the shell with sleep
-	// itself, so SIGKILL on context timeout reaches the process actually
-	// holding stdout/stderr open and the test returns promptly instead of
-	// blocking for the full sleep duration.
-	script := writeGrayZoneScript(t, t.TempDir(), `exec sleep 5`)
+	// The fake blocks instead of answering (exec sleep on Unix, a plain
+	// sleep in the helper process on Windows), so the kill on context
+	// timeout reaches the process actually holding stdout/stderr open and
+	// the test returns promptly instead of blocking for the full sleep
+	// duration.
+	script := writeGrayZoneFake(t, t.TempDir(), fakeControl{SleepSeconds: 5})
 	_, err := decideWith(t, "kimi", script, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("decide() error = nil, want a timeout error")
@@ -119,7 +121,7 @@ func TestGrayZoneDecisionTimeout(t *testing.T) {
 func TestGrayZoneDecisionArgvNotShellInterpreted(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "prompt.txt")
-	script := writeGrayZoneScript(t, dir, fmt.Sprintf(`echo "$2" > %s`, promptFile))
+	script := writeGrayZoneFake(t, dir, fakeControl{EchoArgs: promptFile})
 
 	dangerous := "candidate `touch " + filepath.Join(dir, "pwned") + "` $(touch " + filepath.Join(dir, "pwned2") + ")"
 	decide := GrayZoneDecision(mustBackend(t, "kimi"), script, time.Second)
@@ -133,8 +135,12 @@ func TestGrayZoneDecisionArgvNotShellInterpreted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading captured prompt: %v", err)
 	}
-	if !strings.Contains(string(data), dangerous) {
-		t.Errorf("prompt argument was not passed through verbatim:\ngot:  %q\nwant substring: %q", data, dangerous)
+	// The prompt embeds the topic name with %q, which escapes backslashes —
+	// Windows paths make that visible. Comparing against the quoted form
+	// keeps the assertion (verbatim pass-through, no shell reinterpretation)
+	// the same on every platform.
+	if !strings.Contains(string(data), strconv.Quote(dangerous)) {
+		t.Errorf("prompt argument was not passed through verbatim:\ngot:  %q\nwant substring: %q", data, strconv.Quote(dangerous))
 	}
 	for _, pwned := range []string{filepath.Join(dir, "pwned"), filepath.Join(dir, "pwned2")} {
 		if _, err := os.Stat(pwned); err == nil {

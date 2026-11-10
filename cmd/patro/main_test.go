@@ -11,6 +11,7 @@ import (
 	"github.com/fernando143/patro/internal/adapter/state"
 	"github.com/fernando143/patro/internal/domain/knowledge"
 	"github.com/fernando143/patro/internal/domain/meeting"
+	"github.com/fernando143/patro/internal/platform/logging"
 )
 
 // newTmpConfig writes a config.yaml resolving inbox/library/state under a
@@ -19,6 +20,11 @@ import (
 func newTmpConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// run() opens patro.log through logging.Init and keeps the handle until
+	// logging.Close; without the cleanup the handle survives into TempDir's
+	// RemoveAll, which cannot delete an open file on Windows. Registered
+	// after TempDir so (LIFO) it runs before the directory removal.
+	t.Cleanup(func() { _ = logging.Close() })
 	path := filepath.Join(dir, "config.yaml")
 	contents := "inbox: " + filepath.Join(dir, "inbox") + "\n" +
 		"library: " + filepath.Join(dir, "library") + "\n"
@@ -113,6 +119,9 @@ func TestRunProcessConfigLoadError(t *testing.T) {
 
 func TestRunProcessPropagatesPipelineFailure(t *testing.T) {
 	dir := t.TempDir()
+	// run() opens patro.log through logging.Init; release it before TempDir
+	// cleanup (an open handle cannot be deleted on Windows).
+	t.Cleanup(func() { _ = logging.Close() })
 	// A plain file where the library root should be forces
 	// pipeline.ProcessVideo to fail even with the deterministic mock
 	// backends, exercising runPipeline's failure path.
@@ -555,6 +564,9 @@ func TestRunRegenerateMissingDateNoPriorNoteFailsWithNoFile(t *testing.T) {
 func TestRunRegenerateLemurRequiresAPIKey(t *testing.T) {
 	t.Setenv("ASSEMBLYAI_API_KEY", "")
 	dir := t.TempDir()
+	// run() opens patro.log through logging.Init; release it before TempDir
+	// cleanup (an open handle cannot be deleted on Windows).
+	t.Cleanup(func() { _ = logging.Close() })
 	cfgPath := filepath.Join(dir, "config.yaml")
 	contents := "inbox: " + filepath.Join(dir, "inbox") + "\n" +
 		"library: " + filepath.Join(dir, "library") + "\n" +
